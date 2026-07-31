@@ -228,6 +228,7 @@ struct AgentAnalysis: Codable, Hashable {
 
 enum AgentReviewStatus: String, Codable {
     case ready = "검토 준비"
+    case queued = "분석 대기"
     case reviewing = "검토 중"
     case complete = "검토 완료"
     case failed = "연결 필요"

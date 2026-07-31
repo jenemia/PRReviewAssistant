@@ -28,6 +28,12 @@ final class ReviewStore {
             }
         }
     }
+    struct WorkspaceSwitchRequest: Identifiable {
+        let id = UUID()
+        let cardID: AgentReviewCard.ID
+        let target: PullRequest
+        let active: PullRequest?
+    }
     var pullRequests: [PullRequest] = []
     /// Unfiltered refresh result. `pullRequests` is the author-filtered Inbox.
     private var allPullRequests: [PullRequest] = []
@@ -52,6 +58,7 @@ final class ReviewStore {
     var agentReviewCards: [AgentReviewCard] = []
     var implementationPlans: [String: ImplementationPlan] = [:]
     var agentPermissionRequest: AgentPermissionRequest?
+    var workspaceSwitchRequest: WorkspaceSwitchRequest?
     var agentModel = "auto" { didSet { persist() } }
     var customAgentModel = "" { didSet { persist() } }
     var reviewAuthorFilter = "" { didSet { persist(); applyAuthorFilter() } }
@@ -82,6 +89,9 @@ final class ReviewStore {
     private var unreadCommentIDs: Set<String> = []
     private var hasEstablishedNotificationBaseline = false
     private var postedReReviewCommentTokens: Set<String> = []
+    /// One registered local folder can only be checked out to one PR at a time.
+    private var activePullRequestKeys: [String: String] = [:]
+    private var preparingWorkspaceKeys: Set<String> = []
     private var monitoringTask: Task<Void, Never>?
 
     init() {
@@ -263,6 +273,7 @@ final class ReviewStore {
             knownPullRequestIDs.insert(key)
             unreadPullRequestIDs.insert(key)
             unreadCommentIDs.formUnion(fixture.comments.map(\.id))
+            startAutomaticReviews(for: fixture.pullRequest, comments: fixture.comments)
             applyAuthorFilter()
             selectedID = fixture.pullRequest.id
             persist()
@@ -318,6 +329,7 @@ final class ReviewStore {
                     let fixture = try await background { try self.localPractice.load(from: repository) }
                     fetched.append(fixture.pullRequest)
                     comments[worktreeKey(fixture.pullRequest)] = fixture.comments
+                    startAutomaticReviews(for: fixture.pullRequest, comments: fixture.comments)
                     continue
                 }
                 let prs = try await background { try self.github.pullRequests(for: repository) }
@@ -341,10 +353,7 @@ final class ReviewStore {
                     // sections. Create one durable analysis card for each section
                     // as soon as it is received, then begin read-only analysis.
                     // Existing cards are never recreated on a later poll.
-                    let newCards = createAnalysisCards(for: pr, comments: newComments)
-                    for cardID in newCards {
-                        Task { await self.beginAgentReview(id: cardID, pullRequest: pr) }
-                    }
+                    startAutomaticReviews(for: pr, comments: newComments)
                     let shouldNotify = hasEstablishedNotificationBaseline && matchesAuthorFilter(pr)
                     if shouldNotify && isNewPullRequest {
                         publishPetNotification(.newPullRequest(pr))
@@ -375,6 +384,7 @@ final class ReviewStore {
     }
 
     func startAnalysis(for pullRequest: PullRequest) async {
+        guard reserveActiveWorkspace(for: pullRequest) else { return }
         if repositories.first(where: { $0.fullName == pullRequest.repository })?.isLocalPractice == true {
             analyses[worktreeKey(pullRequest)] = .init(
                 judgment: "로컬 연습 PR",
@@ -410,6 +420,7 @@ final class ReviewStore {
     /// Prepares and verifies the PR branch without asking the agent to change code.
     /// The UI calls this immediately before handing the selected work to the user.
     func prepareWorkspace(for pullRequest: PullRequest) async -> String? {
+        guard reserveActiveWorkspace(for: pullRequest) else { return nil }
         do {
             let repository = try registeredRepository(for: pullRequest)
             let path = try await background { try self.workspaces.prepareRepositoryWorkspace(repository: repository, pullRequest: pullRequest) }
@@ -652,6 +663,48 @@ final class ReviewStore {
         return created
     }
 
+    /// Both GitHub PRs and the local practice fixture enter the same
+    /// section-card flow. Local practice completes with its safe simulated
+    /// review response; GitHub PRs use the normal read-only Cursor analysis.
+    private func startAutomaticReviews(for pullRequest: PullRequest, comments: [ReviewComment]) {
+        let cardIDs = createAnalysisCards(for: pullRequest, comments: comments)
+        guard !cardIDs.isEmpty else { return }
+        let key = worktreeKey(pullRequest)
+        if let activeKey = activePullRequestKeys[pullRequest.repository], activeKey != key {
+            setCards(cardIDs, status: .queued)
+            statusMessage = "(pullRequest.repository)의 활성 PR 분석이 끝날 때까지 새 리뷰를 분석 대기열에 넣었습니다."
+            return
+        }
+        if activePullRequestKeys[pullRequest.repository] == nil {
+            // A persisted historical path is not proof that this branch is
+            // still checked out after an app relaunch. Prepare it once again.
+            worktreePaths[key] = nil
+        }
+        activePullRequestKeys[pullRequest.repository] = key
+        for cardID in cardIDs {
+            Task { await self.beginAgentReview(id: cardID, pullRequest: pullRequest) }
+        }
+    }
+
+    private func setCards(_ ids: [AgentReviewCard.ID], status: AgentReviewStatus) {
+        for index in agentReviewCards.indices where ids.contains(agentReviewCards[index].id) {
+            agentReviewCards[index].status = status
+            agentReviewCards[index].updatedAt = .now
+        }
+        persist()
+    }
+
+    func approveWorkspaceSwitch() {
+        guard let request = workspaceSwitchRequest else { return }
+        workspaceSwitchRequest = nil
+        let key = worktreeKey(request.target)
+        activePullRequestKeys[request.target.repository] = key
+        worktreePaths[key] = nil
+        Task { await self.beginAgentReview(id: request.cardID, pullRequest: request.target) }
+    }
+
+    func cancelWorkspaceSwitch() { workspaceSwitchRequest = nil }
+
     func markAgentCardRead(_ id: AgentReviewCard.ID) {
         guard let index = agentReviewCards.firstIndex(where: { $0.id == id }), agentReviewCards[index].isUnread else { return }
         agentReviewCards[index].isUnread = false
@@ -694,6 +747,7 @@ final class ReviewStore {
     /// Starts a real, user-approved implementation run on the PR source branch.
     /// This never commits or pushes; those remain separate approval steps.
     func startImplementation(for pullRequest: PullRequest) async {
+        guard reserveActiveWorkspace(for: pullRequest) else { return }
         let key = worktreeKey(pullRequest)
         guard var plan = implementationPlans[key] else {
             statusMessage = "먼저 검토 카드에서 구현 계획을 만드세요."
@@ -736,6 +790,21 @@ final class ReviewStore {
         plan.completedAt = .now
         implementationPlans[worktreeKey(pullRequest)] = plan
         persist()
+    }
+
+    /// Non-card actions must never silently replace another PR's checkout.
+    /// Card analysis is the only path that can ask for an explicit switch.
+    private func reserveActiveWorkspace(for pullRequest: PullRequest) -> Bool {
+        let key = worktreeKey(pullRequest)
+        if let activeKey = activePullRequestKeys[pullRequest.repository], activeKey != key {
+            statusMessage = "이 저장소에는 다른 활성 PR이 있습니다. 대기 중인 분석 카드를 선택해 전환을 승인하세요."
+            return false
+        }
+        if activePullRequestKeys[pullRequest.repository] == nil {
+            activePullRequestKeys[pullRequest.repository] = key
+            worktreePaths[key] = nil
+        }
+        return true
     }
 
     /// Agent and implementation work run outside the app process. If the app
@@ -791,6 +860,58 @@ final class ReviewStore {
         let isLocalPractice = repositories.first(where: { $0.fullName == pullRequest.repository })?.isLocalPractice == true
         guard agentReviewCards[index].status != .reviewing,
               agentReviewCards[index].messages.isEmpty || isLocalPractice else { return }
+        if !isLocalPractice {
+            let targetKey = worktreeKey(pullRequest)
+            if let activeKey = activePullRequestKeys[pullRequest.repository], activeKey != targetKey {
+                if agentReviewCards.contains(where: { $0.repository == pullRequest.repository && $0.pullRequestNumber != pullRequest.number && $0.status == .reviewing }) {
+                    agentReviewCards[index].status = .queued
+                    agentReviewCards[index].updatedAt = .now
+                    statusMessage = "현재 활성 PR의 분석이 끝난 뒤 이 리뷰를 전환할 수 있습니다."
+                    persist()
+                    return
+                }
+                agentReviewCards[index].status = .queued
+                agentReviewCards[index].updatedAt = .now
+                workspaceSwitchRequest = WorkspaceSwitchRequest(
+                    cardID: id,
+                    target: pullRequest,
+                    active: allPullRequests.first { worktreeKey($0) == activeKey }
+                )
+                persist()
+                return
+            }
+            if activePullRequestKeys[pullRequest.repository] == nil {
+                worktreePaths[targetKey] = nil
+            }
+            activePullRequestKeys[pullRequest.repository] = targetKey
+            if worktreePaths[targetKey] == nil {
+                if preparingWorkspaceKeys.contains(targetKey) {
+                    agentReviewCards[index].status = .queued
+                    agentReviewCards[index].updatedAt = .now
+                    persist()
+                    return
+                }
+                preparingWorkspaceKeys.insert(targetKey)
+                do {
+                    let repository = try registeredRepository(for: pullRequest)
+                    let path = try await background { try self.workspaces.prepareRepositoryWorkspace(repository: repository, pullRequest: pullRequest) }
+                    try await background { try self.workspaces.verifyHead(path, expectedSHA: pullRequest.headSHA, expectedBranch: pullRequest.headBranch) }
+                    setActiveWorkspace(path, for: pullRequest)
+                } catch {
+                    agentReviewCards[index].status = .failed
+                    agentReviewCards[index].messages.append(.init(role: .agent, body: "작업 폴더 준비 실패: \(error.localizedDescription)"))
+                    agentReviewCards[index].updatedAt = .now
+                    preparingWorkspaceKeys.remove(targetKey)
+                    persist()
+                    return
+                }
+                preparingWorkspaceKeys.remove(targetKey)
+                let waiting = agentCards(for: pullRequest).filter { $0.status == .queued }.map(\.id)
+                for waitingID in waiting where waitingID != id {
+                    Task { await self.beginAgentReview(id: waitingID, pullRequest: pullRequest) }
+                }
+            }
+        }
         let starter = "선택한 리뷰 섹션이 현재 PR 코드에 적용되는지 검토하고, 핵심 판단과 확인할 파일을 알려줘."
         await sendAgentMessage(id: id, pullRequest: pullRequest, message: starter, hidesUserMessage: true)
     }
@@ -814,9 +935,16 @@ final class ReviewStore {
         persist()
         let agent = cursor
         do {
-            let path = try await background { try self.workspaces.prepareRepositoryWorkspace(repository: repository, pullRequest: pullRequest) }
-            try await background { try self.workspaces.verifyHead(path, expectedSHA: pullRequest.headSHA, expectedBranch: pullRequest.headBranch) }
-            setActiveWorkspace(path, for: pullRequest)
+            let key = worktreeKey(pullRequest)
+            let path: String
+            if activePullRequestKeys[pullRequest.repository] == key, let activePath = worktreePaths[key] {
+                try await background { try self.workspaces.verifyHead(activePath, expectedSHA: pullRequest.headSHA, expectedBranch: pullRequest.headBranch) }
+                path = activePath
+            } else {
+                path = try await background { try self.workspaces.prepareRepositoryWorkspace(repository: repository, pullRequest: pullRequest) }
+                try await background { try self.workspaces.verifyHead(path, expectedSHA: pullRequest.headSHA, expectedBranch: pullRequest.headBranch) }
+                setActiveWorkspace(path, for: pullRequest)
+            }
             let isTrusted = trustedAgentReviewIDs.contains(id)
             let model = effectiveAgentModel
             let answer = try await background { try agent.ask(repositoryPath: path, pullRequest: pullRequest, card: card, question: question, trustWorkspace: isTrusted, model: model) }

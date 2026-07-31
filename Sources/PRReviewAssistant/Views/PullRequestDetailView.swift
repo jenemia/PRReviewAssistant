@@ -136,6 +136,15 @@ struct PullRequestDetailView: View {
         } message: {
             Text(permissionMessage)
         }
+        .alert("활성 PR 전환", isPresented: Binding(
+            get: { store.workspaceSwitchRequest?.target.id == pullRequest.id },
+            set: { presented in if !presented { store.cancelWorkspaceSwitch() } }
+        )) {
+            Button("취소", role: .cancel) { store.cancelWorkspaceSwitch() }
+            Button("stash 후 분석 시작") { store.approveWorkspaceSwitch() }
+        } message: {
+            Text(workspaceSwitchMessage)
+        }
         .navigationTitle("PR #\(pullRequest.number)")
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
@@ -474,6 +483,12 @@ struct PullRequestDetailView: View {
         case .other:
             return "Cursor Agent가 추가 권한을 요청했습니다. 앱은 범위를 알 수 없는 권한을 자동 허용하지 않습니다. Cursor에서 요청 내용을 확인하고 승인하세요.\n\n\(request.detail)"
         }
+    }
+
+    private var workspaceSwitchMessage: String {
+        guard let request = store.workspaceSwitchRequest else { return "활성 PR을 전환합니다." }
+        let active = request.active.map { "현재 활성 PR #\($0.number) (\($0.headBranch))의 미커밋 변경은 stash합니다.\n\n" } ?? ""
+        return "\(active)PR #\(pullRequest.number) (\(pullRequest.headBranch))로 체크아웃을 전환하고 분석을 시작합니다."
     }
 }
 
@@ -906,6 +921,15 @@ private struct FoldableComment: View {
                                 .foregroundStyle(BrandColor.prPurple)
                         }
                         Spacer(minLength: 4)
+                        Button(comment.sections.count > 1 ? "섹션 검토" : "에이전트 검토", systemImage: "sparkles") {
+                            if comment.sections.count > 1 {
+                                isExpanded = true
+                            } else if let section = comment.sections.first {
+                                reviewSection(comment, section)
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
                     }
                     Text(comment.body)
                         .font(.caption)
