@@ -40,3 +40,19 @@ scripts/package-app.sh
 - Cursor Agent 로그인(분석 기능): `cursor agent login`
 
 앱은 GitHub 토큰을 저장하지 않고 `gh` 인증을 사용합니다. 분석은 기본적으로 읽기 전용이며, 푸시와 재리뷰 요청은 앱에서 각각 승인해야 합니다.
+
+# 배포용 DMG 만들기
+
+다른 Mac에서 보안 경고 없이 앱을 열려면, DMG 파일 자체가 아니라 앱을 **Developer ID Application** 인증서로 서명하고 Apple 공증(notarization)을 받아야 합니다. `scripts/package-release-dmg.sh`는 이 과정을 수행합니다.
+
+```sh
+export SIGNING_IDENTITY='Developer ID Application: Your Name (TEAMID)'
+export NOTARY_PROFILE='PRReviewAssistantNotary'
+scripts/package-release-dmg.sh
+```
+
+`NOTARY_PROFILE`은 한 번만 아래 명령으로 로그인 키체인에 만들어 둡니다.
+
+```sh
+xcrun notarytool store-credentials 'PRReviewAssistantNotary'
+```
