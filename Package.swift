@@ -1,5 +1,18 @@
 // swift-tools-version: 6.0
+import Foundation
 import PackageDescription
+
+let usesGitHubActions = ProcessInfo.processInfo.environment["GITHUB_ACTIONS"] == "true"
+let localTestingSwiftSettings: [SwiftSetting] = usesGitHubActions ? [] : [
+    .unsafeFlags(["-F", "/Library/Developer/CommandLineTools/Library/Developer/Frameworks"])
+]
+let localTestingLinkerSettings: [LinkerSetting] = usesGitHubActions ? [] : [
+    .unsafeFlags([
+        "-F", "/Library/Developer/CommandLineTools/Library/Developer/Frameworks",
+        "-Xlinker", "-rpath", "-Xlinker", "/Library/Developer/CommandLineTools/Library/Developer/Frameworks",
+        "-Xlinker", "-rpath", "-Xlinker", "/Library/Developer/CommandLineTools/Library/Developer/usr/lib"
+    ])
+]
 
 let package = Package(
     name: "PRReviewAssistant",
@@ -15,15 +28,8 @@ let package = Package(
         .testTarget(
             name: "PRReviewAssistantTests",
             dependencies: ["PRReviewAssistant"],
-            swiftSettings: [.unsafeFlags(["-F", "/Library/Developer/CommandLineTools/Library/Developer/Frameworks"])],
-            linkerSettings: [
-                .unsafeFlags([
-                    "-F", "/Library/Developer/CommandLineTools/Library/Developer/Frameworks",
-                    "-Xlinker", "-rpath", "-Xlinker", "/Library/Developer/CommandLineTools/Library/Developer/Frameworks",
-                    "-Xlinker", "-rpath", "-Xlinker", "/Library/Developer/CommandLineTools/Library/Developer/usr/lib"
-                ]),
-                .linkedFramework("Testing")
-            ]
+            swiftSettings: localTestingSwiftSettings,
+            linkerSettings: localTestingLinkerSettings + [.linkedFramework("Testing")]
         )
     ]
 )
