@@ -18,6 +18,14 @@ struct MenuBarView: View {
             }
         }
         Divider()
+        Button("업데이트 확인") {
+            Task { await store.checkForAppUpdate() }
+        }
+        .disabled(store.isCheckingForAppUpdate || !store.updateRepositoryIsValid)
+        if store.isCheckingForAppUpdate {
+            Text("업데이트를 확인하는 중입니다…")
+                .foregroundStyle(.secondary)
+        }
         Button("새로 고침") { store.refresh() }
         Button("종료") { NSApplication.shared.terminate(nil) }
     }

@@ -22,6 +22,12 @@ struct PRReviewAssistantApp: App {
         .defaultSize(width: 1220, height: 760)
         .commands {
             CommandGroup(after: .appInfo) {
+                Button("업데이트 확인") {
+                    Task { await store.checkForAppUpdate() }
+                }
+                .disabled(store.isCheckingForAppUpdate || !store.updateRepositoryIsValid)
+                .keyboardShortcut("u", modifiers: [.command, .shift])
+
                 Button("새로 고침") { store.refresh() }
                     .keyboardShortcut("r", modifiers: .command)
             }
