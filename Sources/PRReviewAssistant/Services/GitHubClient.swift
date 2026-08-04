@@ -11,6 +11,12 @@ struct GitHubRelease: Codable, Hashable, Sendable {
     let htmlURL: String
     let body: String?
     let publishedAt: Date?
+
+    private enum CodingKeys: String, CodingKey {
+        case tagName, name, body
+        case htmlURL = "html_url"
+        case publishedAt = "published_at"
+    }
 }
 
 struct GitHubClient: Sendable {
@@ -24,8 +30,17 @@ struct GitHubClient: Sendable {
     /// Uses the authenticated GitHub CLI session, so private repositories work
     /// without placing an access token in this app's own settings or files.
     func latestRelease(repository: String) throws -> GitHubRelease {
-        let result = try runner.run("gh", arguments: ["api", "repos/\(repository)/releases/latest"])
-        return try githubDecoder.decode(GitHubRelease.self, from: Data(result.output.utf8))
+        let result = try runner.run(
+            "gh",
+            arguments: ["api", "repos/\(repository)/releases/latest", "--jq", "[.tag_name, .html_url] | @tsv"]
+        )
+        let fields = result.output
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(separator: "\t", maxSplits: 1)
+        guard fields.count == 2 else {
+            throw CommandError.failed(.init(output: result.output, error: "GitHub Release 버전 또는 주소를 읽을 수 없습니다.", status: 1))
+        }
+        return GitHubRelease(tagName: String(fields[0]), name: nil, htmlURL: String(fields[1]), body: nil, publishedAt: nil)
     }
 
     /// SourceTree normally writes this value to the global Git configuration,

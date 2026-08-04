@@ -1115,14 +1115,18 @@ final class ReviewStore {
         return appVersion < AppVersion(latestAppRelease.tagName)
     }
 
-    func checkForAppUpdate(reportNoUpdate: Bool = true) async {
+    func checkForAppUpdate(reportNoUpdate: Bool = true, presentsResultAlert: Bool = false) async {
         guard !isCheckingForAppUpdate else { return }
         guard let repository = normalizedUpdateRepository else {
             if reportNoUpdate { appUpdateStatus = "업데이트 배포 저장소를 찾을 수 없습니다." }
+            if presentsResultAlert { presentAppUpdateResultAlert() }
             return
         }
         isCheckingForAppUpdate = true
-        defer { isCheckingForAppUpdate = false }
+        defer {
+            isCheckingForAppUpdate = false
+            if presentsResultAlert { presentAppUpdateResultAlert() }
+        }
         do {
             let release = try await background { try self.github.latestRelease(repository: repository) }
             let releaseVersion = AppVersion(release.tagName)
@@ -1153,6 +1157,29 @@ final class ReviewStore {
             return
         }
         NSWorkspace.shared.open(url)
+    }
+
+    private func presentAppUpdateResultAlert() {
+        let alert = NSAlert()
+        if hasAvailableAppUpdate, let release = latestAppRelease {
+            alert.messageText = "업데이트가 있습니다"
+            alert.informativeText = "PR Review Assistant \(release.tagName) 버전을 설치할 수 있습니다. 업데이트 페이지로 이동할까요?"
+            alert.addButton(withTitle: "업데이트 진행")
+            alert.addButton(withTitle: "나중에")
+            if alert.runModal() == .alertFirstButtonReturn {
+                openLatestAppRelease()
+            }
+        } else if appUpdateStatus == "최신버전입니다." {
+            alert.messageText = "최신버전입니다."
+            alert.informativeText = "현재 설치된 PR Review Assistant가 최신 버전입니다."
+            alert.addButton(withTitle: "확인")
+            alert.runModal()
+        } else {
+            alert.messageText = "업데이트 확인 실패"
+            alert.informativeText = appUpdateStatus.isEmpty ? "업데이트 정보를 확인할 수 없습니다." : appUpdateStatus
+            alert.addButton(withTitle: "확인")
+            alert.runModal()
+        }
     }
 
     func isUnread(_ pullRequest: PullRequest) -> Bool {
