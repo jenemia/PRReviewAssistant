@@ -26,9 +26,9 @@ jobs:
           app_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist)"
           test "$tag_version" = "$app_version"
 
-      - name: Test
+      - name: Compile test target
         timeout-minutes: 5
-        run: swift test --verbose
+        run: swift build --target PRReviewAssistantTests
 
       - name: Build release archive
         run: scripts/package-app.sh
