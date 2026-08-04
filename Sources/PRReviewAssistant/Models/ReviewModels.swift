@@ -86,7 +86,66 @@ struct PetBubbleContent: Codable, Equatable {
         PetBubbleContent(title: "새 PR이 열렸습니다", subtitle: "\(pullRequest.repository) #\(pullRequest.number)", body: "\(pullRequest.author) · \(pullRequest.title)", sourceAuthor: pullRequest.author)
     }
 
+    static func approved(_ pullRequest: PullRequest) -> PetBubbleContent {
+        PetBubbleContent(title: "PR이 승인되었습니다", subtitle: "\(pullRequest.repository) #\(pullRequest.number)", body: "\(pullRequest.title) · 머지할 수 있습니다", sourceAuthor: pullRequest.author)
+    }
+
+    static func appUpdate(version: String) -> PetBubbleContent {
+        PetBubbleContent(title: "새 앱 버전이 있습니다", subtitle: "PR Review Assistant \(version)", body: "설정에서 변경 사항을 확인하고 GitHub Release를 열 수 있습니다.")
+    }
+
     static let notificationTest = PetBubbleContent(title: "PR Review Assistant 알림 테스트", subtitle: "알림 테스트", body: "이 배너가 보이면 macOS 로컬 알림이 정상 동작합니다.")
+}
+
+struct AppVersion: Comparable, Hashable, Sendable {
+    let components: [Int]
+    let displayString: String
+
+    init(_ value: String) {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        displayString = trimmed
+        components = trimmed
+            .trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
+            .split(separator: ".")
+            .compactMap { Int($0.prefix { $0.isNumber }) }
+    }
+
+    static func < (lhs: AppVersion, rhs: AppVersion) -> Bool {
+        let count = max(lhs.components.count, rhs.components.count)
+        for index in 0..<count {
+            let left = index < lhs.components.count ? lhs.components[index] : 0
+            let right = index < rhs.components.count ? rhs.components[index] : 0
+            if left != right { return left < right }
+        }
+        return false
+    }
+
+    static func == (lhs: AppVersion, rhs: AppVersion) -> Bool {
+        !(lhs < rhs) && !(rhs < lhs)
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(components)
+    }
+
+    var isValid: Bool { !components.isEmpty }
+}
+
+enum UpdateCheckSchedule {
+    static let timeZone = TimeZone(secondsFromGMT: 9 * 60 * 60)!
+    static let hours = [10, 13, 16, 19]
+
+    static func nextDate(after date: Date) -> Date {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+        let today = calendar.startOfDay(for: date)
+        for hour in hours {
+            guard let candidate = calendar.date(bySettingHour: hour, minute: 0, second: 0, of: today) else { continue }
+            if candidate >= date { return candidate }
+        }
+        let tomorrow = calendar.date(byAdding: .day, value: 1, to: today)!
+        return calendar.date(bySettingHour: hours[0], minute: 0, second: 0, of: tomorrow)!
+    }
 }
 
 struct PullRequest: Identifiable, Hashable, Codable {

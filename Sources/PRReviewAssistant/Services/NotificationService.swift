@@ -75,8 +75,20 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate, @un
         )
     }
 
+    func deliverApproval(for pullRequest: PullRequest) async -> String {
+        await deliver(
+            .approved(pullRequest),
+            identifier: "approval-\(pullRequest.repository)-\(pullRequest.number)-\(pullRequest.headSHA)",
+            description: "approval \(pullRequest.repository)#\(pullRequest.number)"
+        )
+    }
+
     func deliverTestNotification() async -> String {
         await deliver(.notificationTest, identifier: "notification-test-\(UUID().uuidString)", description: "test notification")
+    }
+
+    func deliverAppUpdate(version: String) async -> String {
+        await deliver(.appUpdate(version: version), identifier: "app-update-\(version)", description: "app update \(version)")
     }
 
     private func deliver(_ message: PetBubbleContent, identifier: String, description: String) async -> String {

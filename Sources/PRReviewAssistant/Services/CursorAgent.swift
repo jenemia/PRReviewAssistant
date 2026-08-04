@@ -1,7 +1,7 @@
 import Foundation
 
 struct CursorConnection: Sendable {
-    enum State: Sendable { case unknown, connected, needsLogin, unavailable }
+    enum State: Sendable { case unknown, connected, needsLogin, unavailable, failed }
     let state: State
     let detail: String
 }
@@ -32,17 +32,94 @@ struct CursorAgent: Sendable {
 
     func connection() -> CursorConnection {
         do {
-            let result = try runner.run("cursor", arguments: ["agent", "status"], timeout: 15)
-            let detail = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
-            if detail.localizedCaseInsensitiveContains("not logged in") || detail.localizedCaseInsensitiveContains("login required") {
+            let status = try runKeepingFailure(arguments: ["agent", "status"], timeout: 15)
+            let statusDetail = Self.commandDetail(status)
+            if Self.requiresLogin(statusDetail) {
                 return CursorConnection(state: .needsLogin, detail: "Cursor Agent가 설치되어 있지만 로그인되지 않았습니다. ‘Cursor 로그인 진행’을 선택하세요.")
             }
-            return CursorConnection(state: .connected, detail: detail.isEmpty ? "Cursor Agent에 연결되었습니다." : detail)
+            guard status.status == 0 || Self.isLoggedIn(statusDetail) else {
+                return CursorConnection(state: .failed, detail: "Cursor 로그인 상태를 확인하지 못했습니다. \(Self.concise(statusDetail))")
+            }
+
+            let models = try modelAvailability()
+            let modelsDetail = Self.commandDetail(models)
+            if Self.requiresLogin(modelsDetail) {
+                return CursorConnection(state: .needsLogin, detail: "Cursor 로그인 정보가 만료되었습니다. 다시 로그인한 뒤 연결 상태를 확인하세요.")
+            }
+            guard models.status == 0 else {
+                return CursorConnection(state: .failed, detail: "Cursor 로그인은 확인했지만 LLM 서비스에 연결하지 못했습니다. \(Self.concise(modelsDetail))")
+            }
+
+            let account = Self.accountName(statusDetail)
+            let modelCount = Self.modelCount(models.output)
+            let accountText = account.map { " · \($0)" } ?? ""
+            let modelText = modelCount > 0 ? " · 모델 \(modelCount)개 확인" : ""
+            return CursorConnection(state: .connected, detail: "Cursor Agent 연결됨\(accountText)\(modelText)")
         } catch CommandError.notFound {
             return CursorConnection(state: .unavailable, detail: "Cursor CLI를 찾을 수 없습니다. Cursor를 설치한 뒤 다시 확인하세요.")
+        } catch CommandError.timedOut {
+            return CursorConnection(state: .failed, detail: "Cursor CLI 응답 시간이 초과되었습니다. 네트워크를 확인한 뒤 다시 시도하세요.")
         } catch {
-            return CursorConnection(state: .needsLogin, detail: "Cursor Agent 로그인이 필요합니다. 로그인 후 다시 확인하세요.")
+            return CursorConnection(state: .failed, detail: "Cursor Agent 연결 확인 실패: \(error.localizedDescription)")
         }
+    }
+
+    private func modelAvailability() throws -> CommandResult {
+        let primary = try runKeepingFailure(arguments: ["agent", "models"], timeout: 30)
+        guard primary.status != 0, Self.isUnsupportedCommand(Self.commandDetail(primary)) else { return primary }
+        return try runKeepingFailure(arguments: ["agent", "--list-models"], timeout: 30)
+    }
+
+    private func runKeepingFailure(arguments: [String], timeout: TimeInterval) throws -> CommandResult {
+        do {
+            return try runner.run("cursor", arguments: arguments, timeout: timeout)
+        } catch CommandError.failed(let result) {
+            return result
+        }
+    }
+
+    static func requiresLogin(_ text: String) -> Bool {
+        let normalized = text.lowercased()
+        return ["not logged in", "login required", "authentication required", "please log in", "unauthenticated"]
+            .contains { normalized.contains($0) }
+    }
+
+    static func isLoggedIn(_ text: String) -> Bool {
+        let normalized = text.lowercased()
+        return normalized.contains("logged in as") || normalized.contains("authenticated as")
+    }
+
+    static func accountName(_ text: String) -> String? {
+        let patterns = ["logged in as ", "authenticated as "]
+        let lowercased = text.lowercased()
+        guard let pattern = patterns.first(where: { lowercased.contains($0) }),
+              let range = lowercased.range(of: pattern) else { return nil }
+        let suffix = text[range.upperBound...]
+        return suffix.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).first.map(String.init)
+    }
+
+    static func modelCount(_ output: String) -> Int {
+        output.split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && $0.contains(" - ") }
+            .count
+    }
+
+    private static func commandDetail(_ result: CommandResult) -> String {
+        [result.output, result.error]
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func isUnsupportedCommand(_ text: String) -> Bool {
+        let normalized = text.lowercased()
+        return normalized.contains("unknown command") || normalized.contains("unknown option") || normalized.contains("invalid command")
+    }
+
+    private static func concise(_ text: String) -> String {
+        let firstLine = text.split(whereSeparator: { $0.isNewline }).first.map(String.init) ?? "알 수 없는 오류"
+        return String(firstLine.prefix(240))
     }
 
     func startLogin() throws {

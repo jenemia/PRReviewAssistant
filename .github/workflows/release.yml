@@ -1,0 +1,51 @@
+name: Release macOS app
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: macos-14
+
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v4
+
+      - name: Verify version matches tag
+        shell: bash
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          app_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist)"
+          test "$tag_version" = "$app_version"
+
+      - name: Test
+        run: swift test
+
+      - name: Build release archive
+        run: scripts/package-app.sh
+
+      - name: Verify archive and app signature
+        shell: bash
+        run: |
+          version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist)"
+          archive="dist/PR Review Assistant-v${version}.zip"
+          test -f "$archive"
+          unzip -t "$archive"
+          plutil -lint 'dist/PR Review Assistant.app/Contents/Info.plist'
+          codesign --verify --deep --strict 'dist/PR Review Assistant.app'
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist)"
+          gh release create "$GITHUB_REF_NAME" "dist/PR Review Assistant-v${version}.zip" \
+            --title "PR Review Assistant ${version}" \
+            --verify-tag \
+            --generate-notes

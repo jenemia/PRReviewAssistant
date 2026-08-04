@@ -86,7 +86,7 @@ struct ContentView: View {
 private struct OnboardingView: View {
     @Bindable var store: ReviewStore
     @State private var currentStep = 0
-    private let steps = ["Git 설치", "GitHub 로그인", "프로젝트 사본", "LLM Agent", "Git 계정"]
+    private let steps = ["Git 설치", "GitHub 로그인", "프로젝트 사본", "Cursor CLI", "LLM Agent", "Git 계정"]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -161,12 +161,24 @@ private struct OnboardingView: View {
                 .foregroundStyle(.secondary)
             Button("프로젝트 사본 폴더 지정", systemImage: "folder.badge.plus") { chooseProjectCopyFolder() }
         case 3:
+            let installed = store.cursorConnection.state != .unavailable
+            StatusRow(status: installed ? "Cursor CLI를 찾았습니다. \(store.cursorConnection.detail)" : store.cursorConnection.detail, success: installed)
+            Text("Cursor 앱을 설치하면 Cursor CLI도 함께 사용할 수 있습니다. 설치가 끝난 뒤에는 이 앱을 다시 열거나 상태 확인을 눌러 CLI를 찾아보세요.")
+                .foregroundStyle(.secondary)
+            HStack {
+                if !installed {
+                    Button("Cursor 다운로드 열기", systemImage: "arrow.down.app") { store.openCursorDownload() }
+                        .buttonStyle(.borderedProminent)
+                }
+                Button("Cursor CLI 설치 상태 확인", systemImage: "arrow.clockwise") { Task { await store.checkCursorConnection() } }
+            }
+        case 4:
             StatusRow(status: store.cursorConnection.detail, success: store.cursorConnection.state == .connected)
             Text("Cursor Agent를 연결하면 PR 코멘트를 읽기 전용으로 분석하고, 설정한 모델로 대화할 수 있습니다. 모델은 설정에서 언제든 바꿀 수 있습니다.")
                 .foregroundStyle(.secondary)
             HStack {
                 Button("LLM 연결 상태 확인", systemImage: "arrow.clockwise") { Task { await store.checkCursorConnection() } }
-                if store.cursorConnection.state != .connected {
+                if store.cursorConnection.state == .needsLogin {
                     Button("Cursor 로그인 진행", systemImage: "sparkles") { store.startCursorLogin() }
                 }
             }

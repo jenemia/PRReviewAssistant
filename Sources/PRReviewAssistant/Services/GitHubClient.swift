@@ -5,12 +5,27 @@ struct GitHubIdentity: Codable, Hashable {
     let hostname: String
 }
 
+struct GitHubRelease: Codable, Hashable, Sendable {
+    let tagName: String
+    let name: String?
+    let htmlURL: String
+    let body: String?
+    let publishedAt: Date?
+}
+
 struct GitHubClient: Sendable {
     private let runner = ProcessRunner()
 
     func authentication() throws -> GitHubIdentity {
         let result = try runner.run("gh", arguments: ["api", "user"])
         return try githubDecoder.decode(GitHubUser.self, from: Data(result.output.utf8)).identity
+    }
+
+    /// Uses the authenticated GitHub CLI session, so private repositories work
+    /// without placing an access token in this app's own settings or files.
+    func latestRelease(repository: String) throws -> GitHubRelease {
+        let result = try runner.run("gh", arguments: ["api", "repos/\(repository)/releases/latest"])
+        return try githubDecoder.decode(GitHubRelease.self, from: Data(result.output.utf8))
     }
 
     /// SourceTree normally writes this value to the global Git configuration,
@@ -82,6 +97,14 @@ struct GitHubClient: Sendable {
             arguments: ["api", "repos/\(repository)/issues/\(number)/comments", "--method", "POST", "--input", "-"],
             input: String(decoding: input, as: UTF8.self)
         )
+    }
+
+    /// Merges on GitHub using the same "Create a merge commit" strategy as the
+    /// GitHub web UI, then asks GitHub to delete the source branch only after a
+    /// successful server-side merge. Run from the registered repository so any
+    /// optional local cleanup is scoped to that repository too.
+    func mergePullRequest(repository: String, number: Int, workingDirectory: String) throws {
+        _ = try runner.run("gh", arguments: ["pr", "merge", String(number), "--repo", repository, "--merge", "--delete-branch"], workingDirectory: workingDirectory)
     }
 
     private func repositoryName(from remote: String) throws -> String {

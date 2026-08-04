@@ -33,6 +33,33 @@ struct SettingsView: View {
                     Text("Git, GitHub, 프로젝트 사본 폴더, LLM Agent, Git 계정을 다시 확인할 수 있습니다.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
+
+                Section("앱 업데이트") {
+                    Text("현재 버전 \(store.appVersionDescription)")
+                        .foregroundStyle(.secondary)
+                    TextField("업데이트 배포 저장소 (owner/repository)", text: $store.updateRepository)
+                    Text("GitHub Release를 올릴 저장소를 입력하세요. 비공개 저장소는 이 Mac의 GitHub CLI 로그인 계정에 읽기 권한이 있어야 합니다.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Toggle("새 버전 자동 확인", isOn: $store.updatesEnabled)
+                    Text("앱이 실행 중이면 한국 시간 기준 매일 10:00, 13:00, 16:00, 19:00에 확인합니다.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    HStack {
+                        Button("업데이트 확인", systemImage: "arrow.triangle.2.circlepath") {
+                            Task { await store.checkForAppUpdate() }
+                        }
+                        .disabled(store.isCheckingForAppUpdate || !store.updateRepositoryIsValid)
+                        if let release = store.latestAppRelease {
+                            Button("GitHub Release 열기", systemImage: "arrow.up.forward.app") {
+                                store.openLatestAppRelease()
+                            }
+                            .help("\(release.tagName) Release 페이지 열기")
+                        }
+                    }
+                    if store.isCheckingForAppUpdate {
+                        HStack(spacing: 6) { ProgressView(); Text("GitHub Release를 확인하는 중입니다.") }
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
             }
             .formStyle(.grouped)
             .padding()
@@ -47,6 +74,8 @@ struct SettingsView: View {
                     Text("5분").tag(300)
                 }
                 Text("GitHub API 호출 제한을 고려해 변경되지 않은 항목은 다시 분석하지 않습니다.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Label("GitHub 리뷰 감시와 알림은 LLM Agent 연결 없이도 동작합니다.", systemImage: "bell.and.waves.left.and.right")
                     .font(.caption).foregroundStyle(.secondary)
 
                 Section("macOS 알림") {
@@ -120,7 +149,7 @@ private struct AgentSettingsView: View {
                     store.startCursorLogin()
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(store.cursorConnection.state == .connected)
+                .disabled(store.cursorConnection.state != .needsLogin)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
 
@@ -134,6 +163,9 @@ private struct AgentSettingsView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 } else if store.cursorConnection.state == .connected {
                     Text("연결된 Agent는 선택한 PR 작업 폴더의 ask 모드와 분석 모드에서 사용할 수 있습니다.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else if store.cursorConnection.state == .failed {
+                    Text("CLI는 설치되어 있습니다. 표시된 오류를 확인한 뒤 네트워크 또는 Cursor 서비스 상태를 점검하고 다시 시도하세요.")
                         .font(.caption).foregroundStyle(.secondary)
                 } else {
                     Text("상태를 확인한 뒤 설치 또는 로그인에 필요한 다음 단계를 안내합니다.")
@@ -172,6 +204,7 @@ private struct AgentSettingsView: View {
         case .connected: "연결됨"
         case .needsLogin: "로그인 필요"
         case .unavailable: "Cursor CLI를 찾을 수 없음"
+        case .failed: "LLM 연결 실패"
         case .unknown: "연결 확인 전"
         }
     }
@@ -181,6 +214,7 @@ private struct AgentSettingsView: View {
         case .connected: "checkmark.circle.fill"
         case .needsLogin: "person.crop.circle.badge.exclamationmark"
         case .unavailable: "exclamationmark.triangle.fill"
+        case .failed: "wifi.exclamationmark"
         case .unknown: "questionmark.circle"
         }
     }
@@ -190,6 +224,7 @@ private struct AgentSettingsView: View {
         case .connected: .green
         case .needsLogin: .orange
         case .unavailable: .red
+        case .failed: .red
         case .unknown: .secondary
         }
     }

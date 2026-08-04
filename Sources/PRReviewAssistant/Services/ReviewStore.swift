@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import AppKit
 
 @MainActor @Observable
 final class ReviewStore {
@@ -75,6 +76,10 @@ final class ReviewStore {
     var projectCopyFolder = ""
     var gitCLIStatus = "Git 설치 상태를 확인 중입니다."
     var gitAccountStatus = "Git 계정을 확인 중입니다."
+    var updateRepository = "" { didSet { persist(); restartUpdateChecks() } }
+    var updatesEnabled = true { didSet { persist(); restartUpdateChecks() } }
+    var latestAppRelease: GitHubRelease?
+    var isCheckingForAppUpdate = false
 
     private let persistence = AppPersistence()
     private let github = GitHubClient()
@@ -88,11 +93,15 @@ final class ReviewStore {
     private var unreadPullRequestIDs: Set<String> = []
     private var unreadCommentIDs: Set<String> = []
     private var hasEstablishedNotificationBaseline = false
+    private var approvedPullRequestIDs: Set<String> = []
+    private var hasEstablishedApprovalBaseline = false
     private var postedReReviewCommentTokens: Set<String> = []
     /// One registered local folder can only be checked out to one PR at a time.
     private var activePullRequestKeys: [String: String] = [:]
     private var preparingWorkspaceKeys: Set<String> = []
     private var monitoringTask: Task<Void, Never>?
+    private var updateCheckTask: Task<Void, Never>?
+    private var lastNotifiedUpdateTag = ""
 
     init() {
         let state = persistence.load()
@@ -102,6 +111,8 @@ final class ReviewStore {
         unreadPullRequestIDs = state.unreadPullRequestIDs
         unreadCommentIDs = state.unreadCommentIDs
         hasEstablishedNotificationBaseline = state.hasEstablishedNotificationBaseline
+        approvedPullRequestIDs = state.approvedPullRequestIDs
+        hasEstablishedApprovalBaseline = state.hasEstablishedApprovalBaseline
         monitoringEnabled = state.monitoringEnabled
         monitoringInterval = state.monitoringInterval
         analyses = state.analyses
@@ -124,6 +135,9 @@ final class ReviewStore {
         hasCompletedOnboarding = state.hasCompletedOnboarding
         skippedOnboardingSteps = state.skippedOnboardingSteps
         projectCopyFolder = state.projectCopyFolder
+        updateRepository = state.updateRepository
+        updatesEnabled = state.updatesEnabled
+        lastNotifiedUpdateTag = state.lastNotifiedUpdateTag
         recoverInterruptedWork()
         Task { await startup() }
     }
@@ -148,9 +162,13 @@ final class ReviewStore {
         }
         await checkAuthentication()
         await checkOnboardingPrerequisites()
-        await checkCursorConnection()
+        // GitHub polling and notifications do not depend on Cursor. Establish
+        // the notification baseline first so a missing or slow LLM connection
+        // can never delay review alerts.
         if !repositories.isEmpty { await refresh() }
         restartMonitoring()
+        restartUpdateChecks()
+        Task { [weak self] in await self?.checkCursorConnection() }
     }
 
     func checkOnboardingPrerequisites() async {
@@ -238,6 +256,12 @@ final class ReviewStore {
         } catch {
             cursorConnection = CursorConnection(state: .unavailable, detail: error.localizedDescription)
         }
+    }
+
+    func openCursorDownload() {
+        guard let url = URL(string: "https://cursor.com/downloads") else { return }
+        NSWorkspace.shared.open(url)
+        statusMessage = "브라우저에서 Cursor를 설치한 뒤 ‘Cursor CLI 설치 상태 확인’을 선택하세요."
     }
 
     func registerRepository(at path: String) async {
@@ -349,25 +373,34 @@ final class ReviewStore {
                     }
                     fetched.append(enrichedPR)
                     let unseen = newComments.filter { !processedCommentIDs.contains($0.id) }
+                    let becameApproved = hasEstablishedApprovalBaseline && pr.reviewState == .approved && !approvedPullRequestIDs.contains(prKey)
                     // A review body can contain multiple independently actionable
                     // sections. Create one durable analysis card for each section
                     // as soon as it is received, then begin read-only analysis.
                     // Existing cards are never recreated on a later poll.
                     startAutomaticReviews(for: pr, comments: newComments)
                     let shouldNotify = hasEstablishedNotificationBaseline && matchesAuthorFilter(pr)
-                    if shouldNotify && isNewPullRequest {
+                    if shouldNotify && becameApproved {
+                        publishPetNotification(.approved(pr))
+                        notificationStatus = await notifications.deliverApproval(for: pr)
+                    } else if shouldNotify && isNewPullRequest {
                         publishPetNotification(.newPullRequest(pr))
                         notificationStatus = await notifications.deliverNewPullRequest(pr)
                     } else if shouldNotify && !unseen.isEmpty {
                         publishPetNotification(.newReview(for: pr, count: unseen.count))
                         notificationStatus = await notifications.deliverNewReview(for: pr, count: unseen.count, eventID: unseen.map(\.id).joined(separator: "-"))
                     }
-                    if shouldNotify && (isNewPullRequest || !unseen.isEmpty) {
+                    if shouldNotify && (isNewPullRequest || !unseen.isEmpty || becameApproved) {
                         unreadPullRequestIDs.insert(prKey)
                         unreadCommentIDs.formUnion(unseen.map(\.id))
                     }
                     knownPullRequestIDs.insert(prKey)
                     processedCommentIDs.formUnion(newComments.map(\.id))
+                    if pr.reviewState == .approved {
+                        approvedPullRequestIDs.insert(prKey)
+                    } else {
+                        approvedPullRequestIDs.remove(prKey)
+                    }
                 }
             }
             let previousSelectionKey = selectedPullRequest.map(worktreeKey)
@@ -377,6 +410,7 @@ final class ReviewStore {
             allPullRequests = uniquePullRequests.sorted { $0.updatedAt > $1.updatedAt }
             applyAuthorFilter()
             hasEstablishedNotificationBaseline = true
+            hasEstablishedApprovalBaseline = true
             selectedID = previousSelectionKey.flatMap { key in pullRequests.first(where: { worktreeKey($0) == key })?.id } ?? pullRequests.first?.id
             statusMessage = "PR \(pullRequests.count)개를 확인했습니다."
             persist()
@@ -592,6 +626,38 @@ final class ReviewStore {
             } else {
                 statusMessage = "푸시 실패: \(error.localizedDescription)"
             }
+        }
+    }
+
+    /// Performs the user-confirmed GitHub merge. `gh --delete-branch` removes
+    /// the source branch only when the server-side merge succeeds.
+    func mergeApprovedPullRequest(_ pullRequest: PullRequest) async {
+        guard pullRequest.reviewState == .approved else {
+            statusMessage = "승인된 PR만 머지할 수 있습니다. 새로 고침 후 승인 상태를 확인하세요."
+            return
+        }
+        guard repositories.first(where: { $0.fullName == pullRequest.repository })?.isLocalPractice != true else {
+            statusMessage = "로컬 연습 PR은 GitHub 머지를 지원하지 않습니다."
+            return
+        }
+        do {
+            let repository = try registeredRepository(for: pullRequest)
+            statusMessage = "GitHub에서 Create a merge commit으로 머지하는 중입니다."
+            try await background {
+                try self.github.mergePullRequest(
+                    repository: pullRequest.repository,
+                    number: pullRequest.number,
+                    workingDirectory: repository.localPath
+                )
+            }
+            let key = worktreeKey(pullRequest)
+            committedHeads[key] = nil
+            approvedPullRequestIDs.remove(key)
+            persist()
+            await refresh()
+            statusMessage = "PR을 Create a merge commit으로 머지했고, 푸시 성공 후 소스 브랜치도 삭제했습니다."
+        } catch {
+            statusMessage = "PR 머지 실패: \(error.localizedDescription)"
         }
     }
 
@@ -1036,6 +1102,54 @@ final class ReviewStore {
         persist()
     }
 
+    var appVersion: AppVersion {
+        AppVersion(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.2.2")
+    }
+
+    var appVersionDescription: String { appVersion.displayString }
+
+    var updateRepositoryIsValid: Bool { normalizedUpdateRepository != nil }
+
+    func checkForAppUpdate(reportNoUpdate: Bool = true) async {
+        guard !isCheckingForAppUpdate else { return }
+        guard let repository = normalizedUpdateRepository else {
+            if reportNoUpdate { statusMessage = "업데이트 배포 저장소를 owner/repository 형식으로 입력하세요." }
+            return
+        }
+        isCheckingForAppUpdate = true
+        defer { isCheckingForAppUpdate = false }
+        do {
+            let release = try await background { try self.github.latestRelease(repository: repository) }
+            let releaseVersion = AppVersion(release.tagName)
+            guard releaseVersion.isValid else {
+                statusMessage = "GitHub Release 태그는 v0.2.1 또는 0.2.1 형식이어야 합니다."
+                return
+            }
+            latestAppRelease = release
+            if appVersion < releaseVersion {
+                statusMessage = "새 버전 \(releaseVersion.displayString)이 있습니다."
+                if lastNotifiedUpdateTag != release.tagName {
+                    publishPetNotification(.appUpdate(version: releaseVersion.displayString))
+                    notificationStatus = await notifications.deliverAppUpdate(version: releaseVersion.displayString)
+                    lastNotifiedUpdateTag = release.tagName
+                    persist()
+                }
+            } else if reportNoUpdate {
+                statusMessage = "현재 버전 \(appVersion.displayString)이 최신입니다."
+            }
+        } catch {
+            if reportNoUpdate { statusMessage = "업데이트 확인 실패: \(error.localizedDescription)" }
+        }
+    }
+
+    func openLatestAppRelease() {
+        guard let release = latestAppRelease, let url = URL(string: release.htmlURL) else {
+            statusMessage = "먼저 업데이트를 확인하세요."
+            return
+        }
+        NSWorkspace.shared.open(url)
+    }
+
     func isUnread(_ pullRequest: PullRequest) -> Bool {
         let key = worktreeKey(pullRequest)
         return unreadPullRequestIDs.contains(key) || comments[worktreeKey(pullRequest), default: []].contains { unreadCommentIDs.contains($0.id) }
@@ -1074,6 +1188,19 @@ final class ReviewStore {
         }
     }
 
+    private func restartUpdateChecks() {
+        updateCheckTask?.cancel()
+        guard updatesEnabled, normalizedUpdateRepository != nil else { return }
+        updateCheckTask = Task { [weak self] in
+            while !Task.isCancelled {
+                let interval = max(UpdateCheckSchedule.nextDate(after: .now).timeIntervalSinceNow, 0)
+                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                guard !Task.isCancelled, let self else { return }
+                await self.checkForAppUpdate(reportNoUpdate: false)
+            }
+        }
+    }
+
     private func registeredRepository(for pr: PullRequest) throws -> RegisteredRepository {
         guard let repository = repositories.first(where: { $0.fullName == pr.repository }) else { throw CommandError.failed(.init(output: "", error: "등록된 로컬 저장소가 없습니다.", status: 1)) }
         return repository
@@ -1103,6 +1230,12 @@ final class ReviewStore {
         guard !filter.isEmpty, let author else { return true }
         return author.compare(filter, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
     }
-    private func persist() { persistence.save(.init(repositories: repositories, processedCommentIDs: processedCommentIDs, knownPullRequestIDs: knownPullRequestIDs, unreadPullRequestIDs: unreadPullRequestIDs, unreadCommentIDs: unreadCommentIDs, hasEstablishedNotificationBaseline: hasEstablishedNotificationBaseline, monitoringEnabled: monitoringEnabled, monitoringInterval: monitoringInterval, analyses: analyses, agentReviewCards: agentReviewCards, implementationPlans: implementationPlans, committedHeads: committedHeads, postedReReviewCommentTokens: postedReReviewCommentTokens, agentModel: agentModel, customAgentModel: customAgentModel, reviewAuthorFilter: reviewAuthorFilter, petVisible: petVisible, petSize: petSize, petReduceMotion: petReduceMotion, latestPetNotification: latestPetNotification, hasCompletedOnboarding: hasCompletedOnboarding, skippedOnboardingSteps: skippedOnboardingSteps, projectCopyFolder: projectCopyFolder)) }
+    private var normalizedUpdateRepository: String? {
+        let value = updateRepository.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parts = value.split(separator: "/")
+        guard parts.count == 2, parts.allSatisfy({ !$0.isEmpty && !$0.contains(" ") }) else { return nil }
+        return value
+    }
+    private func persist() { persistence.save(.init(repositories: repositories, processedCommentIDs: processedCommentIDs, knownPullRequestIDs: knownPullRequestIDs, unreadPullRequestIDs: unreadPullRequestIDs, unreadCommentIDs: unreadCommentIDs, hasEstablishedNotificationBaseline: hasEstablishedNotificationBaseline, approvedPullRequestIDs: approvedPullRequestIDs, hasEstablishedApprovalBaseline: hasEstablishedApprovalBaseline, monitoringEnabled: monitoringEnabled, monitoringInterval: monitoringInterval, analyses: analyses, agentReviewCards: agentReviewCards, implementationPlans: implementationPlans, committedHeads: committedHeads, postedReReviewCommentTokens: postedReReviewCommentTokens, agentModel: agentModel, customAgentModel: customAgentModel, reviewAuthorFilter: reviewAuthorFilter, petVisible: petVisible, petSize: petSize, petReduceMotion: petReduceMotion, latestPetNotification: latestPetNotification, hasCompletedOnboarding: hasCompletedOnboarding, skippedOnboardingSteps: skippedOnboardingSteps, projectCopyFolder: projectCopyFolder, updateRepository: updateRepository, updatesEnabled: updatesEnabled, lastNotifiedUpdateTag: lastNotifiedUpdateTag)) }
     private func background<T: Sendable>(_ work: @escaping @Sendable () throws -> T) async throws -> T { try await Task.detached(priority: .userInitiated, operation: work).value }
 }

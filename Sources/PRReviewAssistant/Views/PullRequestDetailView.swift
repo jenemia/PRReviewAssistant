@@ -57,6 +57,7 @@ struct PullRequestDetailView: View {
     @State private var selectedSectionIDs: Set<String> = []
     @State private var showingImplementationPlan = false
     @State private var showingWorkArea = false
+    @State private var showingMergeApproval = false
     
 
     var body: some View {
@@ -145,14 +146,19 @@ struct PullRequestDetailView: View {
         } message: {
             Text(workspaceSwitchMessage)
         }
+        .alert("PR 머지", isPresented: $showingMergeApproval) {
+            Button("취소", role: .cancel) {}
+            Button("Create a merge commit으로 머지", role: .destructive) {
+                Task { await store.mergeApprovedPullRequest(pullRequest) }
+            }
+        } message: {
+            Text("GitHub에서 이 PR을 Create a merge commit 방식으로 머지합니다. 머지와 푸시가 성공한 경우 소스 브랜치를 삭제합니다.")
+        }
         .navigationTitle("PR #\(pullRequest.number)")
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 Button("GitHub에서 열기", systemImage: "arrow.up.right.square") {}
                     .help("GitHub에서 열기")
-                Button("분석 실행", systemImage: "sparkles") { Task { await store.startAnalysis(for: pullRequest) } }
-                    .disabled(pullRequest.analysisStatus == .analyzing)
-                    .help("분석 실행")
                 Button(detailNavigation.isShowingComments ? "댓글 닫기" : "모든 코멘트", systemImage: "text.bubble") {
                     if detailNavigation.isShowingComments {
                         detailNavigation.closePanel()
@@ -161,11 +167,16 @@ struct PullRequestDetailView: View {
                     }
                 }
                 .help(detailNavigation.isShowingComments ? "댓글 닫기" : "모든 코멘트")
-                Button("반영 계획", systemImage: "checklist") {
-                    showingImplementationPlan = true
+                if pullRequest.reviewState != .approved {
+                    Button("분석 실행", systemImage: "sparkles") { Task { await store.startAnalysis(for: pullRequest) } }
+                        .disabled(pullRequest.analysisStatus == .analyzing)
+                        .help("분석 실행")
+                    Button("반영 계획", systemImage: "checklist") {
+                        showingImplementationPlan = true
+                    }
+                    .disabled(store.comments(for: pullRequest).isEmpty)
+                    .help("반영 계획")
                 }
-                .disabled(store.comments(for: pullRequest).isEmpty)
-                .help("반영 계획")
                 if detailNavigation.selectedAgentCardID != nil {
                     Button("검토 닫기", systemImage: "xmark.rectangle") {
                         detailNavigation.closePanel()
@@ -182,9 +193,13 @@ struct PullRequestDetailView: View {
                 header
                 Divider()
                 reviewSummary
-                analysis
-                workArea
-                executionLog
+                if pullRequest.reviewState == .approved {
+                    mergeArea
+                } else {
+                    analysis
+                    workArea
+                    executionLog
+                }
             }
             .padding(28)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -379,6 +394,28 @@ struct PullRequestDetailView: View {
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(4)
+        }
+    }
+
+    private var mergeArea: some View {
+        GroupBox("Merge pull request") {
+            VStack(alignment: .leading, spacing: 14) {
+                Label("이 PR은 승인되었습니다.", systemImage: "checkmark.seal.fill")
+                    .foregroundStyle(.green)
+                    .font(.headline)
+                Text("Create a merge commit 방식으로 GitHub에 머지합니다. 머지와 푸시가 성공하면 소스 브랜치를 삭제합니다.")
+                    .foregroundStyle(.secondary)
+                HStack {
+                    Spacer()
+                    Button("Create a merge commit으로 머지", systemImage: "arrow.triangle.merge") {
+                        showingMergeApproval = true
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.green)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(4)

@@ -110,8 +110,24 @@ final class ProcessRunner: @unchecked Sendable {
     }
 
     private func findExecutable(_ name: String) -> String? {
-        let paths = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]
-        return paths.map { "\($0)/\(name)" }.first { FileManager.default.isExecutableFile(atPath: $0) }
+        let environmentPaths = ProcessInfo.processInfo.environment["PATH"]?
+            .split(separator: ":")
+            .map(String.init) ?? []
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let paths = environmentPaths + [
+            "\(home)/.local/bin",
+            "\(home)/bin",
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/usr/bin",
+            "/bin",
+            "/Applications/Cursor.app/Contents/Resources/app/bin"
+        ]
+        var visited = Set<String>()
+        return paths
+            .filter { visited.insert($0).inserted }
+            .map { "\($0)/\(name)" }
+            .first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 
     /// Starts an interactive CLI command without holding the UI until it exits.

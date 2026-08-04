@@ -7,6 +7,12 @@ struct PersistedState: Codable {
     var unreadPullRequestIDs: Set<String> = []
     var unreadCommentIDs: Set<String> = []
     var hasEstablishedNotificationBaseline = false
+    /// PRs that were already approved at the most recent successful refresh.
+    /// This lets polling notify only on an actual transition to approval.
+    var approvedPullRequestIDs: Set<String> = []
+    /// Kept separate from the general notification baseline so existing users
+    /// do not receive one alert per already-approved PR after this upgrade.
+    var hasEstablishedApprovalBaseline = false
     var monitoringEnabled = true
     var monitoringInterval = 60
     var analyses: [String: AgentAnalysis] = [:]
@@ -26,19 +32,24 @@ struct PersistedState: Codable {
     var hasCompletedOnboarding = false
     var skippedOnboardingSteps: Set<String> = []
     var projectCopyFolder = ""
+    var updateRepository = ""
+    var updatesEnabled = true
+    var lastNotifiedUpdateTag = ""
 
     private enum CodingKeys: String, CodingKey {
         case repositories, processedCommentIDs, knownPullRequestIDs, unreadPullRequestIDs, unreadCommentIDs
-        case hasEstablishedNotificationBaseline
-        case monitoringEnabled, monitoringInterval, analyses, agentReviewCards, implementationPlans, committedHeads, postedReReviewCommentTokens, agentModel, customAgentModel, reviewAuthorFilter, petVisible, petSize, petReduceMotion, latestPetNotification, hasCompletedOnboarding, skippedOnboardingSteps, projectCopyFolder
+        case hasEstablishedNotificationBaseline, approvedPullRequestIDs, hasEstablishedApprovalBaseline
+        case monitoringEnabled, monitoringInterval, analyses, agentReviewCards, implementationPlans, committedHeads, postedReReviewCommentTokens, agentModel, customAgentModel, reviewAuthorFilter, petVisible, petSize, petReduceMotion, latestPetNotification, hasCompletedOnboarding, skippedOnboardingSteps, projectCopyFolder, updateRepository, updatesEnabled, lastNotifiedUpdateTag
     }
-    init(repositories: [RegisteredRepository] = [], processedCommentIDs: Set<String> = [], knownPullRequestIDs: Set<String> = [], unreadPullRequestIDs: Set<String> = [], unreadCommentIDs: Set<String> = [], hasEstablishedNotificationBaseline: Bool = false, monitoringEnabled: Bool = true, monitoringInterval: Int = 60, analyses: [String: AgentAnalysis] = [:], agentReviewCards: [AgentReviewCard] = [], implementationPlans: [String: ImplementationPlan] = [:], committedHeads: [String: String] = [:], postedReReviewCommentTokens: Set<String> = [], agentModel: String = "auto", customAgentModel: String = "", reviewAuthorFilter: String = "", petVisible: Bool = true, petSize: Double = 190.0, petReduceMotion: Bool = false, latestPetNotification: PetBubbleContent? = nil, hasCompletedOnboarding: Bool = false, skippedOnboardingSteps: Set<String> = [], projectCopyFolder: String = "") {
+    init(repositories: [RegisteredRepository] = [], processedCommentIDs: Set<String> = [], knownPullRequestIDs: Set<String> = [], unreadPullRequestIDs: Set<String> = [], unreadCommentIDs: Set<String> = [], hasEstablishedNotificationBaseline: Bool = false, approvedPullRequestIDs: Set<String> = [], hasEstablishedApprovalBaseline: Bool = false, monitoringEnabled: Bool = true, monitoringInterval: Int = 60, analyses: [String: AgentAnalysis] = [:], agentReviewCards: [AgentReviewCard] = [], implementationPlans: [String: ImplementationPlan] = [:], committedHeads: [String: String] = [:], postedReReviewCommentTokens: Set<String> = [], agentModel: String = "auto", customAgentModel: String = "", reviewAuthorFilter: String = "", petVisible: Bool = true, petSize: Double = 190.0, petReduceMotion: Bool = false, latestPetNotification: PetBubbleContent? = nil, hasCompletedOnboarding: Bool = false, skippedOnboardingSteps: Set<String> = [], projectCopyFolder: String = "", updateRepository: String = "", updatesEnabled: Bool = true, lastNotifiedUpdateTag: String = "") {
         self.repositories = repositories
         self.processedCommentIDs = processedCommentIDs
         self.knownPullRequestIDs = knownPullRequestIDs
         self.unreadPullRequestIDs = unreadPullRequestIDs
         self.unreadCommentIDs = unreadCommentIDs
         self.hasEstablishedNotificationBaseline = hasEstablishedNotificationBaseline
+        self.approvedPullRequestIDs = approvedPullRequestIDs
+        self.hasEstablishedApprovalBaseline = hasEstablishedApprovalBaseline
         self.monitoringEnabled = monitoringEnabled
         self.monitoringInterval = monitoringInterval
         self.analyses = analyses
@@ -56,6 +67,9 @@ struct PersistedState: Codable {
         self.hasCompletedOnboarding = hasCompletedOnboarding
         self.skippedOnboardingSteps = skippedOnboardingSteps
         self.projectCopyFolder = projectCopyFolder
+        self.updateRepository = updateRepository
+        self.updatesEnabled = updatesEnabled
+        self.lastNotifiedUpdateTag = lastNotifiedUpdateTag
     }
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -65,6 +79,8 @@ struct PersistedState: Codable {
         unreadPullRequestIDs = try container.decodeIfPresent(Set<String>.self, forKey: .unreadPullRequestIDs) ?? []
         unreadCommentIDs = try container.decodeIfPresent(Set<String>.self, forKey: .unreadCommentIDs) ?? []
         hasEstablishedNotificationBaseline = try container.decodeIfPresent(Bool.self, forKey: .hasEstablishedNotificationBaseline) ?? false
+        approvedPullRequestIDs = try container.decodeIfPresent(Set<String>.self, forKey: .approvedPullRequestIDs) ?? []
+        hasEstablishedApprovalBaseline = try container.decodeIfPresent(Bool.self, forKey: .hasEstablishedApprovalBaseline) ?? false
         monitoringEnabled = try container.decodeIfPresent(Bool.self, forKey: .monitoringEnabled) ?? true
         monitoringInterval = try container.decodeIfPresent(Int.self, forKey: .monitoringInterval) ?? 60
         analyses = try container.decodeIfPresent([String: AgentAnalysis].self, forKey: .analyses) ?? [:]
@@ -82,6 +98,9 @@ struct PersistedState: Codable {
         hasCompletedOnboarding = try container.decodeIfPresent(Bool.self, forKey: .hasCompletedOnboarding) ?? false
         skippedOnboardingSteps = try container.decodeIfPresent(Set<String>.self, forKey: .skippedOnboardingSteps) ?? []
         projectCopyFolder = try container.decodeIfPresent(String.self, forKey: .projectCopyFolder) ?? ""
+        updateRepository = try container.decodeIfPresent(String.self, forKey: .updateRepository) ?? ""
+        updatesEnabled = try container.decodeIfPresent(Bool.self, forKey: .updatesEnabled) ?? true
+        lastNotifiedUpdateTag = try container.decodeIfPresent(String.self, forKey: .lastNotifiedUpdateTag) ?? ""
     }
 }
 
