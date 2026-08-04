@@ -4,6 +4,7 @@ import AppKit
 
 @MainActor @Observable
 final class ReviewStore {
+    private static let appUpdateRepository = "jenemia/PRReviewAssistant"
     struct AgentPermissionRequest: Identifiable {
         enum Kind { case workspaceTrust, cursorLogin, other }
         let id = UUID()
@@ -76,10 +77,11 @@ final class ReviewStore {
     var projectCopyFolder = ""
     var gitCLIStatus = "Git 설치 상태를 확인 중입니다."
     var gitAccountStatus = "Git 계정을 확인 중입니다."
-    var updateRepository = "" { didSet { persist(); restartUpdateChecks() } }
+    var updateRepository: String { Self.appUpdateRepository }
     var updatesEnabled = true { didSet { persist(); restartUpdateChecks() } }
     var latestAppRelease: GitHubRelease?
     var isCheckingForAppUpdate = false
+    var appUpdateStatus = ""
 
     private let persistence = AppPersistence()
     private let github = GitHubClient()
@@ -135,7 +137,6 @@ final class ReviewStore {
         hasCompletedOnboarding = state.hasCompletedOnboarding
         skippedOnboardingSteps = state.skippedOnboardingSteps
         projectCopyFolder = state.projectCopyFolder
-        updateRepository = state.updateRepository
         updatesEnabled = state.updatesEnabled
         lastNotifiedUpdateTag = state.lastNotifiedUpdateTag
         recoverInterruptedWork()
@@ -1109,11 +1110,15 @@ final class ReviewStore {
     var appVersionDescription: String { appVersion.displayString }
 
     var updateRepositoryIsValid: Bool { normalizedUpdateRepository != nil }
+    var hasAvailableAppUpdate: Bool {
+        guard let latestAppRelease else { return false }
+        return appVersion < AppVersion(latestAppRelease.tagName)
+    }
 
     func checkForAppUpdate(reportNoUpdate: Bool = true) async {
         guard !isCheckingForAppUpdate else { return }
         guard let repository = normalizedUpdateRepository else {
-            if reportNoUpdate { statusMessage = "업데이트 배포 저장소를 owner/repository 형식으로 입력하세요." }
+            if reportNoUpdate { appUpdateStatus = "업데이트 배포 저장소를 찾을 수 없습니다." }
             return
         }
         isCheckingForAppUpdate = true
@@ -1122,12 +1127,12 @@ final class ReviewStore {
             let release = try await background { try self.github.latestRelease(repository: repository) }
             let releaseVersion = AppVersion(release.tagName)
             guard releaseVersion.isValid else {
-                statusMessage = "GitHub Release 태그는 v0.2.1 또는 0.2.1 형식이어야 합니다."
+                appUpdateStatus = "GitHub Release 버전 정보를 확인할 수 없습니다."
                 return
             }
             latestAppRelease = release
             if appVersion < releaseVersion {
-                statusMessage = "새 버전 \(releaseVersion.displayString)이 있습니다."
+                appUpdateStatus = "새 버전 \(releaseVersion.displayString)이 있습니다."
                 if lastNotifiedUpdateTag != release.tagName {
                     publishPetNotification(.appUpdate(version: releaseVersion.displayString))
                     notificationStatus = await notifications.deliverAppUpdate(version: releaseVersion.displayString)
@@ -1135,10 +1140,10 @@ final class ReviewStore {
                     persist()
                 }
             } else if reportNoUpdate {
-                statusMessage = "현재 버전 \(appVersion.displayString)이 최신입니다."
+                appUpdateStatus = "최신 버전입니다."
             }
         } catch {
-            if reportNoUpdate { statusMessage = "업데이트 확인 실패: \(error.localizedDescription)" }
+            if reportNoUpdate { appUpdateStatus = "업데이트 확인 실패: \(error.localizedDescription)" }
         }
     }
 

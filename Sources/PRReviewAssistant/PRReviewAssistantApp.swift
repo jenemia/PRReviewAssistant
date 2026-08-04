@@ -25,8 +25,11 @@ struct PRReviewAssistantApp: App {
                 Button("업데이트 확인") {
                     Task { await store.checkForAppUpdate() }
                 }
-                .disabled(store.isCheckingForAppUpdate || !store.updateRepositoryIsValid)
                 .keyboardShortcut("u", modifiers: [.command, .shift])
+
+                if store.hasAvailableAppUpdate {
+                    Button("업데이트 진행") { store.openLatestAppRelease() }
+                }
 
                 Button("새로 고침") { store.refresh() }
                     .keyboardShortcut("r", modifiers: .command)

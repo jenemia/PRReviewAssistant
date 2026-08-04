@@ -37,9 +37,6 @@ struct SettingsView: View {
                 Section("앱 업데이트") {
                     Text("현재 버전 \(store.appVersionDescription)")
                         .foregroundStyle(.secondary)
-                    TextField("업데이트 배포 저장소 (owner/repository)", text: $store.updateRepository)
-                    Text("GitHub Release를 올릴 저장소를 입력하세요. 비공개 저장소는 이 Mac의 GitHub CLI 로그인 계정에 읽기 권한이 있어야 합니다.")
-                        .font(.caption).foregroundStyle(.secondary)
                     Toggle("새 버전 자동 확인", isOn: $store.updatesEnabled)
                     Text("앱이 실행 중이면 한국 시간 기준 매일 10:00, 13:00, 16:00, 19:00에 확인합니다.")
                         .font(.caption).foregroundStyle(.secondary)
@@ -47,9 +44,8 @@ struct SettingsView: View {
                         Button("업데이트 확인", systemImage: "arrow.triangle.2.circlepath") {
                             Task { await store.checkForAppUpdate() }
                         }
-                        .disabled(store.isCheckingForAppUpdate || !store.updateRepositoryIsValid)
-                        if let release = store.latestAppRelease {
-                            Button("GitHub Release 열기", systemImage: "arrow.up.forward.app") {
+                        if store.hasAvailableAppUpdate, let release = store.latestAppRelease {
+                            Button("업데이트 진행", systemImage: "arrow.down.circle") {
                                 store.openLatestAppRelease()
                             }
                             .help("\(release.tagName) Release 페이지 열기")
@@ -58,6 +54,10 @@ struct SettingsView: View {
                     if store.isCheckingForAppUpdate {
                         HStack(spacing: 6) { ProgressView(); Text("GitHub Release를 확인하는 중입니다.") }
                             .font(.caption).foregroundStyle(.secondary)
+                    } else if !store.appUpdateStatus.isEmpty {
+                        Text(store.appUpdateStatus)
+                            .font(.caption)
+                            .foregroundStyle(store.hasAvailableAppUpdate ? Color.accentColor : .secondary)
                     }
                 }
             }

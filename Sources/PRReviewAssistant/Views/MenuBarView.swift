@@ -21,10 +21,15 @@ struct MenuBarView: View {
         Button("업데이트 확인") {
             Task { await store.checkForAppUpdate() }
         }
-        .disabled(store.isCheckingForAppUpdate || !store.updateRepositoryIsValid)
         if store.isCheckingForAppUpdate {
             Text("업데이트를 확인하는 중입니다…")
                 .foregroundStyle(.secondary)
+        } else if !store.appUpdateStatus.isEmpty {
+            Text(store.appUpdateStatus)
+                .foregroundStyle(store.hasAvailableAppUpdate ? Color.accentColor : .secondary)
+        }
+        if store.hasAvailableAppUpdate {
+            Button("업데이트 진행") { store.openLatestAppRelease() }
         }
         Button("새로 고침") { store.refresh() }
         Button("종료") { NSApplication.shared.terminate(nil) }
