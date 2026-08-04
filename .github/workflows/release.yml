@@ -27,7 +27,18 @@ jobs:
           test "$tag_version" = "$app_version"
 
       - name: Test
-        run: swift test
+        timeout-minutes: 12
+        shell: bash
+        run: |
+          set -o pipefail
+          (
+            sleep 480
+            echo "::warning::swift test has been running for 8 minutes. Capturing process diagnostics."
+            ps -Ao pid,ppid,etime,command
+          ) &
+          watchdog_pid=$!
+          trap 'kill "$watchdog_pid" 2>/dev/null || true' EXIT
+          swift test --verbose
 
       - name: Build release archive
         run: scripts/package-app.sh
