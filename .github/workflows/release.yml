@@ -16,6 +16,9 @@ jobs:
       - name: Check out release tag
         uses: actions/checkout@v4
 
+      - name: Remove checked-in Swift build state
+        run: rm -rf .build
+
       - name: Verify version matches tag
         shell: bash
         run: |
