@@ -1131,7 +1131,7 @@ final class ReviewStore {
                 return
             }
             latestAppRelease = release
-            if appVersion < releaseVersion {
+            if releaseVersion > appVersion {
                 appUpdateStatus = "새 버전 \(releaseVersion.displayString)이 있습니다."
                 if lastNotifiedUpdateTag != release.tagName {
                     publishPetNotification(.appUpdate(version: releaseVersion.displayString))
@@ -1139,8 +1139,8 @@ final class ReviewStore {
                     lastNotifiedUpdateTag = release.tagName
                     persist()
                 }
-            } else if reportNoUpdate {
-                appUpdateStatus = "최신 버전입니다."
+            } else {
+                appUpdateStatus = "최신버전입니다."
             }
         } catch {
             if reportNoUpdate { appUpdateStatus = "업데이트 확인 실패: \(error.localizedDescription)" }
