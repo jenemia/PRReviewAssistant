@@ -379,8 +379,14 @@ final class ReviewStore {
                     // sections. Create one durable analysis card for each section
                     // as soon as it is received, then begin read-only analysis.
                     // Existing cards are never recreated on a later poll.
-                    startAutomaticReviews(for: pr, comments: newComments)
                     let shouldNotify = hasEstablishedNotificationBaseline && matchesAuthorFilter(pr)
+                    // The author filter scopes all automatic PR work, not just
+                    // Inbox visibility and notifications. A filtered-out PR
+                    // must never change the repository checkout in the
+                    // background.
+                    if matchesAuthorFilter(pr) {
+                        startAutomaticReviews(for: pr, comments: newComments)
+                    }
                     if shouldNotify && becameApproved {
                         publishPetNotification(.approved(pr))
                         notificationStatus = await notifications.deliverApproval(for: pr)
