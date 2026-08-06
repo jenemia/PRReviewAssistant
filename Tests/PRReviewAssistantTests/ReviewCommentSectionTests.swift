@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import PRReviewAssistant
 
@@ -151,5 +152,50 @@ struct ReviewCommentSectionTests {
 
         #expect(formatted == "CheatPlayerGroup · 26행 public getter만 존재합니다.")
         #expect(!formatted.contains("prreview://"))
+    }
+
+    @Test("커밋 메시지에는 리뷰 코멘트와 작업 판단 및 변경 파일 요약을 함께 담는다")
+    @MainActor
+    func synthesizesCommitMessageFromReviewAndWork() {
+        let message = ReviewStore.synthesizedCommitMessage(
+            pullRequestNumber: 42,
+            reviewTitle: "Suggestion (1)",
+            reviewComment: "캐시를 갱신해 주세요.",
+            implementationSummary: "캐시 무효화와 갱신 경로를 추가했습니다.",
+            diffStat: " Cache.swift | 12 ++++++++++--"
+        )
+
+        #expect(message.contains("fix: PR #42 Suggestion (1)"))
+        #expect(message.contains("캐시를 갱신해 주세요."))
+        #expect(message.contains("캐시 무효화와 갱신 경로를 추가했습니다."))
+        #expect(message.contains("Cache.swift | 12"))
+    }
+
+    @Test("재리뷰 요약은 게시한 검토 카드를 빼고 레벨별 코멘트 단락을 유지한다")
+    @MainActor
+    func excludesPostedReviewResponsesFromReReviewSummary() {
+        let activeCard = AgentReviewCard(
+            repository: "owner/repository",
+            pullRequestNumber: 1,
+            commentID: "comment-active",
+            commentAuthor: "reviewer",
+            commentBody: "Suggestion (1)",
+            sectionTitle: "Suggestion (1)",
+            sectionBody: "캐시를 갱신해 주세요.",
+            title: "Suggestion-1",
+            messages: [.init(role: .agent, body: "캐시 갱신 경로를 수정했습니다.")]
+        )
+        var postedCard = activeCard
+        postedCard.id = UUID()
+        postedCard.title = "Warning-1"
+        postedCard.reviewResponsePostedAt = .now
+
+        let sections = ReviewStore.reReviewWorkSections(from: [activeCard, postedCard])
+
+        #expect(sections.count == 1)
+        #expect(sections[0].contains("## Suggestion (1)"))
+        #expect(sections[0].contains("### 리뷰 코멘트"))
+        #expect(sections[0].contains("캐시를 갱신해 주세요."))
+        #expect(!sections[0].contains("Warning-1"))
     }
 }

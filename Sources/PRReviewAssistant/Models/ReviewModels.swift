@@ -402,6 +402,12 @@ struct ImplementationPlan: Codable, Hashable {
     var result: String?
     var startedAt: Date?
     var completedAt: Date?
+    /// Local commit created for this individual review work card.
+    var committedSHA: String?
+    /// Files already changed before this card's implementation began.
+    var baselineChangedFiles: [String]?
+    /// Files newly changed by this card's implementation, used for scoped commits.
+    var changedFiles: [String]?
 }
 
 enum ImplementationWorkStatus: String, Codable {
@@ -440,6 +446,8 @@ struct AgentReviewCard: Identifiable, Codable, Hashable {
     /// Opening an analysis card, rather than merely opening the PR, acknowledges it.
     var isUnread = false
     var updatedAt = Date()
+    /// Set only after this card's response has been successfully posted to GitHub.
+    var reviewResponsePostedAt: Date?
 
     static func title(for body: String) -> String {
         if let severityLabel = ReviewCommentSection.displayLabel(for: body) {

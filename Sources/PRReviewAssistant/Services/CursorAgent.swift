@@ -209,11 +209,12 @@ struct CursorAgent: Sendable {
         \(workSummary)
 
         GitHub PR 코멘트로 바로 사용할 수 있는 간결한 한국어 메시지만 작성하라.
-        - 인사말 없이 변경한 핵심 내용과 검증 결과를 3~5개의 짧은 bullet로 압축한다.
+        - AGENT WORK RESULTS의 `## 레벨`과 `### 리뷰 코멘트` 단위를 유지해, 각 코멘트가 별도 단락으로 보이게 작성한다.
+        - 각 코멘트 단락에서는 변경한 핵심 내용과 검증 결과를 1~3개의 짧은 bullet로 압축한다.
         - 제공된 결과에 없는 변경이나 테스트 성공을 추측하지 않는다.
         - 불확실하거나 실패한 검증은 그대로 명시한다.
         - 마지막 줄에 재리뷰를 부탁하는 한 문장을 쓴다.
-        - 제목, 설명, 코드 펜스, 작성 과정은 출력하지 않는다.
+        - 인사말, 코드 펜스, 작성 과정은 출력하지 않는다.
         """
         var arguments = ["agent", "--print", "--output-format", "text", "--mode", "ask", "--workspace", repositoryPath]
         if !model.isEmpty { arguments += ["--model", model] }

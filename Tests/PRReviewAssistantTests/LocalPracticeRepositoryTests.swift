@@ -28,4 +28,32 @@ struct LocalPracticeRepositoryTests {
         let reloaded = try practice.load(from: fixture.repository)
         #expect(reloaded.pullRequest.headSHA == fixture.pullRequest.headSHA)
     }
+
+    @Test("작업 카드 커밋은 지정된 파일만 포함하고 다른 변경은 남긴다")
+    func commitsOnlySpecifiedWorkCardFiles() throws {
+        let practice = LocalPracticeRepository()
+        let fixture = try practice.create()
+        defer { try? practice.remove(at: fixture.repository.localPath) }
+
+        let workspace = WorkspaceManager()
+        let path = try workspace.prepareRepositoryWorkspace(repository: fixture.repository, pullRequest: fixture.pullRequest)
+        try "카드 작업\n".write(toFile: "\(path)/card-work.txt", atomically: true, encoding: .utf8)
+        try "다른 카드 작업\n".write(toFile: "\(path)/other-work.txt", atomically: true, encoding: .utf8)
+
+        _ = try workspace.commit(
+            at: path,
+            message: "test: card scoped commit",
+            files: ["card-work.txt"],
+            branch: fixture.pullRequest.headBranch,
+            expectedSHA: fixture.pullRequest.headSHA
+        )
+
+        let runner = ProcessRunner()
+        let committedFiles = try runner.run("git", arguments: ["show", "--format=", "--name-only", "HEAD"], workingDirectory: path).output
+        let remainingChanges = try runner.run("git", arguments: ["status", "--porcelain=v1"], workingDirectory: path).output
+
+        #expect(committedFiles.contains("card-work.txt"))
+        #expect(!committedFiles.contains("other-work.txt"))
+        #expect(remainingChanges.contains("other-work.txt"))
+    }
 }

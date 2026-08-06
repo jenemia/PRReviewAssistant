@@ -51,8 +51,6 @@ final class ReviewStore {
     var comments: [String: [ReviewComment]] = [:]
     var analyses: [String: AgentAnalysis] = [:]
     var worktreePaths: [String: String] = [:]
-    var testResults: [String: String] = [:]
-    var testSucceeded: Set<String> = []
     var diffStats: [String: String] = [:]
     var committedHeads: [String: String] = [:]
     var cursorConnection = CursorConnection(state: .unknown, detail: "연결 상태를 확인하세요.")
@@ -120,6 +118,7 @@ final class ReviewStore {
         analyses = state.analyses
         agentReviewCards = state.agentReviewCards
         implementationPlans = state.implementationPlans
+        migrateImplementationPlansToWorkCards()
         committedHeads = state.committedHeads
         postedReReviewCommentTokens = state.postedReReviewCommentTokens
         for repository in repositories where committedHeads.keys.contains(where: { $0.hasPrefix("\(repository.fullName)#") }) {
@@ -145,7 +144,12 @@ final class ReviewStore {
 
     var selectedPullRequest: PullRequest? { pullRequests.first { $0.id == selectedID } }
     var unreadCount: Int { pullRequests.filter(isUnread(_:)).count }
-    var canCommit: Bool { selectedPullRequest != nil && worktreePaths[worktreeKey(selectedPullRequest!)] != nil }
+    func canCommit(for card: AgentReviewCard, pullRequest: PullRequest) -> Bool {
+        guard let plan = implementationPlan(for: card, pullRequest: pullRequest) else { return false }
+        return plan.status == .completed
+            && plan.committedSHA == nil
+            && !(plan.changedFiles ?? []).isEmpty
+    }
     var petState: PetState { PetState.resolve(pullRequests: pullRequests, unreadCount: unreadCount) }
     var petBubbleContent: PetBubbleContent {
         guard let latestPetNotification, matchesAuthorFilter(latestPetNotification.sourceAuthor) else {
@@ -475,43 +479,84 @@ final class ReviewStore {
         }
     }
 
-    func runTests(for pullRequest: PullRequest, command: String) async {
-        guard let path = worktreePaths[worktreeKey(pullRequest)], !command.isEmpty else { statusMessage = "먼저 분석을 실행하고 테스트 명령을 입력하세요."; return }
-        let key = worktreeKey(pullRequest)
-        do {
-            let workspace = workspaces
-            let result = try await background { try workspace.test(at: path, command: command) }
-            testResults[key] = result.output
-            diffStats[key] = (try? await background { try workspace.changes(at: path) }) ?? ""
-            testSucceeded.insert(key)
-            committedHeads[key] = nil
-            persist()
-            statusMessage = "테스트가 성공했습니다. 변경 내용을 검토하세요."
-        } catch {
-            testResults[key] = error.localizedDescription
-            testSucceeded.remove(key)
-            statusMessage = "테스트가 실패했습니다."
+    func commitApprovedChanges(for card: AgentReviewCard, pullRequest: PullRequest) async {
+        let pullRequestKey = worktreeKey(pullRequest)
+        let planKey = implementationPlanKey(for: card, pullRequest: pullRequest)
+        guard var plan = implementationPlans[planKey], plan.status == .completed, plan.committedSHA == nil else {
+            statusMessage = "작업 완료된 미커밋 카드만 커밋할 수 있습니다."
+            return
         }
-    }
-
-    func commitApprovedChanges(for pullRequest: PullRequest, message: String) async {
-        let key = worktreeKey(pullRequest)
-        guard let path = worktreePaths[key] else { statusMessage = "검증된 PR 작업 폴더가 없습니다."; return }
-        guard testSucceeded.contains(key) else { statusMessage = "커밋 전 최신 변경에 대해 성공한 테스트가 필요합니다."; return }
+        guard reserveActiveWorkspace(for: pullRequest) else { return }
         do {
             let workspace = workspaces
-            let committedSHA = try await background {
-                try workspace.commit(at: path, message: message, branch: pullRequest.headBranch, expectedSHA: pullRequest.headSHA)
+            let path: String
+            if let activePath = worktreePaths[pullRequestKey] {
+                try await background { try workspace.verifyHead(activePath, expectedSHA: pullRequest.headSHA, expectedBranch: pullRequest.headBranch) }
+                path = activePath
+            } else {
+                let repository = try registeredRepository(for: pullRequest)
+                let preparedPath = try await background { try workspace.prepareRepositoryWorkspace(repository: repository, pullRequest: pullRequest) }
+                try await background { try workspace.verifyHead(preparedPath, expectedSHA: pullRequest.headSHA, expectedBranch: pullRequest.headBranch) }
+                setActiveWorkspace(preparedPath, for: pullRequest)
+                path = preparedPath
             }
-            committedHeads[key] = committedSHA
+            let changedFiles = plan.changedFiles ?? []
+            guard !changedFiles.isEmpty else { statusMessage = "이 작업 카드에 기록된 변경 파일이 없습니다."; return }
+            let scopedDiffStat = try await background { try workspace.changes(at: path, files: changedFiles) }
+            let diffStat = ([scopedDiffStat.trimmingCharacters(in: .whitespacesAndNewlines), "작업 카드 파일:\n\(changedFiles.joined(separator: "\n"))"]
+                .filter { !$0.isEmpty }
+                .joined(separator: "\n\n"))
+            let message = commitMessage(for: pullRequest, card: card, plan: plan, diffStat: diffStat)
+            let committedSHA = try await background {
+                try workspace.commit(at: path, message: message, files: changedFiles, branch: pullRequest.headBranch, expectedSHA: pullRequest.headSHA)
+            }
+            committedHeads[pullRequestKey] = committedSHA
+            diffStats[pullRequestKey] = diffStat
+            plan.committedSHA = committedSHA
+            plan.result = "로컬 커밋 \(committedSHA.prefix(12))이 완료되었습니다. 푸시는 재리뷰 요청 시 진행합니다."
+            plan.completedAt = .now
+            implementationPlans[planKey] = plan
             persist()
             statusMessage = "로컬 커밋이 완료되었습니다. 추천 메시지를 만든 뒤 재리뷰를 요청하세요."
-            updateImplementationResult(for: pullRequest, status: .completed, result: "로컬 커밋이 완료되었습니다. 푸시는 재리뷰 요청 시 진행합니다.")
         } catch {
             let result = "커밋에 실패했습니다: \(error.localizedDescription)"
             statusMessage = "커밋 실패: \(error.localizedDescription)"
-            updateImplementationResult(for: pullRequest, status: .failed, result: result)
+            updateImplementationResult(for: card, pullRequest: pullRequest, status: .failed, result: result)
         }
+    }
+
+    private func commitMessage(for pullRequest: PullRequest, card: AgentReviewCard, plan: ImplementationPlan, diffStat: String) -> String {
+        return Self.synthesizedCommitMessage(
+            pullRequestNumber: pullRequest.number,
+            reviewTitle: card.sectionTitle ?? card.title,
+            reviewComment: card.sectionBody ?? card.commentBody,
+            implementationSummary: card.messages.last(where: { $0.role == .agent })?.body ?? plan.content,
+            diffStat: diffStat
+        )
+    }
+
+    static func synthesizedCommitMessage(pullRequestNumber: Int, reviewTitle: String, reviewComment: String, implementationSummary: String, diffStat: String) -> String {
+        let subject = compactCommitText(reviewTitle, limit: 52).replacingOccurrences(of: "\n", with: " ")
+        return """
+        fix: PR #\(pullRequestNumber) \(subject)
+
+        리뷰 코멘트:
+        \(compactCommitText(reviewComment, limit: 700))
+
+        작업 내용:
+        \(compactCommitText(implementationSummary, limit: 700))
+
+        변경 파일:
+        \(compactCommitText(diffStat, limit: 1_200))
+        """
+    }
+
+    private static func compactCommitText(_ text: String, limit: Int) -> String {
+        let normalized = text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard normalized.count > limit else { return normalized }
+        return "\(normalized.prefix(limit))\n…"
     }
 
     func generateReReviewMessage(for pullRequest: PullRequest) async -> String? {
@@ -525,14 +570,7 @@ final class ReviewStore {
             return nil
         }
 
-        let cards = agentCards(for: pullRequest)
-        let completedCardResults = cards.compactMap { card -> String? in
-            guard let answer = card.messages.last(where: { $0.role == .agent })?.body else { return nil }
-            return """
-            [코멘트별 에이전트 검토: \(card.sectionTitle ?? card.title)]
-            \(answer)
-            """
-        }
+        let completedCardResults = Self.reReviewWorkSections(from: agentCards(for: pullRequest))
         var sections: [String] = []
         if let analysis = analyses[key] {
             sections.append("[전체 에이전트 분석]\n\(analysis.rawOutput)")
@@ -540,10 +578,6 @@ final class ReviewStore {
         sections.append(contentsOf: completedCardResults)
         if let diff = diffStats[key] {
             sections.append("[변경 요약]\n\(diff.isEmpty ? "기록된 변경 파일 없음" : diff)")
-        }
-        if let test = testResults[key] {
-            let testStatus = testSucceeded.contains(key) ? "성공" : "실패"
-            sections.append("[테스트 \(testStatus)]\n\(test.isEmpty ? "추가 출력 없음" : test)")
         }
         guard !sections.isEmpty else {
             statusMessage = "압축할 에이전트 작업 결과가 없습니다."
@@ -827,44 +861,57 @@ final class ReviewStore {
         persist()
     }
 
-    /// Carries only the review conclusion and its actionable source context,
-    /// never the complete conversational transcript, into the work area.
-    func createImplementationPlan(for pullRequest: PullRequest) -> ImplementationPlan? {
-        let cards = agentCards(for: pullRequest)
-        let items = cards.compactMap { card -> String? in
-            guard let conclusion = card.messages.last(where: { $0.role == .agent })?.body else { return nil }
-            let request = (card.sectionBody ?? card.commentBody).trimmingCharacters(in: .whitespacesAndNewlines)
-            return """
-            ## \(card.sectionTitle ?? card.title)
-            **리뷰 요청:** \(request)
-
-            **에이전트 판단 및 수행 항목:**
-            \(conclusion)
-            """
+    /// Carries only the selected review card's conclusion and actionable
+    /// source context into the work area. Other cards remain review history
+    /// and must not be included in an implementation run by accident.
+    func createImplementationPlan(for card: AgentReviewCard, pullRequest: PullRequest) -> ImplementationPlan? {
+        guard card.repository == pullRequest.repository,
+              card.pullRequestNumber == pullRequest.number,
+              let conclusion = card.messages.last(where: { $0.role == .agent })?.body else {
+            return nil
         }
-        guard !items.isEmpty else { return nil }
-        let content = "# PR #\(pullRequest.number) 구현 계획\n\n검토 대화 전체가 아닌, 구현에 필요한 리뷰 요청과 에이전트의 최종 판단만 전달합니다.\n\n\(items.joined(separator: "\n\n---\n\n"))"
+
+        let request = (card.sectionBody ?? card.commentBody).trimmingCharacters(in: .whitespacesAndNewlines)
+        let content = """
+        # PR #\(pullRequest.number) 구현 계획
+
+        검토 대화 전체가 아닌, 선택한 검토 카드의 리뷰 요청과 에이전트의 최종 판단만 전달합니다.
+
+        ## \(card.sectionTitle ?? card.title)
+        **리뷰 요청:** \(request)
+
+        **에이전트 판단 및 수행 항목:**
+        \(conclusion)
+        """
+        let planKey = implementationPlanKey(for: card, pullRequest: pullRequest)
+        if let existing = implementationPlans[planKey] { return existing }
         let plan = ImplementationPlan(
             repository: pullRequest.repository,
             pullRequestNumber: pullRequest.number,
             content: content,
-            sourceCardIDs: cards.map(\.id),
-            sourceReviewIDs: cards.compactMap(\.reviewID)
+            sourceCardIDs: [card.id],
+            sourceReviewIDs: card.reviewID.map { [$0] }
         )
-        implementationPlans[worktreeKey(pullRequest)] = plan
+        implementationPlans[planKey] = plan
         persist()
         return plan
     }
 
-    func implementationPlan(for pullRequest: PullRequest) -> ImplementationPlan? {
-        implementationPlans[worktreeKey(pullRequest)]
+    func implementationPlan(for card: AgentReviewCard, pullRequest: PullRequest) -> ImplementationPlan? {
+        implementationPlans[implementationPlanKey(for: card, pullRequest: pullRequest)]
+    }
+
+    func implementationPlans(for pullRequest: PullRequest) -> [ImplementationPlan] {
+        implementationPlans.values
+            .filter { $0.repository == pullRequest.repository && $0.pullRequestNumber == pullRequest.number }
+            .sorted { $0.createdAt < $1.createdAt }
     }
 
     /// Starts a real, user-approved implementation run on the PR source branch.
     /// This never commits or pushes; those remain separate approval steps.
-    func startImplementation(for pullRequest: PullRequest) async {
+    func startImplementation(for card: AgentReviewCard, pullRequest: PullRequest) async {
         guard reserveActiveWorkspace(for: pullRequest) else { return }
-        let key = worktreeKey(pullRequest)
+        let key = implementationPlanKey(for: card, pullRequest: pullRequest)
         guard var plan = implementationPlans[key] else {
             statusMessage = "먼저 검토 카드에서 구현 계획을 만드세요."
             return
@@ -884,27 +931,35 @@ final class ReviewStore {
             let path = try await background { try self.workspaces.prepareRepositoryWorkspace(repository: repository, pullRequest: pullRequest) }
             try await background { try self.workspaces.verifyHead(path, expectedSHA: pullRequest.headSHA, expectedBranch: pullRequest.headBranch) }
             setActiveWorkspace(path, for: pullRequest)
+            let baselineFiles = try await background { try self.workspaces.changedFiles(at: path) }
+            plan.baselineChangedFiles = baselineFiles
+            implementationPlans[key] = plan
+            persist()
             let agent = cursor
             let model = effectiveAgentModel
             let implementationPlan = plan
             let result = try await background { try agent.implement(worktreePath: path, pullRequest: pullRequest, plan: implementationPlan, model: model) }
-            diffStats[key] = (try? await background { try self.workspaces.changes(at: path) }) ?? ""
+            let changedFiles = try await background { try self.workspaces.changedFiles(at: path) }
+            let cardChangedFiles = changedFiles.filter { !baselineFiles.contains($0) }
+            diffStats[worktreeKey(pullRequest)] = (try? await background { try self.workspaces.changes(at: path) }) ?? ""
             let summary = result.isEmpty ? "에이전트 구현이 종료되었습니다. 변경 사항과 테스트 결과를 확인하세요." : result
-            updateImplementationResult(for: pullRequest, status: .completed, result: summary)
+            updateImplementationResult(for: card, pullRequest: pullRequest, status: .completed, result: summary, changedFiles: cardChangedFiles)
             statusMessage = "에이전트 구현이 완료되었습니다. 변경 사항을 검토하고 테스트하세요."
         } catch {
             let message = "에이전트 구현 실패: \(error.localizedDescription)"
-            updateImplementationResult(for: pullRequest, status: .failed, result: message)
+            updateImplementationResult(for: card, pullRequest: pullRequest, status: .failed, result: message)
             statusMessage = message
         }
     }
 
-    private func updateImplementationResult(for pullRequest: PullRequest, status: ImplementationWorkStatus, result: String) {
-        guard var plan = implementationPlans[worktreeKey(pullRequest)] else { return }
+    private func updateImplementationResult(for card: AgentReviewCard, pullRequest: PullRequest, status: ImplementationWorkStatus, result: String, changedFiles: [String]? = nil) {
+        let key = implementationPlanKey(for: card, pullRequest: pullRequest)
+        guard var plan = implementationPlans[key] else { return }
         plan.status = status
         plan.result = result
         plan.completedAt = .now
-        implementationPlans[worktreeKey(pullRequest)] = plan
+        if let changedFiles { plan.changedFiles = changedFiles }
+        implementationPlans[key] = plan
         persist()
     }
 
@@ -1148,7 +1203,7 @@ final class ReviewStore {
 
     /// Posts only the user-edited text. It does not push, request re-review,
     /// or change the current branch.
-    func postReviewResponse(for pullRequest: PullRequest, body: String) async -> Bool {
+    func postReviewResponse(for cardID: AgentReviewCard.ID, pullRequest: PullRequest, body: String) async -> Bool {
         let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             statusMessage = "게시할 응답을 입력하세요."
@@ -1165,6 +1220,11 @@ final class ReviewStore {
         do {
             try await background {
                 try self.github.addComment(repository: pullRequest.repository, number: pullRequest.number, body: trimmed)
+            }
+            if let index = agentReviewCards.firstIndex(where: { $0.id == cardID }) {
+                agentReviewCards[index].reviewResponsePostedAt = .now
+                agentReviewCards[index].updatedAt = .now
+                persist()
             }
             statusMessage = "GitHub PR 코멘트를 등록했습니다."
             await refresh()
@@ -1276,9 +1336,27 @@ final class ReviewStore {
     func worktreePath(for pr: PullRequest) -> String? { worktreePaths[worktreeKey(pr)] }
     func analysis(for pr: PullRequest) -> AgentAnalysis? { analyses[worktreeKey(pr)] }
     func comments(for pr: PullRequest) -> [ReviewComment] { comments[worktreeKey(pr)] ?? [] }
-    func testResult(for pr: PullRequest) -> String? { testResults[worktreeKey(pr)] }
     func diffStat(for pr: PullRequest) -> String? { diffStats[worktreeKey(pr)] }
     func refresh() { Task { await refresh() } }
+
+    static func reReviewWorkSections(from cards: [AgentReviewCard]) -> [String] {
+        cards
+            .filter { $0.reviewResponsePostedAt == nil }
+            .compactMap { card -> String? in
+                guard let answer = card.messages.last(where: { $0.role == .agent })?.body else { return nil }
+                let level = card.sectionTitle ?? "일반 코멘트"
+                let comment = card.sectionBody ?? card.commentBody
+                return """
+                ## \(level)
+
+                ### 리뷰 코멘트
+                \(comment)
+
+                ### 작업 내용
+                \(answer)
+                """
+            }
+    }
 
     func refreshNotificationStatus() async {
         notificationStatus = await notifications.authorizationSummary()
@@ -1440,6 +1518,22 @@ final class ReviewStore {
         petNotificationEventID = UUID()
     }
     private func worktreeKey(_ pr: PullRequest) -> String { "\(pr.repository)#\(pr.number)" }
+    private func implementationPlanKey(for card: AgentReviewCard, pullRequest: PullRequest) -> String {
+        implementationPlanKey(repository: pullRequest.repository, pullRequestNumber: pullRequest.number, card: card)
+    }
+    private func implementationPlanKey(repository: String, pullRequestNumber: Int, card: AgentReviewCard) -> String {
+        "\(repository)#\(pullRequestNumber)#\(card.reviewID ?? card.id.uuidString)"
+    }
+    private func migrateImplementationPlansToWorkCards() {
+        var migrated = implementationPlans
+        for (key, plan) in implementationPlans where key == "\(plan.repository)#\(plan.pullRequestNumber)" {
+            guard let card = plan.sourceReviewIDs?.compactMap(agentCard(reviewID:)).first
+                ?? plan.sourceCardIDs.compactMap(agentCard(id:)).first else { continue }
+            migrated[implementationPlanKey(repository: plan.repository, pullRequestNumber: plan.pullRequestNumber, card: card)] = plan
+            migrated[key] = nil
+        }
+        implementationPlans = migrated
+    }
     private func applyAuthorFilter() {
         pullRequests = allPullRequests.filter(matchesAuthorFilter)
         if selectedID == nil || !pullRequests.contains(where: { $0.id == selectedID }) {

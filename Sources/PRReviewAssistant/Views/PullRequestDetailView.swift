@@ -50,7 +50,6 @@ struct PullRequestDetailView: View {
     @Bindable var store: ReviewStore
     @State private var showingPushApproval = false
     @State private var showingReviewApproval = false
-    @State private var testCommand = "swift test"
     @State private var detailNavigation = ReviewDetailNavigation()
     @State private var expandedCommentIDs: Set<String> = []
     @State private var selectedCommentIDs: Set<String> = []
@@ -61,13 +60,15 @@ struct PullRequestDetailView: View {
     @State private var showingCardRebuildConfirmation = false
     @State private var showingReviewResponseSheet = false
     @State private var responseCardID: AgentReviewCard.ID?
+    @State private var pendingImplementationCardID: AgentReviewCard.ID?
+    @State private var pendingCommitCardID: AgentReviewCard.ID?
     
 
     var body: some View {
         Group {
             if let cardID = detailNavigation.selectedWorkCardID,
                let card = store.agentCard(id: cardID),
-               let plan = store.implementationPlan(for: pullRequest) {
+               let plan = store.implementationPlan(for: card, pullRequest: pullRequest) {
                 HSplitView {
                     detailContent
                     WorkReviewSidePanel(card: card, workResult: plan.result, close: { detailNavigation.closePanel() })
@@ -98,7 +99,8 @@ struct PullRequestDetailView: View {
                         store.openInCursor(path: path, line: line, column: column, for: pullRequest)
                     },
                     beginImplementation: {
-                        guard store.createImplementationPlan(for: pullRequest) != nil else { return }
+                        guard store.createImplementationPlan(for: card, pullRequest: pullRequest) != nil else { return }
+                        pendingImplementationCardID = card.id
                         showingWorkArea = true
                     },
                     close: { detailNavigation.closePanel() }
@@ -146,7 +148,7 @@ struct PullRequestDetailView: View {
                     card: responseCard,
                     initialDraft: ReviewStore.defaultReviewResponseDraft(for: responseCard),
                     generateDraft: { await store.generateReviewResponseDraft(id: responseCardID, pullRequest: pullRequest) },
-                    publish: { body in await store.postReviewResponse(for: pullRequest, body: body) }
+                    publish: { body in await store.postReviewResponse(for: responseCardID, pullRequest: pullRequest, body: body) }
                 )
             }
         }
@@ -364,47 +366,42 @@ struct PullRequestDetailView: View {
             VStack(alignment: .leading, spacing: 14) {
                 Label("검토에서 확정한 계획만 이곳으로 전달됩니다. PR HEAD SHA를 검증한 코드에서만 수정합니다.", systemImage: "archivebox")
                     .foregroundStyle(.secondary)
-                if let plan = store.implementationPlan(for: pullRequest) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Label("전달된 구현 계획", systemImage: "arrow.right.doc.on.clipboard")
-                            .font(.subheadline.weight(.semibold))
-                        HStack(spacing: 6) {
-                            if plan.status == .inProgress { ProgressView().controlSize(.small) }
-                            Label(plan.status.rawValue, systemImage: plan.status.symbol)
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(plan.status == .failed ? .orange : (plan.status == .completed ? .green : BrandColor.prPurple))
-                        }
-                        if let destination = plan.destination {
-                            Label("작업 위치: \(destination.title)", systemImage: "location")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        } else {
-                            Text("작업 위치와 진행 여부를 확인해 주세요.")
-                                .font(.caption)
-                                .foregroundStyle(.orange)
-                        }
-                        if let result = plan.result {
-                            Divider()
-                            LabeledContent("작업 결과") {
-                                Text(result)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .multilineTextAlignment(.trailing)
-                                    .lineLimit(3)
-                            }
-                        }
-
-                        let cards = plan.sourceReviewIDs.map { $0.compactMap(store.agentCard(reviewID:)) }
-                            ?? plan.sourceCardIDs.compactMap(store.agentCard(id:))
-                        if cards.isEmpty {
-                            Text("표시할 검토 카드가 없습니다.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        } else {
-                            Text("검토 작업 카드")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                            ForEach(cards) { card in
+                let plans = store.implementationPlans(for: pullRequest)
+                if plans.isEmpty {
+                    Text("구현을 시작한 검토 카드가 아직 없습니다.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(plans, id: \.self) { plan in
+                        if let card = workCard(for: plan) {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Label("검토 작업 카드", systemImage: "arrow.right.doc.on.clipboard")
+                                    .font(.subheadline.weight(.semibold))
+                                HStack(spacing: 6) {
+                                    if plan.status == .inProgress { ProgressView().controlSize(.small) }
+                                    Label(plan.status.rawValue, systemImage: plan.status.symbol)
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(plan.status == .failed ? .orange : (plan.status == .completed ? .green : BrandColor.prPurple))
+                                }
+                                if let destination = plan.destination {
+                                    Label("작업 위치: \(destination.title)", systemImage: "location")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                } else {
+                                    Text("작업 위치와 진행 여부를 확인해 주세요.")
+                                        .font(.caption)
+                                        .foregroundStyle(.orange)
+                                }
+                                if let result = plan.result {
+                                    Divider()
+                                    LabeledContent("작업 결과") {
+                                        Text(result)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .multilineTextAlignment(.trailing)
+                                            .lineLimit(3)
+                                    }
+                                }
                                 Button {
                                     detailNavigation.showWork(card.id)
                                 } label: {
@@ -412,17 +409,31 @@ struct PullRequestDetailView: View {
                                 }
                                 .buttonStyle(.plain)
                                 .accessibilityLabel("검토 작업 카드 \(card.sectionTitle ?? card.title) 상세 보기")
+                                HStack {
+                                    Spacer()
+                                    if let committedSHA = plan.committedSHA {
+                                        Label("커밋됨 \(committedSHA.prefix(12))", systemImage: "checkmark.circle.fill")
+                                            .font(.caption.weight(.medium))
+                                            .foregroundStyle(.green)
+                                    } else {
+                                        Button("커밋", systemImage: "checkmark.circle") {
+                                            pendingCommitCardID = card.id
+                                            showingPushApproval = true
+                                        }
+                                        .buttonStyle(.borderedProminent)
+                                        .disabled(!store.canCommit(for: card, pullRequest: pullRequest))
+                                        .help(plan.status == .completed ? "이 카드의 리뷰와 변경 내용을 로컬 커밋으로 남깁니다" : "이 카드의 구현이 완료되면 커밋할 수 있습니다")
+                                    }
+                                }
                             }
+                            .padding(10)
+                            .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+                        } else {
+                            Text("표시할 검토 카드를 찾을 수 없습니다.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
                     }
-                    .padding(10)
-                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
-                }
-                HStack {
-                    Spacer()
-                    Button("커밋", systemImage: "checkmark.circle") { showingPushApproval = true }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(!store.canCommit)
                 }
                 HStack {
                     Text("작업 영역에서는 커밋까지만 진행합니다. 푸시는 재리뷰 요청을 승인할 때 실행됩니다.")
@@ -465,18 +476,7 @@ struct PullRequestDetailView: View {
                 if let worktree = store.worktreePath(for: pullRequest) {
                     LabeledContent("PR 작업 폴더") { Text(worktree).font(.caption.monospaced()).lineLimit(1) }
                 }
-                HStack {
-                    TextField("테스트 명령", text: $testCommand)
-                    Button("재리뷰 요청") { showingReviewApproval = true }
-                }
-                if let result = store.testResult(for: pullRequest) {
-                    Text(result.isEmpty ? "테스트가 성공했습니다." : result)
-                        .font(.system(.caption, design: .monospaced))
-                        .textSelection(.enabled)
-                        .padding(8)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
-                }
+                Button("재리뷰 요청") { showingReviewApproval = true }
                 if let diff = store.diffStat(for: pullRequest) {
                     Text(diff.isEmpty ? "아직 변경된 파일이 없습니다." : diff)
                         .font(.system(.caption, design: .monospaced))
@@ -498,12 +498,14 @@ struct PullRequestDetailView: View {
             )
         }
         .sheet(isPresented: $showingWorkArea) {
-            if let plan = store.implementationPlan(for: pullRequest) {
+            if let cardID = pendingImplementationCardID,
+               let card = store.agentCard(id: cardID),
+               let plan = store.implementationPlan(for: card, pullRequest: pullRequest) {
                 WorkAreaSheet(
                     pullRequest: pullRequest,
                     plan: plan,
                     confirm: {
-                        Task { await store.startImplementation(for: pullRequest) }
+                        Task { await store.startImplementation(for: card, pullRequest: pullRequest) }
                         showingWorkArea = false
                     }
                 )
@@ -520,13 +522,21 @@ struct PullRequestDetailView: View {
         }
         .alert("커밋 승인", isPresented: $showingPushApproval) {
             Button("취소", role: .cancel) {}
-            Button("승인하고 커밋") { Task { await store.commitApprovedChanges(for: pullRequest, message: "fix: address PR review feedback") } }
-        } message: { Text("PR HEAD SHA와 작업 폴더를 다시 검증하고 로컬 \(pullRequest.headBranch) 브랜치에만 커밋합니다. 아직 원격에는 푸시하지 않습니다.") }
+            Button("승인하고 커밋") {
+                guard let cardID = pendingCommitCardID, let card = store.agentCard(id: cardID) else { return }
+                Task { await store.commitApprovedChanges(for: card, pullRequest: pullRequest) }
+            }
+        } message: { Text("이 작업 카드의 검토 코멘트, 작업 판단, 실제 변경 파일 요약을 커밋 메시지에 담아 로컬 \(pullRequest.headBranch) 브랜치에만 커밋합니다. 아직 원격에는 푸시하지 않습니다.") }
     }
 
     private func openWorkspace() {
         guard let path = store.worktreePath(for: pullRequest) else { return }
         NSWorkspace.shared.open(URL(fileURLWithPath: path))
+    }
+
+    private func workCard(for plan: ImplementationPlan) -> AgentReviewCard? {
+        plan.sourceReviewIDs?.compactMap(store.agentCard(reviewID:)).first
+            ?? plan.sourceCardIDs.compactMap(store.agentCard(id:)).first
     }
 
     private func prepareAndOpenWorkspace() async {

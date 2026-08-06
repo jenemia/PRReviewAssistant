@@ -25,6 +25,14 @@ struct WorkspaceManager: Sendable {
             .output.trimmingCharacters(in: .whitespacesAndNewlines)
         guard current != target || currentBranch != pullRequest.headBranch else { return path }
 
+        // A completed work card may already have created one or more local
+        // commits on this same PR branch. Keep that history when starting the
+        // next card instead of force-resetting the branch back to remote HEAD.
+        if let current, currentBranch == pullRequest.headBranch,
+           (try? runner.run("git", arguments: ["merge-base", "--is-ancestor", target, current], workingDirectory: path)) != nil {
+            return path
+        }
+
         let changes = try runner.run("git", arguments: ["status", "--porcelain=v1"], workingDirectory: path).output
         if !changes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             let message = "PR Review Assistant: PR #\(pullRequest.number) 작업 전 임시 보관"
@@ -45,6 +53,17 @@ struct WorkspaceManager: Sendable {
     }
 
     func changes(at path: String) throws -> String { try runner.run("git", arguments: ["diff", "--stat"], workingDirectory: path).output }
+    func changes(at path: String, files: [String]) throws -> String {
+        try runner.run("git", arguments: ["diff", "--stat", "--"] + files, workingDirectory: path).output
+    }
+    func changedFiles(at path: String) throws -> [String] {
+        let unstaged = try runner.run("git", arguments: ["diff", "--name-only"], workingDirectory: path).output
+        let staged = try runner.run("git", arguments: ["diff", "--cached", "--name-only"], workingDirectory: path).output
+        let untracked = try runner.run("git", arguments: ["ls-files", "--others", "--exclude-standard"], workingDirectory: path).output
+        return Set([unstaged, staged, untracked]
+            .flatMap { $0.split(whereSeparator: \.isNewline).map(String.init) })
+            .sorted()
+    }
     func verifyRemoteHead(_ remote: String, branch: String, expectedSHA: String, at path: String) throws {
         let result = try runner.run("git", arguments: ["ls-remote", remote, "refs/heads/\(branch)"], workingDirectory: path)
         guard let sha = result.output.split(whereSeparator: { $0 == "\t" || $0 == " " }).first.map(String.init), sha.hasPrefix(expectedSHA) else {
@@ -53,11 +72,13 @@ struct WorkspaceManager: Sendable {
     }
     func test(at path: String, command: String) throws -> CommandResult { try runner.run("/bin/zsh", arguments: ["-lc", command], workingDirectory: path) }
 
-    func commit(at path: String, message: String, branch: String, expectedSHA: String, remote: String = "origin") throws -> String {
+    func commit(at path: String, message: String, files: [String], branch: String, expectedSHA: String, remote: String = "origin") throws -> String {
         try verifyHead(path, expectedSHA: expectedSHA, expectedBranch: branch)
         try verifyRemoteHead(remote, branch: branch, expectedSHA: expectedSHA, at: path)
-        _ = try runner.run("git", arguments: ["add", "-A"], workingDirectory: path)
-        _ = try runner.run("git", arguments: ["commit", "-m", message], workingDirectory: path)
+        guard !files.isEmpty else {
+            throw CommandError.failed(.init(output: "", error: "이 작업 카드에서 변경된 파일을 찾을 수 없습니다.", status: 1))
+        }
+        _ = try runner.run("git", arguments: ["commit", "--only", "-m", message, "--"] + files, workingDirectory: path)
         return try runner.run("git", arguments: ["rev-parse", "HEAD"], workingDirectory: path)
             .output.trimmingCharacters(in: .whitespacesAndNewlines)
     }
