@@ -1394,7 +1394,7 @@ private struct ChatBubble: View {
                     .accessibilityLabel("메시지 복사")
                 }
                 if message.role == .agent {
-                    MarkdownContentView(CodeLocationLinkFormatter.format(message.body))
+                    MarkdownContentView(ReviewResponseReferenceFormatter.format(message.body))
                 } else {
                     Text(message.body)
                 }

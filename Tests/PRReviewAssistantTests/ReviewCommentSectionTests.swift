@@ -142,4 +142,14 @@ struct ReviewCommentSectionTests {
         #expect(!formatted.contains("unity_project"))
         #expect(!formatted.contains("prreview://"))
     }
+
+    @Test("사이드뷰 에이전트 메시지도 내부 코드 위치 링크를 평문 참조로 바꾼다")
+    func formatsCodeReferenceForSideViewMessage() {
+        let text = "[CheatPlayerGroup.cs 26행](prreview://open?path=unity_project/Assets/Cheat/Scripts/CheatPlayerGroup.cs&line=26) public getter만 존재합니다."
+
+        let formatted = ReviewResponseReferenceFormatter.format(text)
+
+        #expect(formatted == "CheatPlayerGroup · 26행 public getter만 존재합니다.")
+        #expect(!formatted.contains("prreview://"))
+    }
 }
