@@ -64,6 +64,30 @@ struct WorkspaceManager: Sendable {
             .flatMap { $0.split(whereSeparator: \.isNewline).map(String.init) })
             .sorted()
     }
+    func developerName(at path: String) throws -> String {
+        let subjects = try runner.run("git", arguments: ["log", "-20", "--format=%s"], workingDirectory: path).output
+        if let name = subjects
+            .split(whereSeparator: \.isNewline)
+            .compactMap({ developerName(fromCommitSubject: String($0)) })
+            .first {
+            return name
+        }
+        let configuredName = try? runner.run("git", arguments: ["config", "user.name"], workingDirectory: path)
+            .output.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let configuredName, !configuredName.isEmpty { return configuredName }
+        let recentAuthor = try? runner.run("git", arguments: ["log", "-1", "--format=%an"], workingDirectory: path)
+            .output.trimmingCharacters(in: .whitespacesAndNewlines)
+        return recentAuthor?.isEmpty == false ? recentAuthor! : "개발자"
+    }
+
+    private func developerName(fromCommitSubject subject: String) -> String? {
+        let pattern = #"^\[개발\s*-\s*([^\]]+)\]"#
+        guard let expression = try? NSRegularExpression(pattern: pattern),
+              let match = expression.firstMatch(in: subject, range: NSRange(subject.startIndex..., in: subject)),
+              let range = Range(match.range(at: 1), in: subject) else { return nil }
+        let name = subject[range].trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? nil : name
+    }
     func verifyRemoteHead(_ remote: String, branch: String, expectedSHA: String, at path: String) throws {
         let result = try runner.run("git", arguments: ["ls-remote", remote, "refs/heads/\(branch)"], workingDirectory: path)
         guard let sha = result.output.split(whereSeparator: { $0 == "\t" || $0 == " " }).first.map(String.init), sha.hasPrefix(expectedSHA) else {
@@ -94,19 +118,18 @@ struct WorkspaceManager: Sendable {
         guard currentBranch == branch else {
             throw CommandError.failed(.init(output: "", error: "작업 폴더가 PR 브랜치에 체크아웃되지 않았습니다.", status: 1))
         }
-        let changes = try runner.run("git", arguments: ["status", "--porcelain=v1"], workingDirectory: path).output
-        guard changes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw CommandError.failed(.init(output: "", error: "커밋 이후 변경 사항이 있습니다. 다시 테스트하고 커밋하세요.", status: 1))
-        }
-
         let result = try runner.run("git", arguments: ["ls-remote", remote, "refs/heads/\(branch)"], workingDirectory: path)
         guard let remoteSHA = result.output.split(whereSeparator: { $0 == "\t" || $0 == " " }).first.map(String.init) else {
             throw CommandError.failed(.init(output: "", error: "원격 PR 브랜치의 HEAD를 확인할 수 없습니다.", status: 1))
         }
-        if remoteSHA == committedSHA { return }
-        guard remoteSHA.hasPrefix(expectedRemoteSHA) else {
+        guard remoteSHA == committedSHA || remoteSHA.hasPrefix(expectedRemoteSHA) else {
             throw CommandError.failed(.init(output: "", error: "원격 브랜치가 커밋 기준 SHA 이후 변경되었습니다. 새로 고침 후 다시 분석하세요.", status: 1))
         }
         _ = try runner.run("git", arguments: ["push", remote, "HEAD:\(branch)"], workingDirectory: path)
+        let confirmed = try runner.run("git", arguments: ["ls-remote", remote, "refs/heads/\(branch)"], workingDirectory: path)
+        let confirmedSHA = confirmed.output.split(whereSeparator: { $0 == "\t" || $0 == " " }).first.map(String.init)
+        guard confirmedSHA == committedSHA else {
+            throw CommandError.failed(.init(output: "", error: "푸시 후 원격 PR 브랜치 SHA를 확인하지 못했습니다.", status: 1))
+        }
     }
 }

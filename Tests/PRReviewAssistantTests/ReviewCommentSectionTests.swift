@@ -159,13 +159,14 @@ struct ReviewCommentSectionTests {
     func synthesizesCommitMessageFromReviewAndWork() {
         let message = ReviewStore.synthesizedCommitMessage(
             pullRequestNumber: 42,
+            developerName: "션킴",
             reviewTitle: "Suggestion (1)",
             reviewComment: "캐시를 갱신해 주세요.",
             implementationSummary: "캐시 무효화와 갱신 경로를 추가했습니다.",
             diffStat: " Cache.swift | 12 ++++++++++--"
         )
 
-        #expect(message.contains("fix: PR #42 Suggestion (1)"))
+        #expect(message.contains("[개발 - 션킴] PR #42 Suggestion (1) 검토 반영"))
         #expect(message.contains("캐시를 갱신해 주세요."))
         #expect(message.contains("캐시 무효화와 갱신 경로를 추가했습니다."))
         #expect(message.contains("Cache.swift | 12"))

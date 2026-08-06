@@ -506,7 +506,8 @@ final class ReviewStore {
             let diffStat = ([scopedDiffStat.trimmingCharacters(in: .whitespacesAndNewlines), "작업 카드 파일:\n\(changedFiles.joined(separator: "\n"))"]
                 .filter { !$0.isEmpty }
                 .joined(separator: "\n\n"))
-            let message = commitMessage(for: pullRequest, card: card, plan: plan, diffStat: diffStat)
+            let developerName = try await background { try workspace.developerName(at: path) }
+            let message = commitMessage(for: pullRequest, card: card, plan: plan, diffStat: diffStat, developerName: developerName)
             let committedSHA = try await background {
                 try workspace.commit(at: path, message: message, files: changedFiles, branch: pullRequest.headBranch, expectedSHA: pullRequest.headSHA)
             }
@@ -525,9 +526,10 @@ final class ReviewStore {
         }
     }
 
-    private func commitMessage(for pullRequest: PullRequest, card: AgentReviewCard, plan: ImplementationPlan, diffStat: String) -> String {
+    private func commitMessage(for pullRequest: PullRequest, card: AgentReviewCard, plan: ImplementationPlan, diffStat: String, developerName: String) -> String {
         return Self.synthesizedCommitMessage(
             pullRequestNumber: pullRequest.number,
+            developerName: developerName,
             reviewTitle: card.sectionTitle ?? card.title,
             reviewComment: card.sectionBody ?? card.commentBody,
             implementationSummary: card.messages.last(where: { $0.role == .agent })?.body ?? plan.content,
@@ -535,10 +537,10 @@ final class ReviewStore {
         )
     }
 
-    static func synthesizedCommitMessage(pullRequestNumber: Int, reviewTitle: String, reviewComment: String, implementationSummary: String, diffStat: String) -> String {
+    static func synthesizedCommitMessage(pullRequestNumber: Int, developerName: String, reviewTitle: String, reviewComment: String, implementationSummary: String, diffStat: String) -> String {
         let subject = compactCommitText(reviewTitle, limit: 52).replacingOccurrences(of: "\n", with: " ")
         return """
-        fix: PR #\(pullRequestNumber) \(subject)
+        [개발 - \(compactCommitText(developerName, limit: 32).replacingOccurrences(of: "\n", with: " "))] PR #\(pullRequestNumber) \(subject) 검토 반영
 
         리뷰 코멘트:
         \(compactCommitText(reviewComment, limit: 700))
@@ -612,7 +614,7 @@ final class ReviewStore {
     func requestReReview(for pullRequest: PullRequest, comment: String = "") async {
         guard pullRequest.reviewer != "리뷰 대기" else { statusMessage = "재리뷰를 요청할 리뷰어가 없습니다."; return }
         let key = worktreeKey(pullRequest)
-        guard let path = worktreePaths[key], let committedSHA = committedHeads[key] else {
+        guard let committedSHA = committedHeads[key] else {
             statusMessage = "재리뷰 요청 전에 변경 사항을 로컬에 커밋하세요."
             return
         }
@@ -626,6 +628,9 @@ final class ReviewStore {
         var pushCompleted = false
         do {
             let repository = try registeredRepository(for: pullRequest)
+            let path = try await background { try workspace.prepareRepositoryWorkspace(repository: repository, pullRequest: pullRequest) }
+            try await background { try workspace.verifyHead(path, expectedSHA: pullRequest.headSHA, expectedBranch: pullRequest.headBranch) }
+            setActiveWorkspace(path, for: pullRequest)
             try await background {
                 try workspace.pushCommittedChanges(
                     at: path,
