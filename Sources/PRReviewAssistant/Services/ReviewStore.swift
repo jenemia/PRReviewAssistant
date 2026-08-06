@@ -971,11 +971,11 @@ final class ReviewStore {
         }
     }
 
-    func beginAgentReview(id: AgentReviewCard.ID, pullRequest: PullRequest) async {
+    func beginAgentReview(id: AgentReviewCard.ID, pullRequest: PullRequest, allowsRetry: Bool = false) async {
         guard let index = agentReviewCards.firstIndex(where: { $0.id == id }) else { return }
         let isLocalPractice = repositories.first(where: { $0.fullName == pullRequest.repository })?.isLocalPractice == true
         guard agentReviewCards[index].status != .reviewing,
-              agentReviewCards[index].messages.isEmpty || isLocalPractice else { return }
+              agentReviewCards[index].messages.isEmpty || isLocalPractice || allowsRetry else { return }
         if !isLocalPractice {
             let targetKey = worktreeKey(pullRequest)
             if let activeKey = activePullRequestKeys[pullRequest.repository], activeKey != targetKey {
@@ -1028,8 +1028,151 @@ final class ReviewStore {
                 }
             }
         }
-        let starter = "선택한 리뷰 섹션이 현재 PR 코드에 적용되는지 검토하고, 핵심 판단과 확인할 파일을 알려줘."
+        let starter = "선택한 리뷰 섹션을 코드와 대조해 수용 여부와 대응 계획을 알려줘. 원문 리뷰를 반복하지 말고, 수정할 파일·클래스·메서드와 검증 계획 중심으로 설명해줘."
         await sendAgentMessage(id: id, pullRequest: pullRequest, message: starter, hidesUserMessage: true)
+    }
+
+    /// Keeps the prior conversation visible, but starts a fresh read-only
+    /// analysis attempt after an unavailable or failed agent response.
+    func retryAgentReview(id: AgentReviewCard.ID, pullRequest: PullRequest) async {
+        guard let card = agentCard(id: id), card.status != .reviewing, card.status != .queued else { return }
+        statusMessage = "\(card.title) 검토를 다시 시작합니다."
+        await beginAgentReview(id: id, pullRequest: pullRequest, allowsRetry: true)
+    }
+
+    /// Creates an editable GitHub reply draft from the selected review and the
+    /// agent's existing judgment. It deliberately does not prepare or switch
+    /// a workspace: writing a reply must not cause a checkout.
+    static func defaultReviewResponseDraft(for card: AgentReviewCard) -> String {
+        let section = ReviewCommentSection.displayLabel(for: card.sectionTitle) ?? card.title
+        let agentResponse = card.messages.last(where: { $0.role == .agent })?.body
+        let agentJudgment = agentResponse.map { conciseReviewJudgment(from: $0) }
+        let evidence = agentResponse.flatMap { reviewEvidence(from: $0) }
+        let judgmentLine = agentJudgment.map { "- 검토 판단: \($0)" }
+            ?? "- 검토 판단: 현재 구현과 리뷰 지적의 관계를 확인했습니다."
+        let evidenceLine = evidence.map { "- 판단 근거: \(ReviewResponseReferenceFormatter.format($0))" }
+            ?? "- 판단 근거: 리뷰에서 언급한 동작과 현재 구현 경로를 대조해 추가 확인이 필요합니다."
+        return """
+        \(section) 관련 의견을 확인했습니다.
+
+        \(judgmentLine)
+        \(evidenceLine)
+        - 대응 방향: 위 코드 확인 결과를 기준으로 변경 필요 여부를 판단하겠습니다.
+        - 추가로 확인할 재현 조건이나 기대 동작이 있다면 공유 부탁드립니다.
+        """
+    }
+
+    func generateReviewResponseDraft(id: AgentReviewCard.ID, pullRequest: PullRequest) async -> String? {
+        guard let card = agentCard(id: id) else { return nil }
+        let fallback = Self.defaultReviewResponseDraft(for: card)
+        guard let analysis = card.messages.last(where: { $0.role == .agent })?.body,
+              !analysis.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            statusMessage = "에이전트 검토 결과가 없어 기본 응답 초안을 만들었습니다. 내용을 편집해 게시할 수 있습니다."
+            return fallback
+        }
+        let key = worktreeKey(pullRequest)
+        guard let path = worktreePaths[key] else {
+            statusMessage = "검토 작업 폴더가 없어 기본 응답 초안을 유지합니다. 새 체크아웃은 시작하지 않습니다."
+            return fallback
+        }
+        do {
+            let agent = cursor
+            let model = effectiveAgentModel
+            let draft = try await background {
+                try agent.suggestReviewResponse(
+                    repositoryPath: path,
+                    pullRequest: pullRequest,
+                    card: card,
+                    analysis: analysis,
+                    model: model
+                )
+            }
+            guard !draft.isEmpty else {
+                statusMessage = "에이전트가 응답 초안을 만들지 못해 기본 초안을 유지합니다."
+                return fallback
+            }
+            statusMessage = "GitHub 응답 초안을 만들었습니다. 편집 후 게시하세요."
+            return ReviewResponseReferenceFormatter.format(draft)
+        } catch {
+            statusMessage = "응답 초안 생성에 실패해 기본 초안을 유지합니다: \(error.localizedDescription)"
+            return fallback
+        }
+    }
+
+    private static func conciseReviewJudgment(from text: String) -> String {
+        if let judgment = reviewResponseSection(named: "판단", in: text) {
+            return judgment
+                .replacingOccurrences(of: "**", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return "현재 구현과 리뷰 지적의 관계를 확인했습니다." }
+        let firstLine = normalized.split(whereSeparator: { $0.isNewline }).first.map(String.init) ?? normalized
+        let cleaned = firstLine
+            .replacingOccurrences(of: "#", with: "")
+            .replacingOccurrences(of: "-", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return String((cleaned.isEmpty ? normalized : cleaned).prefix(180))
+    }
+
+    private static func reviewEvidence(from text: String) -> String? {
+        ["코드 확인", "핵심 근거", "근거", "분석 내용", "확인할 파일"]
+            .lazy
+            .compactMap { reviewResponseSection(named: $0, in: text) }
+            .first
+    }
+
+    private static func reviewResponseSection(named name: String, in text: String) -> String? {
+        let lines = text.components(separatedBy: .newlines)
+        var collecting = false
+        var content: [String] = []
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.hasPrefix("#") {
+                if collecting { break }
+                let heading = trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "# "))
+                collecting = heading == name || heading.hasPrefix("\(name):")
+                if collecting, let colon = heading.firstIndex(of: ":") {
+                    let inlineContent = heading[heading.index(after: colon)...]
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !inlineContent.isEmpty { content.append(inlineContent) }
+                }
+                continue
+            }
+            guard collecting, !trimmed.isEmpty else { continue }
+            content.append(trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "-• ")))
+        }
+        guard !content.isEmpty else { return nil }
+        return String(content.joined(separator: " ").prefix(520))
+    }
+
+    /// Posts only the user-edited text. It does not push, request re-review,
+    /// or change the current branch.
+    func postReviewResponse(for pullRequest: PullRequest, body: String) async -> Bool {
+        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            statusMessage = "게시할 응답을 입력하세요."
+            return false
+        }
+        guard let repository = repositories.first(where: { $0.fullName == pullRequest.repository }) else {
+            statusMessage = "등록된 저장소를 찾을 수 없습니다."
+            return false
+        }
+        if repository.isLocalPractice == true {
+            statusMessage = "로컬 연습 PR에서는 GitHub 코멘트를 게시하지 않습니다."
+            return false
+        }
+        do {
+            try await background {
+                try self.github.addComment(repository: pullRequest.repository, number: pullRequest.number, body: trimmed)
+            }
+            statusMessage = "GitHub PR 코멘트를 등록했습니다."
+            await refresh()
+            return true
+        } catch {
+            statusMessage = "GitHub PR 코멘트 등록 실패: \(error.localizedDescription)"
+            return false
+        }
     }
 
     func sendAgentMessage(id: AgentReviewCard.ID, pullRequest: PullRequest, message: String, hidesUserMessage: Bool = false, recordsUserMessage: Bool = true) async {

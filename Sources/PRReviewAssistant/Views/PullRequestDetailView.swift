@@ -59,6 +59,8 @@ struct PullRequestDetailView: View {
     @State private var showingWorkArea = false
     @State private var showingMergeApproval = false
     @State private var showingCardRebuildConfirmation = false
+    @State private var showingReviewResponseSheet = false
+    @State private var responseCardID: AgentReviewCard.ID?
     
 
     var body: some View {
@@ -86,6 +88,12 @@ struct PullRequestDetailView: View {
                     pullRequest: pullRequest,
                     send: { message in Task { await store.sendAgentMessage(id: cardID, pullRequest: pullRequest, message: message) } },
                     startAnalysis: { Task { await store.beginAgentReview(id: cardID, pullRequest: pullRequest) } },
+                    retryAnalysis: { Task { await store.retryAgentReview(id: cardID, pullRequest: pullRequest) } },
+                    writeResponse: {
+                        responseCardID = cardID
+                        detailNavigation.closePanel()
+                        showingReviewResponseSheet = true
+                    },
                     openCodeLocation: { path, line, column in
                         store.openInCursor(path: path, line: line, column: column, for: pullRequest)
                     },
@@ -131,6 +139,16 @@ struct PullRequestDetailView: View {
         }
         .onChange(of: detailNavigation.isShowingComments) { _, isShowing in
             if isShowing { store.markCommentsRead(for: pullRequest) }
+        }
+        .sheet(isPresented: $showingReviewResponseSheet, onDismiss: { responseCardID = nil }) {
+            if let responseCardID, let responseCard = store.agentCard(id: responseCardID) {
+                ReviewResponseSheet(
+                    card: responseCard,
+                    initialDraft: ReviewStore.defaultReviewResponseDraft(for: responseCard),
+                    generateDraft: { await store.generateReviewResponseDraft(id: responseCardID, pullRequest: pullRequest) },
+                    publish: { body in await store.postReviewResponse(for: pullRequest, body: body) }
+                )
+            }
         }
         .alert(store.agentPermissionRequest?.title ?? "에이전트 권한 요청", isPresented: Binding(
             get: { store.agentPermissionRequest?.pullRequest.id == pullRequest.id },
@@ -627,6 +645,89 @@ private struct ReReviewRequestSheet: View {
     }
 }
 
+private struct ReviewResponseSheet: View {
+    let card: AgentReviewCard
+    let initialDraft: String
+    let generateDraft: () async -> String?
+    let publish: (String) async -> Bool
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var draft: String
+    @State private var isGenerating = false
+    @State private var isPublishing = false
+
+    init(card: AgentReviewCard, initialDraft: String, generateDraft: @escaping () async -> String?, publish: @escaping (String) async -> Bool) {
+        self.card = card
+        self.initialDraft = initialDraft
+        self.generateDraft = generateDraft
+        self.publish = publish
+        _draft = State(initialValue: initialDraft)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("응답 작성").font(.title2.bold())
+                Text("\(card.title) 검토카드의 판단을 바탕으로 초안을 만들고, 편집한 내용만 GitHub에 게시합니다.")
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack {
+                Text("응답 초안").font(.headline)
+                Spacer()
+                Button {
+                    Task { await requestDraft() }
+                } label: {
+                    Label(isGenerating ? "초안 생성 중…" : "초안 다시 만들기", systemImage: "wand.and.stars")
+                }
+                .disabled(isGenerating || isPublishing)
+            }
+
+            TextEditor(text: $draft)
+                .font(.body)
+                .scrollContentBackground(.hidden)
+                .padding(8)
+                .frame(minHeight: 220)
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+                .overlay {
+                    if draft.isEmpty && !isGenerating {
+                        Text("초안을 편집하거나 직접 입력하세요.")
+                            .foregroundStyle(.tertiary)
+                            .padding(14)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                            .allowsHitTesting(false)
+                    }
+                }
+
+            Text("게시하면 이 텍스트만 GitHub PR에 코멘트로 등록됩니다. 푸시·재리뷰 요청·브랜치 변경은 수행하지 않습니다.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            HStack {
+                Spacer()
+                Button("취소", role: .cancel) { dismiss() }
+                Button(isPublishing ? "게시 중…" : "게시") {
+                    Task {
+                        isPublishing = true
+                        defer { isPublishing = false }
+                        if await publish(draft) { dismiss() }
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(isGenerating || isPublishing || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(24)
+        .frame(width: 620)
+    }
+
+    private func requestDraft() async {
+        isGenerating = true
+        defer { isGenerating = false }
+        if let generated = await generateDraft() { draft = generated }
+    }
+}
+
 private struct ImplementationPlanSheet: View {
     let pullRequest: PullRequest
     let comments: [ReviewComment]
@@ -1090,6 +1191,8 @@ private struct AgentChatSidePanel: View {
     let pullRequest: PullRequest
     let send: (String) -> Void
     let startAnalysis: () -> Void
+    let retryAnalysis: () -> Void
+    let writeResponse: () -> Void
     let openCodeLocation: (String, Int?, Int?) -> String
     let beginImplementation: () -> Void
     let close: () -> Void
@@ -1103,9 +1206,9 @@ private struct AgentChatSidePanel: View {
                     Text(card.title).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                 }
                 Spacer()
-                Button("백그라운드로 보내기", systemImage: "xmark") { close() }
+                Button("닫기", systemImage: "xmark") { close() }
                     .buttonStyle(.borderless)
-                    .accessibilityLabel("에이전트 검토를 백그라운드로 보내기")
+                    .accessibilityLabel("에이전트 검토 닫기")
             }
             .padding(16)
             Divider()
@@ -1177,6 +1280,14 @@ private struct AgentChatSidePanel: View {
             }
             Divider()
             HStack {
+                Button("재검토", systemImage: "arrow.clockwise", action: retryAnalysis)
+                    .buttonStyle(.bordered)
+                    .disabled(card.status == .reviewing || card.status == .queued)
+                    .help("에이전트 응답 실패 후 이 카드의 읽기 전용 검토를 다시 시작합니다")
+                Button("응답 작성", systemImage: "text.badge.plus", action: writeResponse)
+                    .buttonStyle(.bordered)
+                    .disabled(card.status == .reviewing || card.status == .queued)
+                    .help("에이전트 판단을 바탕으로 편집 가능한 GitHub 응답 초안을 만듭니다")
                 VStack(alignment: .leading, spacing: 2) {
                     Text("검토를 마쳤나요?").font(.caption.weight(.medium))
                     Text("대화를 종합한 계획을 작업 영역으로 보냅니다.")
@@ -1283,7 +1394,7 @@ private struct ChatBubble: View {
                     .accessibilityLabel("메시지 복사")
                 }
                 if message.role == .agent {
-                    MarkdownContentView(message.body)
+                    MarkdownContentView(CodeLocationLinkFormatter.format(message.body))
                 } else {
                     Text(message.body)
                 }

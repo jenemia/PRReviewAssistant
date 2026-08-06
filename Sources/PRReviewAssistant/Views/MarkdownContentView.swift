@@ -1,5 +1,95 @@
 import SwiftUI
 
+/// Converts a raw internal code-location URL into readable Markdown while
+/// retaining the same safe `prreview://open` target for the side-panel action.
+enum CodeLocationLinkFormatter {
+    static func format(_ markdown: String) -> String {
+        let pattern = "\\(prreview://open\\?[^\\s)]+\\)"
+        guard let expression = try? NSRegularExpression(pattern: pattern) else { return markdown }
+        let range = NSRange(markdown.startIndex..., in: markdown)
+        let matches = expression.matches(in: markdown, range: range)
+        return matches.reversed().reduce(markdown) { result, match in
+            guard let matchRange = Range(match.range, in: result) else { return result }
+            let wrappedURL = String(result[matchRange])
+            let url = String(wrappedURL.dropFirst().dropLast())
+            guard let label = label(for: url) else { return result }
+            return result.replacingCharacters(in: matchRange, with: "[\(label)](\(url))")
+        }
+    }
+
+    private static func label(for url: String) -> String? {
+        guard let pathStart = url.range(of: "path=")?.upperBound else { return nil }
+        let pathEnd = url[pathStart...].range(of: "&")?.lowerBound ?? url.endIndex
+        let path = String(url[pathStart..<pathEnd]).removingPercentEncoding ?? String(url[pathStart..<pathEnd])
+        let scriptName = URL(fileURLWithPath: path).lastPathComponent
+        guard !scriptName.isEmpty else { return nil }
+
+        let line: String?
+        if let lineStart = url.range(of: "line=")?.upperBound {
+            let lineEnd = url[lineStart...].range(of: "&")?.lowerBound ?? url.endIndex
+            line = String(url[lineStart..<lineEnd])
+        } else {
+            line = nil
+        }
+        return line.map { "\(scriptName) · \($0)행" } ?? scriptName
+    }
+}
+
+/// GitHub cannot open the app-local `prreview://` links. Reply drafts therefore
+/// keep only a compact code reference instead of exposing a local file path.
+enum ReviewResponseReferenceFormatter {
+    static func format(_ text: String) -> String {
+        let markdownPattern = "\\[([^\\]]*)\\]\\(prreview://open\\?([^)]*)\\)"
+        let rawPattern = "\\(prreview://open\\?([^\\s)]+)\\)"
+        let afterMarkdown = replacing(text, pattern: markdownPattern) { match, value in
+            let label = value(match.range(at: 1))
+            let query = value(match.range(at: 2))
+            return reference(label: label, query: query) ?? label
+        }
+        return replacing(afterMarkdown, pattern: rawPattern) { match, value in
+            let query = value(match.range(at: 1))
+            return reference(label: nil, query: query) ?? "코드 위치"
+        }
+    }
+
+    private static func replacing(_ text: String, pattern: String, transform: (NSTextCheckingResult, (NSRange) -> String) -> String) -> String {
+        guard let expression = try? NSRegularExpression(pattern: pattern) else { return text }
+        let range = NSRange(text.startIndex..., in: text)
+        return expression.matches(in: text, range: range).reversed().reduce(text) { result, match in
+            guard let matchRange = Range(match.range, in: result) else { return result }
+            let value: (NSRange) -> String = { range in
+                guard range.location != NSNotFound, let swiftRange = Range(range, in: result) else { return "" }
+                return String(result[swiftRange])
+            }
+            return result.replacingCharacters(in: matchRange, with: transform(match, value))
+        }
+    }
+
+    private static func reference(label: String?, query: String) -> String? {
+        guard let pathStart = query.range(of: "path=")?.upperBound else { return nil }
+        let pathEnd = query[pathStart...].range(of: "&")?.lowerBound ?? query.endIndex
+        let path = String(query[pathStart..<pathEnd]).removingPercentEncoding ?? String(query[pathStart..<pathEnd])
+        let className = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+        guard !className.isEmpty else { return nil }
+        let line: String
+        if let lineStart = query.range(of: "line=")?.upperBound {
+            let lineEnd = query[lineStart...].range(of: "&")?.lowerBound ?? query.endIndex
+            line = String(query[lineStart..<lineEnd])
+        } else {
+            line = "-"
+        }
+        let method = label?
+            .split(separator: "—", maxSplits: 1)
+            .dropFirst()
+            .first?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let method, !method.isEmpty {
+            return "\(className).\(method) · \(line)행"
+        }
+        return "\(className) · \(line)행"
+    }
+}
+
 /// A lightweight, dependency-free renderer for the Markdown GitHub returns in
 /// review bodies. Inline syntax uses AttributedString; block syntax is laid out
 /// as native SwiftUI views so headings, lists, quotes, and code stay readable.
