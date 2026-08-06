@@ -219,27 +219,43 @@ struct ReviewCommentSection: Identifiable, Hashable {
     static func parse(commentID: String, body: String) -> [ReviewCommentSection] {
         let lines = body.components(separatedBy: .newlines)
         var groups: [(title: String, lines: [String])] = []
-        var currentTitle = "전체 코멘트"
+        var currentTitle: String?
         var currentLines: [String] = []
 
         func appendCurrent() {
             let content = currentLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !content.isEmpty else { return }
+            guard let currentTitle, !content.isEmpty else { return }
             groups.append((currentTitle, content.components(separatedBy: .newlines)))
         }
 
         for line in lines {
-            if let title = sectionTitle(in: line) {
+            if let title = severityTitle(in: line) {
                 appendCurrent()
                 currentTitle = title
                 currentLines = []
-            } else {
+            } else if let activeTitle = currentTitle,
+                      let severityName = severityName(in: activeTitle),
+                      let itemNumber = numberedItemNumber(in: line) {
+                // A numbered finding beneath one severity heading is its own
+                // work unit: `Suggestion (3)` with `1.`, `2.`, `3.` becomes
+                // Suggestion-1, Suggestion-2, Suggestion-3. Ordinary Markdown
+                // subheadings remain part of their surrounding finding.
+                let hasFindingContent = currentLines.contains {
+                    !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                }
+                if hasFindingContent { appendCurrent() }
+                currentTitle = "\(severityName) (\(itemNumber))"
+                currentLines = [line]
+            } else if currentTitle != nil {
+                // Markdown headings inside a severity finding are context, not
+                // separate findings. Splitting on every `#` made one Warning
+                // review turn into several duplicate analysis cards.
                 currentLines.append(line)
             }
         }
         appendCurrent()
 
-        guard groups.count > 1 else {
+        guard !groups.isEmpty else {
             return [ReviewCommentSection(id: "\(commentID)#section-0", title: "전체 코멘트", body: body)]
         }
         return groups.enumerated().map { index, group in
@@ -247,15 +263,57 @@ struct ReviewCommentSection: Identifiable, Hashable {
         }
     }
 
-    private static func sectionTitle(in line: String) -> String? {
+    /// Only severity headers create a review work unit. Their source order is
+    /// retained (for example Warning, then Suggestion).
+    private static func severityTitle(in line: String) -> String? {
         let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.hasPrefix("#") {
-            let title = trimmed.drop(while: { $0 == "#" || $0 == " " })
-            return title.isEmpty ? nil : String(title)
-        }
-        let pattern = "^(?:[🔴🟠🟡🔵⚪]\\s*)?(?:Blocker|Critical|Error|Warning|Suggestion|Info|주의|오류|제안)\\s*\\(\\d+\\)"
+        let pattern = "^(?:#{1,6}\\s*)?(?:[🔴🟠🟡🔵⚪]\\s*)?(?:Blocker|Critical|Error|Warning|Suggestion|Info|주의|오류|제안)\\s*\\(\\d+\\)"
         guard trimmed.range(of: pattern, options: .regularExpression) != nil else { return nil }
         return trimmed
+    }
+
+    private static func severityName(in title: String) -> String? {
+        let pattern = "^(?:#{1,6}\\s*)?(?:[🔴🟠🟡🔵⚪]\\s*)?(Blocker|Critical|Error|Warning|Suggestion|Info|주의|오류|제안)\\s*\\(\\d+\\)"
+        guard let expression = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return nil }
+        let range = NSRange(title.startIndex..., in: title)
+        guard let match = expression.firstMatch(in: title, range: range),
+              let levelRange = Range(match.range(at: 1), in: title) else { return nil }
+        return String(title[levelRange])
+    }
+
+    private static func numberedItemNumber(in line: String) -> String? {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        let pattern = "^(?:#{1,6}\\s*)?(\\d+)\\s*[.)]\\s+"
+        guard let expression = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let range = NSRange(trimmed.startIndex..., in: trimmed)
+        guard let match = expression.firstMatch(in: trimmed, range: range),
+              let numberRange = Range(match.range(at: 1), in: trimmed) else { return nil }
+        return String(trimmed[numberRange])
+    }
+
+    static func severitySortRank(for title: String?) -> Int {
+        let normalized = (title ?? "").lowercased()
+        if normalized.contains("blocker") { return 0 }
+        if normalized.contains("critical") { return 1 }
+        if normalized.contains("error") || normalized.contains("오류") { return 2 }
+        if normalized.contains("warning") || normalized.contains("주의") { return 3 }
+        if normalized.contains("suggestion") || normalized.contains("제안") { return 4 }
+        if normalized.contains("info") { return 5 }
+        return 6
+    }
+
+    /// Turns a severity heading such as `Suggestion (2)` into the compact
+    /// center-list label `Suggestion-2` while retaining the original title
+    /// and body for the detail view.
+    static func displayLabel(for title: String?) -> String? {
+        guard let title else { return nil }
+        let pattern = "^(?:#{1,6}\\s*)?(?:[🔴🟠🟡🔵⚪]\\s*)?(Blocker|Critical|Error|Warning|Suggestion|Info|주의|오류|제안)\\s*\\(\\s*(\\d+)\\s*\\)"
+        guard let expression = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return nil }
+        let range = NSRange(title.startIndex..., in: title)
+        guard let match = expression.firstMatch(in: title, range: range),
+              let levelRange = Range(match.range(at: 1), in: title),
+              let numberRange = Range(match.range(at: 2), in: title) else { return nil }
+        return "\(title[levelRange])-\(title[numberRange])"
     }
 }
 
@@ -384,6 +442,9 @@ struct AgentReviewCard: Identifiable, Codable, Hashable {
     var updatedAt = Date()
 
     static func title(for body: String) -> String {
+        if let severityLabel = ReviewCommentSection.displayLabel(for: body) {
+            return severityLabel
+        }
         let plain = body
             .replacingOccurrences(of: "#", with: "")
             .replacingOccurrences(of: "*", with: "")

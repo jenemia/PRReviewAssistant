@@ -58,6 +58,7 @@ struct PullRequestDetailView: View {
     @State private var showingImplementationPlan = false
     @State private var showingWorkArea = false
     @State private var showingMergeApproval = false
+    @State private var showingCardRebuildConfirmation = false
     
 
     var body: some View {
@@ -74,14 +75,17 @@ struct PullRequestDetailView: View {
                         .frame(minWidth: 360, idealWidth: 480, maxWidth: .infinity, maxHeight: .infinity)
                 }
             } else if let cardID = detailNavigation.selectedAgentCardID, let card = store.agentCard(id: cardID) {
+                let sourceComment = store.comments(for: pullRequest).first { $0.id == card.commentID }
                 HSplitView {
                     detailContent
                     
                 AgentChatSidePanel(
                     card: card,
-                    sourceComment: store.comments(for: pullRequest).first { $0.id == card.commentID },
+                    sourceComment: sourceComment,
+                    sourceSection: sourceComment?.sections.first { $0.id == card.sectionID },
                     pullRequest: pullRequest,
                     send: { message in Task { await store.sendAgentMessage(id: cardID, pullRequest: pullRequest, message: message) } },
+                    startAnalysis: { Task { await store.beginAgentReview(id: cardID, pullRequest: pullRequest) } },
                     openCodeLocation: { path, line, column in
                         store.openInCursor(path: path, line: line, column: column, for: pullRequest)
                     },
@@ -153,6 +157,12 @@ struct PullRequestDetailView: View {
             }
         } message: {
             Text("GitHub에서 이 PR을 Create a merge commit 방식으로 머지합니다. 머지와 푸시가 성공한 경우 소스 브랜치를 삭제합니다.")
+        }
+        .alert("검토카드를 다시 분류할까요?", isPresented: $showingCardRebuildConfirmation) {
+            Button("취소", role: .cancel) {}
+            Button("다시 분류") { store.rebuildAutomaticReviewCards(for: pullRequest) }
+        } message: {
+            Text("개선된 Warning·Suggestion 분류 규칙으로 자동 검토카드를 새로 만듭니다. 자동 카드의 기존 분석 대화는 삭제되지만, 수동 검토 카드는 유지됩니다. 분석이나 브랜치 체크아웃은 시작하지 않습니다.")
         }
         .navigationTitle("PR #\(pullRequest.number)")
         .toolbar {
@@ -308,7 +318,16 @@ struct PullRequestDetailView: View {
                 let cards = store.agentCards(for: pullRequest)
                 if !cards.isEmpty {
                     Divider()
-                    Text("코멘트별 검토").font(.headline)
+                    HStack {
+                        Text("코멘트별 검토").font(.headline)
+                        Spacer()
+                        Button("분류 다시 만들기", systemImage: "arrow.triangle.2.circlepath") {
+                            showingCardRebuildConfirmation = true
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .help("개선된 규칙으로 자동 검토카드를 다시 만듭니다")
+                    }
                     ForEach(cards) { card in
                         Button { openAgentCard(card.id) } label: {
                             AgentReviewCardRow(card: card)
@@ -507,7 +526,6 @@ struct PullRequestDetailView: View {
     private func openAgentCard(_ id: AgentReviewCard.ID) {
         store.markAgentCardRead(id)
         detailNavigation.showAgent(id)
-        Task { await store.beginAgentReview(id: id, pullRequest: pullRequest) }
     }
 
     private var permissionMessage: String {
@@ -958,7 +976,7 @@ private struct FoldableComment: View {
                                 .foregroundStyle(BrandColor.prPurple)
                         }
                         Spacer(minLength: 4)
-                        Button(comment.sections.count > 1 ? "섹션 검토" : "에이전트 검토", systemImage: "sparkles") {
+                        Button(comment.sections.count > 1 ? "섹션 펼치기" : "에이전트 검토", systemImage: "sparkles") {
                             if comment.sections.count > 1 {
                                 isExpanded = true
                             } else if let section = comment.sections.first {
@@ -967,6 +985,7 @@ private struct FoldableComment: View {
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
+                        .help(comment.sections.count > 1 ? "Warning·Suggestion 등 섹션을 펼쳐 개별 검토를 선택합니다" : "이 코멘트의 검토 화면을 엽니다")
                     }
                     Text(comment.body)
                         .font(.caption)
@@ -1066,8 +1085,11 @@ private struct AgentChatSidePanel: View {
     /// the snapshot saved when this agent review was created. GitHub comments
     /// can be edited while an agent conversation remains open.
     let sourceComment: ReviewComment?
+    /// The selected severity section from the freshest loaded comment.
+    let sourceSection: ReviewCommentSection?
     let pullRequest: PullRequest
     let send: (String) -> Void
+    let startAnalysis: () -> Void
     let openCodeLocation: (String, Int?, Int?) -> String
     let beginImplementation: () -> Void
     let close: () -> Void
@@ -1099,7 +1121,7 @@ private struct AgentChatSidePanel: View {
                     .padding(.horizontal, 12).padding(.vertical, 7)
                     .background(.quaternary, in: Capsule())
 
-                    GroupBox("PR 코멘트") {
+                    GroupBox("PR 코멘트 · \(ReviewCommentSection.displayLabel(for: sourceSection?.title ?? card.sectionTitle) ?? card.title)") {
                         VStack(alignment: .leading, spacing: 8) {
                             HStack(spacing: 6) {
                                 Label(sourceComment?.author ?? card.commentAuthor, systemImage: "person")
@@ -1107,12 +1129,12 @@ private struct AgentChatSidePanel: View {
                                     Text("\(path):\(sourceComment?.line.map(String.init) ?? "-")")
                                 }
                                 Spacer()
-                                Text(sourceComment == nil ? "저장된 원문" : "GitHub 최신 원문")
+                                Text(sourceSection != nil ? "GitHub 최신 섹션" : card.sectionBody != nil ? "저장된 섹션" : "저장된 원문")
                             }
                             .font(.caption)
                             .foregroundStyle(.secondary)
 
-                            MarkdownContentView(sourceComment?.body ?? card.commentBody)
+                            MarkdownContentView(sourceSection?.body ?? card.sectionBody ?? sourceComment?.body ?? card.commentBody)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .textSelection(.enabled)
                         }
@@ -1120,7 +1142,12 @@ private struct AgentChatSidePanel: View {
                     }
 
                     if card.messages.isEmpty {
-                        ContentUnavailableView("검토를 시작하는 중입니다", systemImage: "sparkles", description: Text("코드 수정 없이 현재 저장소를 읽고 리뷰 내용을 검토합니다."))
+                        VStack(spacing: 12) {
+                            ContentUnavailableView("분석을 시작하세요", systemImage: "sparkles", description: Text("분석 시작을 선택하면 코드 수정 없이 현재 저장소를 읽고 리뷰 내용을 검토합니다."))
+                            Button("분석 시작", systemImage: "sparkles", action: startAnalysis)
+                                .buttonStyle(.borderedProminent)
+                                .disabled(card.status == .reviewing || card.status == .queued)
+                        }
                             .frame(maxWidth: .infinity)
                             .padding(.top, 40)
                     }

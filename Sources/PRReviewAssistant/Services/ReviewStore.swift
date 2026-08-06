@@ -298,7 +298,7 @@ final class ReviewStore {
             knownPullRequestIDs.insert(key)
             unreadPullRequestIDs.insert(key)
             unreadCommentIDs.formUnion(fixture.comments.map(\.id))
-            startAutomaticReviews(for: fixture.pullRequest, comments: fixture.comments)
+            createAutomaticReviewCards(for: fixture.pullRequest, comments: fixture.comments)
             applyAuthorFilter()
             selectedID = fixture.pullRequest.id
             persist()
@@ -354,7 +354,7 @@ final class ReviewStore {
                     let fixture = try await background { try self.localPractice.load(from: repository) }
                     fetched.append(fixture.pullRequest)
                     comments[worktreeKey(fixture.pullRequest)] = fixture.comments
-                    startAutomaticReviews(for: fixture.pullRequest, comments: fixture.comments)
+                    createAutomaticReviewCards(for: fixture.pullRequest, comments: fixture.comments)
                     continue
                 }
                 let prs = try await background { try self.github.pullRequests(for: repository) }
@@ -377,15 +377,15 @@ final class ReviewStore {
                     let becameApproved = hasEstablishedApprovalBaseline && pr.reviewState == .approved && !approvedPullRequestIDs.contains(prKey)
                     // A review body can contain multiple independently actionable
                     // sections. Create one durable analysis card for each section
-                    // as soon as it is received, then begin read-only analysis.
-                    // Existing cards are never recreated on a later poll.
+                    // as soon as it is received. Analysis is always a user
+                    // action; polling must never check out a branch.
                     let shouldNotify = hasEstablishedNotificationBaseline && matchesAuthorFilter(pr)
                     // The author filter scopes all automatic PR work, not just
                     // Inbox visibility and notifications. A filtered-out PR
                     // must never change the repository checkout in the
                     // background.
                     if matchesAuthorFilter(pr) {
-                        startAutomaticReviews(for: pr, comments: newComments)
+                        createAutomaticReviewCards(for: pr, comments: newComments)
                     }
                     if shouldNotify && becameApproved {
                         publishPetNotification(.approved(pr))
@@ -673,13 +673,25 @@ final class ReviewStore {
     }
 
     func createAgentReview(for comment: ReviewComment, section: ReviewCommentSection, pullRequest: PullRequest, reviewID: String? = nil, isUnread: Bool = false) -> AgentReviewCard.ID {
-        if let existing = agentReviewCards.first(where: {
-            $0.repository == pullRequest.repository &&
-            $0.pullRequestNumber == pullRequest.number &&
-            $0.commentID == comment.id &&
-            $0.sectionID == section.id
-        }) {
-            return existing.id
+        let existingIndex = agentReviewCards.indices.first { index in
+            let card = agentReviewCards[index]
+            return card.repository == pullRequest.repository &&
+                card.pullRequestNumber == pullRequest.number &&
+                card.commentID == comment.id &&
+                card.sectionID == section.id
+        }
+        if let index = existingIndex {
+            // A reviewer can edit a comment after the first poll. Keep the
+            // existing conversation but refresh the card's source section.
+            agentReviewCards[index].reviewID = agentReviewCards[index].reviewID ?? reviewID
+            agentReviewCards[index].commentAuthor = comment.author
+            agentReviewCards[index].commentBody = comment.body
+            agentReviewCards[index].sectionTitle = section.title
+            agentReviewCards[index].sectionBody = section.body
+            agentReviewCards[index].title = AgentReviewCard.title(for: section.title)
+            agentReviewCards[index].updatedAt = .now
+            persist()
+            return agentReviewCards[index].id
         }
         let card = AgentReviewCard(
             reviewID: reviewID,
@@ -701,7 +713,13 @@ final class ReviewStore {
 
     func agentCards(for pullRequest: PullRequest) -> [AgentReviewCard] {
         agentReviewCards.filter { $0.repository == pullRequest.repository && $0.pullRequestNumber == pullRequest.number }
-            .sorted { $0.updatedAt > $1.updatedAt }
+            .sorted {
+                let leftRank = ReviewCommentSection.severitySortRank(for: $0.sectionTitle)
+                let rightRank = ReviewCommentSection.severitySortRank(for: $1.sectionTitle)
+                if leftRank != rightRank { return leftRank < rightRank }
+                if $0.commentID != $1.commentID { return $0.commentID < $1.commentID }
+                return $0.sectionID ?? "" < $1.sectionID ?? ""
+            }
     }
 
     func agentCard(id: AgentReviewCard.ID) -> AgentReviewCard? {
@@ -718,6 +736,22 @@ final class ReviewStore {
     private func createAnalysisCards(for pullRequest: PullRequest, comments: [ReviewComment]) -> [AgentReviewCard.ID] {
         var sectionIndex = 0
         var created: [AgentReviewCard.ID] = []
+        let commentIDs = Set(comments.map(\.id))
+        let validSectionKeys = Set(comments.flatMap { comment in
+            comment.sections.map { "\(comment.id)|\($0.id)" }
+        })
+
+        // Remove obsolete automatic cards created with the old parser. Manual
+        // cards have no reviewID and are intentionally preserved.
+        agentReviewCards.removeAll { card in
+            let sectionID = card.sectionID ?? ""
+            let sectionKey = "\(card.commentID)|\(sectionID)"
+            return card.repository == pullRequest.repository &&
+                card.pullRequestNumber == pullRequest.number &&
+                card.reviewID != nil &&
+                commentIDs.contains(card.commentID) &&
+                !validSectionKeys.contains(sectionKey)
+        }
         for comment in comments {
             for section in comment.sections {
                 let reviewID = "\(pullRequest.id.uuidString.lowercased())_review_\(sectionIndex)"
@@ -730,41 +764,50 @@ final class ReviewStore {
                 }
                 if !alreadyExists {
                     created.append(createAgentReview(for: comment, section: section, pullRequest: pullRequest, reviewID: reviewID, isUnread: true))
+                } else {
+                    _ = createAgentReview(for: comment, section: section, pullRequest: pullRequest, reviewID: reviewID)
                 }
             }
         }
+        persist()
         return created
     }
 
-    /// Both GitHub PRs and the local practice fixture enter the same
-    /// section-card flow. Local practice completes with its safe simulated
-    /// review response; GitHub PRs use the normal read-only Cursor analysis.
-    private func startAutomaticReviews(for pullRequest: PullRequest, comments: [ReviewComment]) {
-        let cardIDs = createAnalysisCards(for: pullRequest, comments: comments)
-        guard !cardIDs.isEmpty else { return }
-        let key = worktreeKey(pullRequest)
-        if let activeKey = activePullRequestKeys[pullRequest.repository], activeKey != key {
-            setCards(cardIDs, status: .queued)
-            statusMessage = "(pullRequest.repository)의 활성 PR 분석이 끝날 때까지 새 리뷰를 분석 대기열에 넣었습니다."
-            return
-        }
-        if activePullRequestKeys[pullRequest.repository] == nil {
-            // A persisted historical path is not proof that this branch is
-            // still checked out after an app relaunch. Prepare it once again.
-            worktreePaths[key] = nil
-        }
-        activePullRequestKeys[pullRequest.repository] = key
-        for cardID in cardIDs {
-            Task { await self.beginAgentReview(id: cardID, pullRequest: pullRequest) }
-        }
+    /// Polling creates and refreshes cards only. It must not reserve a
+    /// workspace, run Cursor, or check out a PR branch; those happen only
+    /// after the user explicitly starts a card analysis.
+    private func createAutomaticReviewCards(for pullRequest: PullRequest, comments: [ReviewComment]) {
+        _ = createAnalysisCards(for: pullRequest, comments: comments)
     }
 
-    private func setCards(_ ids: [AgentReviewCard.ID], status: AgentReviewStatus) {
-        for index in agentReviewCards.indices where ids.contains(agentReviewCards[index].id) {
-            agentReviewCards[index].status = status
-            agentReviewCards[index].updatedAt = .now
+    /// Rebuilds persisted automatic cards from the currently loaded GitHub
+    /// comments after a sectioning-rule improvement. User-created cards are
+    /// preserved because they can include a manual conversation.
+    func rebuildAutomaticReviewCards(for pullRequest: PullRequest) {
+        let currentComments = comments(for: pullRequest)
+        guard !currentComments.isEmpty else {
+            statusMessage = "다시 분류할 PR 코멘트가 없습니다. 먼저 새로 고침을 실행하세요."
+            return
         }
+        let hasActiveAnalysis = agentReviewCards.contains {
+            $0.repository == pullRequest.repository &&
+            $0.pullRequestNumber == pullRequest.number &&
+            $0.reviewID != nil &&
+            ($0.status == .reviewing || $0.status == .queued)
+        }
+        guard !hasActiveAnalysis else {
+            statusMessage = "진행 중이거나 대기 중인 자동 분석이 끝난 뒤 검토카드를 다시 분류하세요."
+            return
+        }
+
+        agentReviewCards.removeAll {
+            $0.repository == pullRequest.repository &&
+            $0.pullRequestNumber == pullRequest.number &&
+            $0.reviewID != nil
+        }
+        let rebuiltCount = createAnalysisCards(for: pullRequest, comments: currentComments).count
         persist()
+        statusMessage = "개선된 규칙으로 자동 검토카드 \(rebuiltCount)개를 다시 만들었습니다. 분석은 '분석 시작'을 눌러야 진행됩니다."
     }
 
     func approveWorkspaceSwitch() {
