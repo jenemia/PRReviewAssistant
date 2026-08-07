@@ -191,6 +191,76 @@ struct RegisteredRepository: Identifiable, Hashable, Codable {
     var isLocalPractice: Bool? = false
 }
 
+/// A local branch shown in the PR-request flow.  This deliberately contains
+/// only local Git metadata: selecting a branch must not check it out.
+struct RepositoryBranch: Identifiable, Hashable, Codable {
+    var repositoryID: UUID
+    var repositoryName: String
+    var name: String
+    /// Git reference used for read-only inspection.  A PR request still sends
+    /// `name` to GitHub, while an origin-only branch is inspected as
+    /// `origin/name` locally.
+    var reference: String
+    var sha: String
+    var subject: String
+    var updatedAt: Date?
+    var isCurrent: Bool
+    var isRemote: Bool
+
+    var id: String { "\(repositoryID.uuidString):\(name)" }
+}
+
+enum BranchReviewCategory: String, CaseIterable, Codable, Hashable {
+    case blocker = "차단"
+    case concern = "확인 필요"
+    case improvement = "개선"
+    case passed = "통과"
+
+    var symbol: String {
+        switch self {
+        case .blocker: "xmark.octagon.fill"
+        case .concern: "exclamationmark.triangle.fill"
+        case .improvement: "lightbulb.fill"
+        case .passed: "checkmark.seal.fill"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .blocker: .red
+        case .concern: .orange
+        case .improvement: .blue
+        case .passed: .green
+        }
+    }
+}
+
+struct BranchReviewCard: Identifiable, Hashable, Codable {
+    var id = UUID()
+    var category: BranchReviewCategory
+    var title: String
+    var summary: String
+    var details: String
+    var messages: [AgentChatMessage] = []
+    var updatedAt = Date()
+}
+
+struct BranchQuizQuestion: Identifiable, Hashable, Codable {
+    var id = UUID()
+    var question: String
+    var choices: [String]
+    var correctIndex: Int
+    var explanation: String
+
+    private enum CodingKeys: String, CodingKey { case question, choices, correctIndex, explanation }
+    init(question: String, choices: [String], correctIndex: Int, explanation: String) {
+        self.question = question
+        self.choices = choices
+        self.correctIndex = correctIndex
+        self.explanation = explanation
+    }
+}
+
 struct ReviewComment: Identifiable, Hashable, Codable {
     var id: String
     var author: String

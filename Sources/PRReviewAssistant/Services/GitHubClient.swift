@@ -114,6 +114,14 @@ struct GitHubClient: Sendable {
         )
     }
 
+    func createPullRequest(repository: RegisteredRepository, branch: String, title: String, body: String) throws -> String {
+        try runner.run(
+            "gh",
+            arguments: ["pr", "create", "--repo", repository.fullName, "--head", branch, "--base", repository.defaultBranch, "--title", title, "--body", body],
+            workingDirectory: repository.localPath
+        ).output.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     /// Merges on GitHub using the same "Create a merge commit" strategy as the
     /// GitHub web UI, then asks GitHub to delete the source branch only after a
     /// successful server-side merge. Run from the registered repository so any

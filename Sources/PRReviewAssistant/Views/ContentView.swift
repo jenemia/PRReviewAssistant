@@ -4,6 +4,7 @@ import AppKit
 struct ContentView: View {
     @Bindable var store: ReviewStore
     @State private var selection: SidebarItem? = .inbox
+    @State private var cursorHistorySearch = ""
 
     var body: some View {
         Group {
@@ -18,16 +19,20 @@ struct ContentView: View {
     private var mainInterface: some View {
         NavigationSplitView {
             List(selection: $selection) {
-                Section("리뷰") {
+                Section("PR 리뷰 대응") {
                     HStack(spacing: 7) {
                         Label("Inbox", systemImage: "tray.full")
                         if store.unreadCount > 0 { UnreadDot() }
                     }
                         .tag(SidebarItem.inbox)
                 }
-                Section("관리") {
-                    Label("저장소", systemImage: "folder")
-                        .tag(SidebarItem.repositories)
+                Section("PR 요청") {
+                    Label("PR 요청", systemImage: "arrow.up.right.square")
+                        .tag(SidebarItem.prRequest)
+                }
+                Section("에이전트") {
+                    Label("에이전트 기록", systemImage: "clock.arrow.circlepath")
+                        .tag(SidebarItem.agentHistory)
                 }
             }
             .navigationTitle("PR Review")
@@ -35,20 +40,25 @@ struct ContentView: View {
         } content: {
             if store.isInitialLoadInProgress {
                 InitialLoadingView()
-            } else if selection == .repositories {
-                RepositoryManagementView(store: store)
+            } else if selection == .agentHistory {
+                CursorSessionListView(store: store, searchText: $cursorHistorySearch)
+            } else if selection == .prRequest, let branch = store.selectedBranch {
+                // In PR-request mode the centre is the branch detail; the
+                // branch picker deliberately remains in the right side view.
+                BranchRequestDetailView(branch: branch, store: store)
+            } else if selection == .prRequest {
+                ContentUnavailableView("브랜치를 선택하세요", systemImage: "arrow.right")
             } else {
                 InboxView(store: store)
             }
         } detail: {
             if store.isInitialLoadInProgress {
                 InitialLoadingView()
-            } else if selection == .repositories {
-                ContentUnavailableView(
-                    "저장소 관리",
-                    systemImage: "folder.badge.gearshape",
-                    description: Text("가운데 화면에서 감시 설정을 바꾸거나 저장소를 추가·삭제할 수 있습니다.")
-                )
+            } else if selection == .agentHistory {
+                CursorSessionDetailView(store: store)
+            } else if selection == .prRequest {
+                BranchRequestListView(store: store)
+                    .frame(minWidth: 280, idealWidth: 340, maxWidth: 420)
             } else if let pullRequest = store.selectedPullRequest {
                 PullRequestDetailView(pullRequest: pullRequest, store: store)
             } else {
@@ -69,15 +79,20 @@ struct ContentView: View {
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button(action: store.refresh) { Label("새로 고침", systemImage: "arrow.clockwise") }
-                    .disabled(store.isRefreshing)
-                    .help("새로 고침")
-            }
-            if selection == .inbox {
-                ToolbarItem(placement: .primaryAction) {
-                    Button { selection = .repositories } label: { Label("저장소 관리", systemImage: "folder.badge.gearshape") }
-                        .help("저장소 관리")
+                Button {
+                    if selection == .agentHistory {
+                        Task {
+                            await store.loadCursorHistory()
+                            await store.classifyUpdatedCursorSessions()
+                        }
+                    }
+                    else if selection == .prRequest { store.loadRepositoryBranches() }
+                    else { store.refresh() }
+                } label: {
+                    Label("새로 고침", systemImage: "arrow.clockwise")
                 }
+                .disabled(selection == .agentHistory ? store.isLoadingCursorHistory : (selection == .prRequest ? store.isLoadingBranches : store.isRefreshing))
+                .help(selection == .agentHistory ? "Cursor 세션 기록 새로 고침" : (selection == .prRequest ? "브랜치 목록 새로 고침" : "새로 고침"))
             }
         }
     }
@@ -221,7 +236,7 @@ private struct StatusRow: View {
     }
 }
 
-private enum SidebarItem: Hashable { case inbox, repositories }
+private enum SidebarItem: Hashable { case inbox, prRequest, agentHistory }
 
 private struct InitialLoadingView: View {
     var body: some View {

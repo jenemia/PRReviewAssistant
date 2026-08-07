@@ -23,7 +23,8 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "PRReviewAssistant",
-            resources: [.process("Resources")]
+            resources: [.process("Resources")],
+            linkerSettings: [.linkedLibrary("sqlite3")]
         ),
         .testTarget(
             name: "PRReviewAssistantTests",

@@ -1,7 +1,7 @@
 import SwiftUI
 import AppKit
 
-/// The repository screen is reached from the main sidebar, not buried in app settings.
+/// Repository mutations are intentionally available only from the app settings.
 struct RepositoryManagementView: View {
     @Bindable var store: ReviewStore
     @State private var repositoryPendingRemoval: RegisteredRepository?

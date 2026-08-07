@@ -113,6 +113,9 @@ struct SettingsView: View {
             .padding()
             .tabItem { Label("데스크톱 펫", systemImage: "figure.stand") }
 
+            RepositoryManagementView(store: store)
+                .tabItem { Label("저장소", systemImage: "folder") }
+
             AgentSettingsView(store: store)
                 .tabItem { Label("LLM Agent", systemImage: "sparkles") }
         }

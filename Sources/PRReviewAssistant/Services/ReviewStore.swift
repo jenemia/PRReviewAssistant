@@ -80,12 +80,32 @@ final class ReviewStore {
     var latestAppRelease: GitHubRelease?
     var isCheckingForAppUpdate = false
     var appUpdateStatus = ""
+    var cursorSessions: [CursorSession] = []
+    var selectedCursorSessionID: String?
+    var cursorHistoryStatus = "Cursor 세션 기록을 아직 불러오지 않았습니다."
+    var isLoadingCursorHistory = false
+    var cursorSessionSummaries: [String: String] = [:]
+    var isSummarizingCursorSessionID: String?
+    var cursorSessionSpecs: [String: CursorSessionSpec] = [:]
+    var isClassifyingCursorSessions = false
+    var cursorSpecClassificationStatus = ""
+    var repositoryBranches: [RepositoryBranch] = []
+    var requestedBranches: [RepositoryBranch] = []
+    var selectedBranchID: String?
+    var branchReviewCards: [String: [BranchReviewCard]] = [:]
+    var isLoadingBranches = false
+    var isReviewingBranch = false
+    var branchQuizzes: [String: [BranchQuizQuestion]] = [:]
+    var isMakingBranchQuiz = false
 
     private let persistence = AppPersistence()
     private let github = GitHubClient()
     private let workspaces = WorkspaceManager()
     private let localPractice = LocalPracticeRepository()
     private let cursor = CursorAgent()
+    private let cursorHistory = CursorSessionHistoryService()
+    private let cursorSessionSpecStore = CursorSessionSpecStore()
+    private let workspaceSpecCatalog = WorkspaceSpecCatalog()
     private let notifications = NotificationService()
     private var processedCommentIDs: Set<String> = []
     private var trustedAgentReviewIDs: Set<AgentReviewCard.ID> = []
@@ -138,12 +158,142 @@ final class ReviewStore {
         projectCopyFolder = state.projectCopyFolder
         updatesEnabled = state.updatesEnabled
         lastNotifiedUpdateTag = state.lastNotifiedUpdateTag
+        requestedBranches = state.requestedBranches
         recoverInterruptedWork()
         Task { await startup() }
     }
 
     var selectedPullRequest: PullRequest? { pullRequests.first { $0.id == selectedID } }
+    var selectedBranch: RepositoryBranch? { requestedBranches.first { $0.id == selectedBranchID } }
+    var selectedCursorSession: CursorSession? { cursorSessions.first { $0.id == selectedCursorSessionID } }
+    var pendingCursorSpecClassificationCount: Int {
+        cursorSessions.filter { session in
+            guard let spec = cursorSessionSpecs[session.id] else { return true }
+            return spec.sessionUpdatedAt < session.updatedAt
+        }.count
+    }
     var unreadCount: Int { pullRequests.filter(isUnread(_:)).count }
+
+    func loadRepositoryBranches() {
+        guard !isLoadingBranches else { return }
+        isLoadingBranches = true
+        defer { isLoadingBranches = false }
+        var loaded: [RepositoryBranch] = []
+        for repository in repositories {
+            do { loaded += try workspaces.branches(in: repository) }
+            catch { statusMessage = "\(repository.fullName) 브랜치를 불러오지 못했습니다: \(error.localizedDescription)" }
+        }
+        repositoryBranches = loaded
+        // Preserve user-added branches, but refresh their metadata whenever
+        // origin reports the same branch again.
+        requestedBranches = requestedBranches.compactMap { requested in
+            loaded.first(where: { $0.id == requested.id }) ?? requested
+        }
+        if selectedBranch == nil { selectedBranchID = requestedBranches.first?.id }
+    }
+
+    func addRequestedBranch(_ branch: RepositoryBranch) {
+        if let index = requestedBranches.firstIndex(where: { $0.id == branch.id }) {
+            requestedBranches[index] = branch
+        } else {
+            requestedBranches.append(branch)
+            requestedBranches.sort { lhs, rhs in
+                if lhs.repositoryName != rhs.repositoryName { return lhs.repositoryName < rhs.repositoryName }
+                return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+            }
+        }
+        selectedBranchID = branch.id
+        persist()
+    }
+
+    func removeRequestedBranch(_ branch: RepositoryBranch) {
+        requestedBranches.removeAll { $0.id == branch.id }
+        if selectedBranchID == branch.id { selectedBranchID = requestedBranches.first?.id }
+        persist()
+    }
+
+    func branchCards(for branch: RepositoryBranch) -> [BranchReviewCard] { branchReviewCards[branch.id] ?? [] }
+
+    func reviewSelectedBranch() async {
+        guard let branch = selectedBranch,
+              let repository = repositories.first(where: { $0.id == branch.repositoryID }),
+              !isReviewingBranch else { return }
+        isReviewingBranch = true
+        defer { isReviewingBranch = false }
+        do {
+            let model = effectiveAgentModel
+            let output = try await background { try self.cursor.reviewBranch(repositoryPath: repository.localPath, branch: branch, baseBranch: repository.defaultBranch, model: model) }
+            branchReviewCards[branch.id] = Self.makeBranchReviewCards(from: output)
+            statusMessage = "\(branch.name) 브랜치 리뷰를 분류했습니다."
+        } catch {
+            statusMessage = "브랜치 리뷰 실패: \(error.localizedDescription)"
+        }
+    }
+
+    func sendBranchMessage(cardID: BranchReviewCard.ID, branch: RepositoryBranch, message: String) async {
+        guard let repository = repositories.first(where: { $0.id == branch.repositoryID }),
+              let index = branchReviewCards[branch.id]?.firstIndex(where: { $0.id == cardID }) else { return }
+        branchReviewCards[branch.id]?[index].messages.append(.init(role: .user, body: message))
+        branchReviewCards[branch.id]?[index].updatedAt = .now
+        let card = branchReviewCards[branch.id]![index]
+        do {
+            let model = effectiveAgentModel
+            let response = try await background { try self.cursor.askAboutBranch(repositoryPath: repository.localPath, branch: branch, card: card, question: message, model: model) }
+            guard let updated = branchReviewCards[branch.id]?.firstIndex(where: { $0.id == cardID }) else { return }
+            branchReviewCards[branch.id]?[updated].messages.append(.init(role: .agent, body: response))
+            branchReviewCards[branch.id]?[updated].updatedAt = .now
+        } catch {
+            guard let updated = branchReviewCards[branch.id]?.firstIndex(where: { $0.id == cardID }) else { return }
+            branchReviewCards[branch.id]?[updated].messages.append(.init(role: .agent, body: "대화 요청에 실패했습니다. \(error.localizedDescription)"))
+        }
+    }
+
+    func requestPullRequest(for branch: RepositoryBranch, title: String, body: String) async -> String? {
+        guard let repository = repositories.first(where: { $0.id == branch.repositoryID }) else { return nil }
+        do {
+            let url = try await background { try self.github.createPullRequest(repository: repository, branch: branch.name, title: title, body: body) }
+            statusMessage = "PR 요청을 만들었습니다: \(url)"
+            return url
+        } catch {
+            statusMessage = "PR 요청 실패: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    func makeBranchQuiz(for branch: RepositoryBranch) async -> [BranchQuizQuestion]? {
+        guard let repository = repositories.first(where: { $0.id == branch.repositoryID }),
+              !isMakingBranchQuiz else { return branchQuizzes[branch.id] }
+        let cards = branchCards(for: branch)
+        guard !cards.isEmpty else {
+            statusMessage = "퀴즈를 만들기 전에 브랜치 리뷰를 실행하세요."
+            return nil
+        }
+        isMakingBranchQuiz = true
+        defer { isMakingBranchQuiz = false }
+        do {
+            let model = effectiveAgentModel
+            let questions = try await background { try self.cursor.makeBranchQuiz(repositoryPath: repository.localPath, branch: branch, reviewCards: cards, model: model) }
+            branchQuizzes[branch.id] = questions
+            return questions
+        } catch {
+            statusMessage = "퀴즈 생성 실패: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    private static func makeBranchReviewCards(from output: String) -> [BranchReviewCard] {
+        let mapping: [(String, BranchReviewCategory)] = [("차단", .blocker), ("확인 필요", .concern), ("개선", .improvement), ("통과", .passed)]
+        return mapping.map { title, category in
+            let pattern = "(?s)##\\s*\(NSRegularExpression.escapedPattern(for: title))\\s*(.*?)(?=\\n##\\s|\\z)"
+            let range = NSRange(output.startIndex..., in: output)
+            let content: String
+            if let expression = try? NSRegularExpression(pattern: pattern), let match = expression.firstMatch(in: output, range: range), let bodyRange = Range(match.range(at: 1), in: output) {
+                content = String(output[bodyRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+            } else { content = "특이사항 없음" }
+            let firstHeading = content.split(separator: "\n").first(where: { $0.hasPrefix("###") })?.replacingOccurrences(of: "#", with: "").trimmingCharacters(in: .whitespaces) ?? title
+            return BranchReviewCard(category: category, title: firstHeading, summary: String(content.replacingOccurrences(of: "\n", with: " ").prefix(130)), details: content)
+        }
+    }
     func canCommit(for card: AgentReviewCard, pullRequest: PullRequest) -> Bool {
         guard let plan = implementationPlan(for: card, pullRequest: pullRequest) else { return false }
         return plan.status == .completed
@@ -174,6 +324,86 @@ final class ReviewStore {
         restartMonitoring()
         restartUpdateChecks()
         Task { [weak self] in await self?.checkCursorConnection() }
+    }
+
+    func loadCursorHistory() async {
+        guard !isLoadingCursorHistory else { return }
+        isLoadingCursorHistory = true
+        defer { isLoadingCursorHistory = false }
+        do {
+            let result = try await background {
+                (try self.cursorHistory.loadSessions(), try self.cursorSessionSpecStore.load())
+            }
+            let sessions = result.0
+            cursorSessions = sessions
+            cursorSessionSpecs = result.1
+            if let selectedCursorSessionID, sessions.contains(where: { $0.id == selectedCursorSessionID }) {
+                // Keep the current conversation visible after a refresh.
+            } else {
+                selectedCursorSessionID = sessions.first?.id
+            }
+            cursorSessionSummaries = cursorSessionSummaries.filter { key, _ in sessions.contains(where: { $0.id == key }) }
+            cursorHistoryStatus = sessions.isEmpty ? "표시할 Cursor 세션 기록이 없습니다." : "Cursor 세션 \(sessions.count)개를 읽었습니다."
+        } catch {
+            cursorSessions = []
+            selectedCursorSessionID = nil
+            cursorHistoryStatus = error.localizedDescription
+        }
+    }
+
+    func summarizeCursorSession(_ session: CursorSession) async {
+        guard isSummarizingCursorSessionID == nil else { return }
+        isSummarizingCursorSessionID = session.id
+        defer { isSummarizingCursorSessionID = nil }
+        do {
+            let model = effectiveAgentModel
+            let summary = try await background { try self.cursor.summarize(session: session, model: model) }
+            cursorSessionSummaries[session.id] = summary
+        } catch {
+            cursorHistoryStatus = "세션 요약 실패: \(error.localizedDescription)"
+        }
+    }
+
+    func classifyUpdatedCursorSessions() async {
+        guard !isClassifyingCursorSessions else { return }
+        let pending = cursorSessions.filter { session in
+            guard let record = cursorSessionSpecs[session.id] else { return true }
+            return record.sessionUpdatedAt < session.updatedAt
+        }
+        guard !pending.isEmpty else {
+            cursorSpecClassificationStatus = "새로 분류할 세션이 없습니다."
+            return
+        }
+        isClassifyingCursorSessions = true
+        cursorSpecClassificationStatus = "갱신된 세션 \(pending.count)개를 spec에 연결하는 중입니다."
+        defer { isClassifyingCursorSessions = false }
+
+        var completed = 0
+        for session in pending {
+            do {
+                let documents = try await background { self.workspaceSpecCatalog.documents(in: session.workspacePath) }
+                let model = effectiveAgentModel
+                let classification = try await background {
+                    try self.cursor.classifySpec(session: session, documents: documents, model: model)
+                }
+                let record = CursorSessionSpec(
+                    sessionID: session.id,
+                    specName: classification.specName,
+                    specPath: classification.specPath,
+                    sessionUpdatedAt: session.updatedAt,
+                    classifiedAt: .now
+                )
+                try await background { try self.cursorSessionSpecStore.save(record) }
+                cursorSessionSpecs[session.id] = record
+                completed += 1
+                cursorSpecClassificationStatus = "\(completed)/\(pending.count)개 세션을 분류했습니다."
+            } catch {
+                cursorSpecClassificationStatus = "세션 spec 분류 중 일부 항목을 건너뛰었습니다: \(error.localizedDescription)"
+            }
+        }
+        if completed == pending.count {
+            cursorSpecClassificationStatus = "갱신된 세션 \(completed)개를 spec별로 분류했습니다."
+        }
     }
 
     func checkOnboardingPrerequisites() async {
@@ -1559,6 +1789,6 @@ final class ReviewStore {
         guard parts.count == 2, parts.allSatisfy({ !$0.isEmpty && !$0.contains(" ") }) else { return nil }
         return value
     }
-    private func persist() { persistence.save(.init(repositories: repositories, processedCommentIDs: processedCommentIDs, knownPullRequestIDs: knownPullRequestIDs, unreadPullRequestIDs: unreadPullRequestIDs, unreadCommentIDs: unreadCommentIDs, hasEstablishedNotificationBaseline: hasEstablishedNotificationBaseline, approvedPullRequestIDs: approvedPullRequestIDs, hasEstablishedApprovalBaseline: hasEstablishedApprovalBaseline, monitoringEnabled: monitoringEnabled, monitoringInterval: monitoringInterval, analyses: analyses, agentReviewCards: agentReviewCards, implementationPlans: implementationPlans, committedHeads: committedHeads, postedReReviewCommentTokens: postedReReviewCommentTokens, agentModel: agentModel, customAgentModel: customAgentModel, reviewAuthorFilter: reviewAuthorFilter, petVisible: petVisible, petSize: petSize, petReduceMotion: petReduceMotion, latestPetNotification: latestPetNotification, hasCompletedOnboarding: hasCompletedOnboarding, skippedOnboardingSteps: skippedOnboardingSteps, projectCopyFolder: projectCopyFolder, updateRepository: updateRepository, updatesEnabled: updatesEnabled, lastNotifiedUpdateTag: lastNotifiedUpdateTag)) }
+    private func persist() { persistence.save(.init(repositories: repositories, processedCommentIDs: processedCommentIDs, knownPullRequestIDs: knownPullRequestIDs, unreadPullRequestIDs: unreadPullRequestIDs, unreadCommentIDs: unreadCommentIDs, hasEstablishedNotificationBaseline: hasEstablishedNotificationBaseline, approvedPullRequestIDs: approvedPullRequestIDs, hasEstablishedApprovalBaseline: hasEstablishedApprovalBaseline, monitoringEnabled: monitoringEnabled, monitoringInterval: monitoringInterval, analyses: analyses, agentReviewCards: agentReviewCards, implementationPlans: implementationPlans, committedHeads: committedHeads, postedReReviewCommentTokens: postedReReviewCommentTokens, agentModel: agentModel, customAgentModel: customAgentModel, reviewAuthorFilter: reviewAuthorFilter, petVisible: petVisible, petSize: petSize, petReduceMotion: petReduceMotion, latestPetNotification: latestPetNotification, hasCompletedOnboarding: hasCompletedOnboarding, skippedOnboardingSteps: skippedOnboardingSteps, projectCopyFolder: projectCopyFolder, updateRepository: updateRepository, updatesEnabled: updatesEnabled, lastNotifiedUpdateTag: lastNotifiedUpdateTag, requestedBranches: requestedBranches)) }
     private func background<T: Sendable>(_ work: @escaping @Sendable () throws -> T) async throws -> T { try await Task.detached(priority: .userInitiated, operation: work).value }
 }

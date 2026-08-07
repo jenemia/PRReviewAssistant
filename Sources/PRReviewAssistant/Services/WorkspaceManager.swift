@@ -3,6 +3,54 @@ import Foundation
 struct WorkspaceManager: Sendable {
     private let runner = ProcessRunner()
 
+    /// Reads the origin branches without switching the repository's working
+    /// tree.  PR requests must use GitHub-visible branches, so the picker is
+    /// deliberately backed by `refs/remotes/origin` rather than only local
+    /// branches that may never have been pushed.
+    func branches(in repository: RegisteredRepository) throws -> [RepositoryBranch] {
+        // Keep the autocomplete current, but do not change the checked-out
+        // branch or any worktree files.
+        _ = try? runner.run(
+            "git",
+            arguments: ["fetch", repository.remoteName, "--prune"],
+            workingDirectory: repository.localPath
+        )
+        let currentBranch = try? runner.run(
+            "git",
+            arguments: ["symbolic-ref", "--quiet", "--short", "HEAD"],
+            workingDirectory: repository.localPath
+        ).output.trimmingCharacters(in: .whitespacesAndNewlines)
+        let output = try runner.run(
+            "git",
+            arguments: ["for-each-ref", "--format=%(refname:short)%00%(objectname:short)%00%(subject)%00%(committerdate:iso-strict)", "refs/remotes/\(repository.remoteName)"],
+            workingDirectory: repository.localPath
+        ).output
+        return output.split(whereSeparator: \.isNewline).compactMap { line in
+            let parts = line.split(separator: "\0", omittingEmptySubsequences: false).map(String.init)
+            guard parts.count >= 4,
+                  parts[0] != "\(repository.remoteName)/HEAD",
+                  parts[0].hasPrefix("\(repository.remoteName)/") else { return nil }
+            let name = String(parts[0].dropFirst(repository.remoteName.count + 1))
+            guard !name.isEmpty else { return nil }
+            let date = ISO8601DateFormatter().date(from: parts[3])
+            return RepositoryBranch(
+                repositoryID: repository.id,
+                repositoryName: repository.fullName,
+                name: name,
+                reference: parts[0],
+                sha: parts[1],
+                subject: parts[2],
+                updatedAt: date,
+                isCurrent: currentBranch == name,
+                isRemote: true
+            )
+        }
+        .sorted { lhs, rhs in
+            if lhs.isCurrent != rhs.isCurrent { return lhs.isCurrent }
+            return (lhs.updatedAt ?? .distantPast) > (rhs.updatedAt ?? .distantPast)
+        }
+    }
+
     /// Prepares the registered repository itself as the single PR work folder.
     /// The PR's local branch is checked out (never detached) so the agent and user
     /// always work from an attached HEAD. A dirty checkout is stashed first.
