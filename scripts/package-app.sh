@@ -14,7 +14,10 @@ rm -rf "$app_dir"
 mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
 cp ".build/release/PRReviewAssistant" "$app_dir/Contents/MacOS/PRReviewAssistant"
 cp "Resources/Info.plist" "$app_dir/Contents/Info.plist"
-cp "Resources/AppIcon.icns" "$app_dir/Contents/Resources/AppIcon.icns"
+# Keep the distributed app icon aligned with the Swift package resource. The
+# repository-root icon is retained for older tooling, but the current icon
+# artwork lives with the app target resources.
+cp "Sources/PRReviewAssistant/Resources/AppIcon.icns" "$app_dir/Contents/Resources/AppIcon.icns"
 cp "Sources/PRReviewAssistant/Resources/PetMascotPRWeapons.png" "$app_dir/Contents/Resources/PetMascotPRWeapons.png"
 if [[ "$signing_identity" == "-" ]]; then
   codesign --force --sign - --timestamp=none "$app_dir"
