@@ -5,6 +5,7 @@ struct ContentView: View {
     @Bindable var store: ReviewStore
     @State private var selection: SidebarItem? = .inbox
     @State private var cursorHistorySearch = ""
+    @State private var showingPRBranchPicker = false
 
     var body: some View {
         Group {
@@ -40,9 +41,7 @@ struct ContentView: View {
                         }
                     }
                 }
-                Section("PR 요청") {
-                    Label("PR 요청", systemImage: "arrow.up.right.square")
-                        .tag(SidebarItem.prRequest)
+                Section {
                     ForEach(store.requestedBranches) { branch in
                         Button {
                             selection = .prRequest
@@ -53,6 +52,25 @@ struct ContentView: View {
                         .buttonStyle(.plain)
                         .help("PR 요청 브랜치 \(branch.name) 보기")
                     }
+                } header: {
+                    HStack(spacing: 6) {
+                        Button {
+                            selection = .prRequest
+                        } label: {
+                            Label("PR 요청", systemImage: "arrow.up.right.square")
+                        }
+                        .buttonStyle(.plain)
+                        Spacer()
+                        Button {
+                            selection = .prRequest
+                            showingPRBranchPicker = true
+                        } label: {
+                            Image(systemName: "plus")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("origin 브랜치를 PR 요청 목록에 추가")
+                    }
+                    .textCase(nil)
                 }
                 Section("에이전트") {
                     Label("에이전트 기록", systemImage: "clock.arrow.circlepath")
@@ -72,14 +90,10 @@ struct ContentView: View {
                         .frame(minWidth: 420, idealWidth: 620, maxWidth: .infinity)
                 }
             } else if selection == .prRequest {
-                HSplitView {
-                    if let branch = store.selectedBranch {
-                        BranchRequestDetailView(branch: branch, store: store)
-                    } else {
-                        ContentUnavailableView("브랜치를 선택하세요", systemImage: "arrow.right", description: Text("오른쪽 목록의 + 버튼으로 origin 브랜치를 추가하세요."))
-                    }
-                    BranchRequestListView(store: store)
-                        .frame(minWidth: 280, idealWidth: 340, maxWidth: 420)
+                if let branch = store.selectedBranch {
+                    BranchRequestDetailView(branch: branch, store: store)
+                } else {
+                    ContentUnavailableView("PR 요청 브랜치를 추가하세요", systemImage: "plus", description: Text("사이드바 ‘PR 요청’ 제목 오른쪽의 + 버튼을 누르면 origin 브랜치를 검색해 추가할 수 있습니다."))
                 }
             } else if let pullRequest = store.selectedPullRequest {
                 // The PR's comment categories are now the main (centre)
@@ -118,6 +132,9 @@ struct ContentView: View {
                 .disabled(selection == .agentHistory ? store.isLoadingCursorHistory : (selection == .prRequest ? store.isLoadingBranches : store.isRefreshing))
                 .help(selection == .agentHistory ? "Cursor 세션 기록 새로 고침" : (selection == .prRequest ? "브랜치 목록 새로 고침" : "새로 고침"))
             }
+        }
+        .sheet(isPresented: $showingPRBranchPicker) {
+            BranchPickerSheet(store: store)
         }
     }
 }

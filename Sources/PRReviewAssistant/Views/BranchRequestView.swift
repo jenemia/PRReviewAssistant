@@ -47,7 +47,7 @@ struct BranchRequestListView: View {
     }
 }
 
-private struct BranchPickerSheet: View {
+struct BranchPickerSheet: View {
     @Bindable var store: ReviewStore
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
