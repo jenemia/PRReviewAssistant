@@ -4,7 +4,6 @@ import AppKit
 struct CursorSessionListView: View {
     @Bindable var store: ReviewStore
     @Binding var searchText: String
-    @State private var showingSpecSearch = false
     @State private var visibleCounts: [String: Int] = [:]
 
     private struct SpecGroup: Identifiable {
@@ -61,21 +60,6 @@ struct CursorSessionListView: View {
         }
         .navigationTitle("에이전트 기록")
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button(showingSpecSearch ? "spec 검색 닫기" : "spec 검색", systemImage: showingSpecSearch ? "xmark.circle" : "magnifyingglass") {
-                    showingSpecSearch.toggle()
-                    if !showingSpecSearch { searchText = "" }
-                }
-                .help("spec 이름을 찾아 해당 그룹을 목록 맨 위로 올립니다")
-            }
-            if showingSpecSearch {
-                ToolbarItem(placement: .primaryAction) {
-                    TextField("spec 찾기", text: $searchText)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 180)
-                        .help("일치하는 spec 그룹을 목록 맨 위로 올립니다")
-                }
-            }
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     Task { await store.classifyUpdatedCursorSessions() }

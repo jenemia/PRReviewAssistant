@@ -6,6 +6,7 @@ struct ContentView: View {
     @State private var selection: SidebarItem? = .inbox
     @State private var cursorHistorySearch = ""
     @State private var showingPRBranchPicker = false
+    @State private var showingAgentSpecSearch = false
 
     var body: some View {
         Group {
@@ -72,9 +73,33 @@ struct ContentView: View {
                     }
                     .textCase(nil)
                 }
-                Section("에이전트") {
-                    Label("에이전트 기록", systemImage: "clock.arrow.circlepath")
-                        .tag(SidebarItem.agentHistory)
+                Section {
+                    Button {
+                        selection = .agentHistory
+                    } label: {
+                        Label("에이전트 기록", systemImage: "clock.arrow.circlepath")
+                    }
+                    .buttonStyle(.plain)
+                    .help("Spec별 에이전트 세션 기록 보기")
+                } header: {
+                    HStack(spacing: 6) {
+                        Text("에이전트")
+                        Spacer()
+                        Button {
+                            selection = .agentHistory
+                            showingAgentSpecSearch = true
+                        } label: {
+                            Image(systemName: "magnifyingglass")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Spec을 찾아 해당 그룹을 목록 최상단으로 이동")
+                        .popover(isPresented: $showingAgentSpecSearch, arrowEdge: .leading) {
+                            AgentSpecSearchPopover(query: $cursorHistorySearch) {
+                                showingAgentSpecSearch = false
+                            }
+                        }
+                    }
+                    .textCase(nil)
                 }
             }
             .navigationTitle("PR Review")
@@ -161,6 +186,31 @@ private struct PRBranchSidebarRow: View {
             if isUnread { UnreadDot() }
         }
         .contentShape(Rectangle())
+    }
+}
+
+private struct AgentSpecSearchPopover: View {
+    @Binding var query: String
+    let close: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Spec 찾기").font(.headline)
+            Text("입력한 Spec과 일치하는 그룹을 에이전트 목록의 최상단으로 올립니다.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            TextField("Spec 이름", text: $query)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 240)
+            HStack {
+                Button("지우기") { query = "" }
+                    .disabled(query.isEmpty)
+                Spacer()
+                Button("완료", action: close)
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(16)
     }
 }
 
