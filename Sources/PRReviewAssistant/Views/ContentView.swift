@@ -20,93 +20,73 @@ struct ContentView: View {
         NavigationSplitView {
             List(selection: $selection) {
                 Section("PR 리뷰 대응") {
-                    HStack(spacing: 7) {
-                        Label("Inbox", systemImage: "tray.full")
-                        if store.unreadCount > 0 { UnreadDot() }
-                    }
-                        .tag(SidebarItem.inbox)
-                }
-                Section("PR 요청") {
-                    Label("PR 요청", systemImage: "arrow.up.right.square")
-                        .tag(SidebarItem.prRequest)
-                }
-                Section("에이전트") {
-                    Label("에이전트 기록", systemImage: "clock.arrow.circlepath")
-                        .tag(SidebarItem.agentHistory)
-                }
-                if !store.pullRequests.isEmpty {
-                    Section("PR 리뷰 브랜치 목록") {
+                    if store.pullRequests.isEmpty {
+                        Label("열린 PR이 없습니다", systemImage: "tray")
+                            .foregroundStyle(.secondary)
+                    } else {
                         ForEach(store.pullRequests) { pullRequest in
                             Button {
                                 selection = .inbox
                                 store.selectedID = pullRequest.id
                             } label: {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(pullRequest.headBranch)
-                                        .font(.caption.weight(.medium))
-                                        .lineLimit(1)
-                                    Text("\(pullRequest.repository) #\(pullRequest.number)")
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                }
+                                PRBranchSidebarRow(
+                                    branch: pullRequest.headBranch,
+                                    subtitle: "\(pullRequest.repository) #\(pullRequest.number)",
+                                    isUnread: store.isUnread(pullRequest)
+                                )
                             }
                             .buttonStyle(.plain)
-                            .help("PR #\(pullRequest.number) · \(pullRequest.headBranch) 보기")
+                            .help("PR #\(pullRequest.number) · \(pullRequest.headBranch) 코멘트 분류 보기")
                         }
                     }
                 }
-                if !store.requestedBranches.isEmpty {
-                    Section("PR 요청 브랜치 목록") {
-                        ForEach(store.requestedBranches) { branch in
-                            Button {
-                                selection = .prRequest
-                                store.selectedBranchID = branch.id
-                            } label: {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(branch.name)
-                                        .font(.caption.weight(.medium))
-                                        .lineLimit(1)
-                                    Text(branch.repositoryName)
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                }
-                            }
-                            .buttonStyle(.plain)
-                            .help("PR 요청 브랜치 \(branch.name) 보기")
+                Section("PR 요청") {
+                    Label("PR 요청", systemImage: "arrow.up.right.square")
+                        .tag(SidebarItem.prRequest)
+                    ForEach(store.requestedBranches) { branch in
+                        Button {
+                            selection = .prRequest
+                            store.selectedBranchID = branch.id
+                        } label: {
+                            PRBranchSidebarRow(branch: branch.name, subtitle: branch.repositoryName, isUnread: false)
                         }
+                        .buttonStyle(.plain)
+                        .help("PR 요청 브랜치 \(branch.name) 보기")
                     }
+                }
+                Section("에이전트") {
+                    Label("에이전트 기록", systemImage: "clock.arrow.circlepath")
+                        .tag(SidebarItem.agentHistory)
                 }
             }
             .navigationTitle("PR Review")
             .listStyle(.sidebar)
-        } content: {
-            if store.isInitialLoadInProgress {
-                InitialLoadingView()
-            } else if selection == .agentHistory {
-                CursorSessionListView(store: store, searchText: $cursorHistorySearch)
-            } else if selection == .prRequest, let branch = store.selectedBranch {
-                // In PR-request mode the centre is the branch detail; the
-                // branch picker deliberately remains in the right side view.
-                BranchRequestDetailView(branch: branch, store: store)
-            } else if selection == .prRequest {
-                ContentUnavailableView("브랜치를 선택하세요", systemImage: "arrow.right")
-            } else {
-                InboxView(store: store)
-            }
         } detail: {
             if store.isInitialLoadInProgress {
                 InitialLoadingView()
             } else if selection == .agentHistory {
-                CursorSessionDetailView(store: store)
+                HSplitView {
+                    CursorSessionListView(store: store, searchText: $cursorHistorySearch)
+                        .frame(minWidth: 360, idealWidth: 460, maxWidth: .infinity)
+                    CursorSessionDetailView(store: store)
+                        .frame(minWidth: 420, idealWidth: 620, maxWidth: .infinity)
+                }
             } else if selection == .prRequest {
-                BranchRequestListView(store: store)
-                    .frame(minWidth: 280, idealWidth: 340, maxWidth: 420)
+                HSplitView {
+                    if let branch = store.selectedBranch {
+                        BranchRequestDetailView(branch: branch, store: store)
+                    } else {
+                        ContentUnavailableView("브랜치를 선택하세요", systemImage: "arrow.right", description: Text("오른쪽 목록의 + 버튼으로 origin 브랜치를 추가하세요."))
+                    }
+                    BranchRequestListView(store: store)
+                        .frame(minWidth: 280, idealWidth: 340, maxWidth: 420)
+                }
             } else if let pullRequest = store.selectedPullRequest {
+                // The PR's comment categories are now the main (centre)
+                // content. Selecting a card opens its in-app side panel.
                 PullRequestDetailView(pullRequest: pullRequest, store: store)
             } else {
-                ContentUnavailableView("PR을 선택하세요", systemImage: "arrow.left")
+                ContentUnavailableView("PR 브랜치를 선택하세요", systemImage: "arrow.left")
             }
         }
         .onChange(of: store.selectedID) { _, id in
@@ -139,6 +119,31 @@ struct ContentView: View {
                 .help(selection == .agentHistory ? "Cursor 세션 기록 새로 고침" : (selection == .prRequest ? "브랜치 목록 새로 고침" : "새로 고침"))
             }
         }
+    }
+}
+
+private struct PRBranchSidebarRow: View {
+    let branch: String
+    let subtitle: String
+    let isUnread: Bool
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "arrow.triangle.branch")
+                .foregroundStyle(BrandColor.prPurple)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(branch)
+                    .font(.caption.weight(.medium))
+                    .lineLimit(1)
+                Text(subtitle)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 2)
+            if isUnread { UnreadDot() }
+        }
+        .contentShape(Rectangle())
     }
 }
 
