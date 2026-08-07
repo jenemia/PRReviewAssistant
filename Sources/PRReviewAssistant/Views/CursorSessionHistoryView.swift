@@ -4,50 +4,77 @@ import AppKit
 struct CursorSessionListView: View {
     @Bindable var store: ReviewStore
     @Binding var searchText: String
-    @State private var selectedSpecName = "전체"
+    @State private var showingSpecSearch = false
+    @State private var visibleCounts: [String: Int] = [:]
 
-    private var specNames: [String] {
-        ["전체"] + Set(store.cursorSessionSpecs.values.map(\.specName)).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    private struct SpecGroup: Identifiable {
+        let name: String
+        let sessions: [CursorSession]
+        var id: String { name }
     }
 
-    private var sessions: [CursorSession] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !query.isEmpty {
-            // A text search is intentionally global, regardless of the active spec filter.
-            return store.cursorSessions.filter { $0.searchableText.localizedCaseInsensitiveContains(query) }
+    private var specGroups: [SpecGroup] {
+        let grouped = Dictionary(grouping: store.cursorSessions) { session in
+            store.cursorSessionSpecs[session.id]?.specName ?? CursorSessionSpec.unclassifiedName
         }
-        guard selectedSpecName != "전체" else { return store.cursorSessions }
-        return store.cursorSessions.filter { store.cursorSessionSpecs[$0.id]?.specName == selectedSpecName }
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return grouped.map { name, sessions in
+            SpecGroup(name: name, sessions: sessions.sorted { $0.updatedAt > $1.updatedAt })
+        }
+        .sorted { lhs, rhs in
+            // Searching a spec never hides the remaining history: a match is
+            // simply moved to the top of the grouped list.
+            let leftMatch = !query.isEmpty && lhs.name.localizedCaseInsensitiveContains(query)
+            let rightMatch = !query.isEmpty && rhs.name.localizedCaseInsensitiveContains(query)
+            if leftMatch != rightMatch { return leftMatch }
+            if lhs.name == CursorSessionSpec.unclassifiedName { return false }
+            if rhs.name == CursorSessionSpec.unclassifiedName { return true }
+            return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+        }
     }
 
     var body: some View {
         List(selection: $store.selectedCursorSessionID) {
-            Section {
-                ForEach(sessions) { session in
-                    CursorSessionRow(session: session, spec: store.cursorSessionSpecs[session.id])
-                        .tag(session.id)
-                }
-            } header: {
-                HStack {
-                    Text("Cursor 세션")
-                    Spacer()
-                    Text("\(sessions.count)개")
-                        .foregroundStyle(.secondary)
+            ForEach(specGroups) { group in
+                Section {
+                    let visibleCount = visibleCounts[group.id, default: 10]
+                    ForEach(group.sessions.prefix(visibleCount)) { session in
+                        CursorSessionRow(session: session, spec: store.cursorSessionSpecs[session.id])
+                            .tag(session.id)
+                    }
+                    if group.sessions.count > visibleCount {
+                        Button("더 보기 (\(min(10, group.sessions.count - visibleCount))개)", systemImage: "ellipsis.circle") {
+                            visibleCounts[group.id] = min(group.sessions.count, visibleCount + 10)
+                        }
+                        .buttonStyle(.borderless)
+                        .foregroundStyle(BrandColor.prPurple)
+                    }
+                } header: {
+                    HStack {
+                        Label(group.name, systemImage: group.name == CursorSessionSpec.unclassifiedName ? "questionmark.folder" : "doc.text")
+                        Spacer()
+                        Text("\(group.sessions.count)개")
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
         }
         .navigationTitle("에이전트 기록")
-        .searchable(text: $searchText, prompt: "모든 세션 대화 검색")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Menu {
-                    Picker("Spec 필터", selection: $selectedSpecName) {
-                        ForEach(specNames, id: \.self) { Text($0).tag($0) }
-                    }
-                } label: {
-                    Label(selectedSpecName, systemImage: "line.3.horizontal.decrease.circle")
+                Button(showingSpecSearch ? "spec 검색 닫기" : "spec 검색", systemImage: showingSpecSearch ? "xmark.circle" : "magnifyingglass") {
+                    showingSpecSearch.toggle()
+                    if !showingSpecSearch { searchText = "" }
                 }
-                .help("Spec으로 세션 필터")
+                .help("spec 이름을 찾아 해당 그룹을 목록 맨 위로 올립니다")
+            }
+            if showingSpecSearch {
+                ToolbarItem(placement: .primaryAction) {
+                    TextField("spec 찾기", text: $searchText)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 180)
+                        .help("일치하는 spec 그룹을 목록 맨 위로 올립니다")
+                }
             }
             ToolbarItem(placement: .primaryAction) {
                 Button {
@@ -59,16 +86,13 @@ struct CursorSessionListView: View {
                 .help("연결된 LLM으로 갱신된 세션을 spec 문서에 연결")
             }
         }
-        .onChange(of: specNames) { _, names in
-            if !names.contains(selectedSpecName) { selectedSpecName = "전체" }
-        }
         .overlay {
             if store.isLoadingCursorHistory {
                 ProgressView("Cursor 세션 기록을 읽는 중")
-            } else if sessions.isEmpty {
+            } else if specGroups.isEmpty {
                 ContentUnavailableView(
-                    searchText.isEmpty ? "표시할 Cursor 세션이 없습니다" : "일치하는 세션이 없습니다",
-                    systemImage: searchText.isEmpty ? "clock.arrow.circlepath" : "magnifyingglass",
+                    "표시할 Cursor 세션이 없습니다",
+                    systemImage: "clock.arrow.circlepath",
                     description: Text(store.cursorHistoryStatus)
                 )
             }

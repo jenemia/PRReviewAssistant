@@ -103,6 +103,11 @@ struct PullRequestDetailView: View {
                         pendingImplementationCardID = card.id
                         showingWorkArea = true
                     },
+                    canRequestCommit: store.canCommit(for: card, pullRequest: pullRequest),
+                    requestCommit: {
+                        pendingCommitCardID = card.id
+                        showingPushApproval = true
+                    },
                     close: { detailNavigation.closePanel() }
                 )
                     // The panel owns draft and toast state. Give each review
@@ -339,7 +344,7 @@ struct PullRequestDetailView: View {
                 if !cards.isEmpty {
                     Divider()
                     HStack {
-                        Text("코멘트별 검토").font(.headline)
+                        Text("PR 코멘트 분류").font(.headline)
                         Spacer()
                         Button("분류 다시 만들기", systemImage: "arrow.triangle.2.circlepath") {
                             showingCardRebuildConfirmation = true
@@ -348,11 +353,29 @@ struct PullRequestDetailView: View {
                         .controlSize(.small)
                         .help("개선된 규칙으로 자동 검토카드를 다시 만듭니다")
                     }
-                    ForEach(cards) { card in
-                        Button { openAgentCard(card.id) } label: {
-                            AgentReviewCardRow(card: card)
+                    let categories = Dictionary(grouping: cards) { card in
+                        ReviewCommentSection.displayLabel(for: card.sectionTitle) ?? "일반 코멘트"
+                    }
+                    let sortedCategories = categories.sorted { lhs, rhs in
+                        let leftRank = ReviewCommentSection.severitySortRank(for: lhs.value.first?.sectionTitle)
+                        let rightRank = ReviewCommentSection.severitySortRank(for: rhs.value.first?.sectionTitle)
+                        if leftRank != rightRank { return leftRank < rightRank }
+                        return lhs.key.localizedStandardCompare(rhs.key) == .orderedAscending
+                    }
+                    ForEach(sortedCategories, id: \.key) { category, categoryCards in
+                        VStack(alignment: .leading, spacing: 7) {
+                            Label("\(category) · \(categoryCards.count)개", systemImage: "rectangle.3.group")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            ForEach(categoryCards) { card in
+                                Button { openAgentCard(card.id) } label: {
+                                    AgentReviewCardRow(card: card)
+                                }
+                                .buttonStyle(.plain)
+                            }
                         }
-                        .buttonStyle(.plain)
+                        .padding(10)
+                        .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 10))
                     }
                 }
             }
@@ -1205,6 +1228,8 @@ private struct AgentChatSidePanel: View {
     let writeResponse: () -> Void
     let openCodeLocation: (String, Int?, Int?) -> String
     let beginImplementation: () -> Void
+    let canRequestCommit: Bool
+    let requestCommit: () -> Void
     let close: () -> Void
     @State private var draft = ""
 
@@ -1290,7 +1315,7 @@ private struct AgentChatSidePanel: View {
             }
             Divider()
             HStack {
-                Button("재검토", systemImage: "arrow.clockwise", action: retryAnalysis)
+                Button("분석 요청", systemImage: "sparkles", action: retryAnalysis)
                     .buttonStyle(.bordered)
                     .disabled(card.status == .reviewing || card.status == .queued)
                     .help("에이전트 응답 실패 후 이 카드의 읽기 전용 검토를 다시 시작합니다")
@@ -1304,9 +1329,14 @@ private struct AgentChatSidePanel: View {
                         .font(.caption2).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("구현 시작", systemImage: "hammer") { beginImplementation() }
+                Button("작업 요청", systemImage: "hammer") { beginImplementation() }
                     .buttonStyle(.bordered)
                     .disabled(card.messages.isEmpty || card.status == .reviewing)
+                    .help("이 코멘트 카드만 작업 계획으로 전달합니다")
+                Button("커밋 요청", systemImage: "checkmark.circle", action: requestCommit)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!canRequestCommit)
+                    .help(canRequestCommit ? "이 카드에서 완료한 변경만 로컬 커밋합니다" : "카드 작업이 완료되면 커밋을 요청할 수 있습니다")
             }
             .padding(12)
             Divider()

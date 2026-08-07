@@ -34,6 +34,50 @@ struct ContentView: View {
                     Label("에이전트 기록", systemImage: "clock.arrow.circlepath")
                         .tag(SidebarItem.agentHistory)
                 }
+                if !store.pullRequests.isEmpty {
+                    Section("PR 리뷰 브랜치 목록") {
+                        ForEach(store.pullRequests) { pullRequest in
+                            Button {
+                                selection = .inbox
+                                store.selectedID = pullRequest.id
+                            } label: {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(pullRequest.headBranch)
+                                        .font(.caption.weight(.medium))
+                                        .lineLimit(1)
+                                    Text("\(pullRequest.repository) #\(pullRequest.number)")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .help("PR #\(pullRequest.number) · \(pullRequest.headBranch) 보기")
+                        }
+                    }
+                }
+                if !store.requestedBranches.isEmpty {
+                    Section("PR 요청 브랜치 목록") {
+                        ForEach(store.requestedBranches) { branch in
+                            Button {
+                                selection = .prRequest
+                                store.selectedBranchID = branch.id
+                            } label: {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(branch.name)
+                                        .font(.caption.weight(.medium))
+                                        .lineLimit(1)
+                                    Text(branch.repositoryName)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .help("PR 요청 브랜치 \(branch.name) 보기")
+                        }
+                    }
+                }
             }
             .navigationTitle("PR Review")
             .listStyle(.sidebar)

@@ -2,10 +2,11 @@ import SwiftUI
 
 struct BranchRequestListView: View {
     @Bindable var store: ReviewStore
+    @State private var showingBranchPicker = false
 
     var body: some View {
         List(selection: $store.selectedBranchID) {
-            ForEach(Dictionary(grouping: store.repositoryBranches, by: \.repositoryName).sorted(by: { $0.key < $1.key }), id: \.key) { repository, branches in
+            ForEach(Dictionary(grouping: store.requestedBranches, by: \.repositoryName).sorted(by: { $0.key < $1.key }), id: \.key) { repository, branches in
                 Section(repository) {
                     ForEach(branches) { branch in
                         VStack(alignment: .leading, spacing: 4) {
@@ -17,15 +18,119 @@ struct BranchRequestListView: View {
                                 .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                         }
                         .tag(branch.id)
+                        .contextMenu {
+                            Button("목록에서 제거", systemImage: "minus.circle", role: .destructive) {
+                                store.removeRequestedBranch(branch)
+                            }
+                        }
                     }
                 }
             }
         }
-        .navigationTitle("브랜치")
-        .overlay {
-            if store.isLoadingBranches { ProgressView("브랜치 불러오는 중") }
-            else if store.repositoryBranches.isEmpty { ContentUnavailableView("표시할 브랜치가 없습니다", systemImage: "point.3.connected.trianglepath.dotted", description: Text("연결된 저장소를 확인한 뒤 새로 고침하세요.")) }
+        .navigationTitle("PR 요청")
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button("브랜치 추가", systemImage: "plus") {
+                    showingBranchPicker = true
+                }
+                .help("origin 브랜치를 PR 요청 목록에 추가")
+            }
         }
+        .sheet(isPresented: $showingBranchPicker) {
+            BranchPickerSheet(store: store)
+        }
+        .overlay {
+            if store.isLoadingBranches { ProgressView("origin 브랜치 불러오는 중") }
+            else if store.requestedBranches.isEmpty { ContentUnavailableView("PR 요청 브랜치가 없습니다", systemImage: "point.3.connected.trianglepath.dotted", description: Text("오른쪽 위 + 버튼으로 origin 브랜치를 추가하세요.")) }
+        }
+        .task { store.loadRepositoryBranches() }
+    }
+}
+
+private struct BranchPickerSheet: View {
+    @Bindable var store: ReviewStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var query = ""
+
+    private var candidates: [RepositoryBranch] {
+        let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let branches = store.repositoryBranches
+        guard !text.isEmpty else { return Array(branches.prefix(30)) }
+        return branches.filter {
+            $0.name.localizedCaseInsensitiveContains(text) ||
+            $0.repositoryName.localizedCaseInsensitiveContains(text)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("PR 요청 브랜치 추가").font(.title2.bold())
+                    Text("origin의 브랜치를 입력해 찾고 목록에 추가하세요.")
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("닫기", systemImage: "xmark") { dismiss() }
+                    .buttonStyle(.borderless)
+            }
+
+            TextField("브랜치 이름 입력", text: $query)
+                .textFieldStyle(.roundedBorder)
+                .onChange(of: query) { _, _ in
+                    // Filtering is immediate, so every keystroke updates the
+                    // autocomplete candidates without another network call.
+                }
+
+            List(candidates) { branch in
+                Button {
+                    store.addRequestedBranch(branch)
+                    dismiss()
+                } label: {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text(branch.name).font(.body.weight(.medium))
+                            if branch.isCurrent {
+                                Text("현재")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.green)
+                            }
+                        }
+                        Text("\(branch.repositoryName) · \(branch.sha)")
+                            .font(.caption).foregroundStyle(.secondary)
+                        if !branch.subject.isEmpty {
+                            Text(branch.subject).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            .overlay {
+                if store.isLoadingBranches {
+                    ProgressView("origin 브랜치 불러오는 중")
+                } else if candidates.isEmpty {
+                    ContentUnavailableView(
+                        query.isEmpty ? "origin 브랜치가 없습니다" : "일치하는 origin 브랜치가 없습니다",
+                        systemImage: query.isEmpty ? "point.3.connected.trianglepath.dotted" : "magnifyingglass"
+                    )
+                }
+            }
+
+            HStack {
+                Text("입력할 때마다 origin 브랜치 후보가 자동완성됩니다.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("origin 새로 고침", systemImage: "arrow.clockwise") {
+                    store.loadRepositoryBranches()
+                }
+                .disabled(store.isLoadingBranches)
+                Button("취소", role: .cancel) { dismiss() }
+            }
+        }
+        .padding(24)
+        .frame(width: 560, height: 520)
         .task { store.loadRepositoryBranches() }
     }
 }

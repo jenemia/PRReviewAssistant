@@ -56,4 +56,23 @@ struct LocalPracticeRepositoryTests {
         #expect(!committedFiles.contains("other-work.txt"))
         #expect(remainingChanges.contains("other-work.txt"))
     }
+
+    @Test("PR 요청 브랜치 목록은 origin 추적 브랜치만 읽고 체크아웃하지 않는다")
+    func readsOriginBranchesForPullRequestRequests() throws {
+        let practice = LocalPracticeRepository()
+        let fixture = try practice.create()
+        defer { try? practice.remove(at: fixture.repository.localPath) }
+
+        let before = try ProcessRunner()
+            .run("git", arguments: ["branch", "--show-current"], workingDirectory: fixture.repository.localPath)
+            .output.trimmingCharacters(in: .whitespacesAndNewlines)
+        let branches = try WorkspaceManager().branches(in: fixture.repository)
+        let after = try ProcessRunner()
+            .run("git", arguments: ["branch", "--show-current"], workingDirectory: fixture.repository.localPath)
+            .output.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        #expect(branches.contains { $0.name == fixture.pullRequest.headBranch })
+        #expect(branches.allSatisfy { $0.isRemote && $0.reference.hasPrefix("origin/") })
+        #expect(before == after)
+    }
 }

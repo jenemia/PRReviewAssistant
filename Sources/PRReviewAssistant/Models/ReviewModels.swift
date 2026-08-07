@@ -191,8 +191,8 @@ struct RegisteredRepository: Identifiable, Hashable, Codable {
     var isLocalPractice: Bool? = false
 }
 
-/// A local branch shown in the PR-request flow.  This deliberately contains
-/// only local Git metadata: selecting a branch must not check it out.
+/// An origin branch shown in the PR-request flow. Selecting it only records a
+/// PR-request choice; it never checks out the repository working tree.
 struct RepositoryBranch: Identifiable, Hashable, Codable {
     var repositoryID: UUID
     var repositoryName: String
