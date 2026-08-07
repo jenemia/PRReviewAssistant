@@ -54,7 +54,7 @@ struct PetWindowView: View {
     }
 
     private var mascotImage: NSImage {
-        guard let url = Bundle.main.url(forResource: "PetMascotShield", withExtension: "png"),
+        guard let url = Bundle.main.url(forResource: "PetMascotPRWeapons", withExtension: "png"),
               let image = NSImage(contentsOf: url) else {
             return NSImage(systemSymbolName: "person.crop.circle", accessibilityDescription: nil) ?? NSImage()
         }

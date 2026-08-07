@@ -17,7 +17,9 @@ final class PetWindowController: NSObject {
             return
         }
 
-        let size = CGFloat(store.petSize)
+        // Keep the user's saved size preference, but render the desktop pet at
+        // half scale so existing installs become smaller without a migration.
+        let size = CGFloat(store.petSize) * 0.5
         let rootView = PetWindowView(store: store, activateMainWindow: activateMainWindow)
             .frame(width: size, height: size)
 

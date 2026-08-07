@@ -15,7 +15,7 @@ mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
 cp ".build/release/PRReviewAssistant" "$app_dir/Contents/MacOS/PRReviewAssistant"
 cp "Resources/Info.plist" "$app_dir/Contents/Info.plist"
 cp "Resources/AppIcon.icns" "$app_dir/Contents/Resources/AppIcon.icns"
-cp "Sources/PRReviewAssistant/Resources/PetMascotShield.png" "$app_dir/Contents/Resources/PetMascotShield.png"
+cp "Sources/PRReviewAssistant/Resources/PetMascotPRWeapons.png" "$app_dir/Contents/Resources/PetMascotPRWeapons.png"
 if [[ "$signing_identity" == "-" ]]; then
   codesign --force --sign - --timestamp=none "$app_dir"
 else
