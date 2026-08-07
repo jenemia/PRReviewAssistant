@@ -174,20 +174,35 @@ final class ReviewStore {
     }
     var unreadCount: Int { pullRequests.filter(isUnread(_:)).count }
 
-    func loadRepositoryBranches() {
+    /// Fetching origin can take several seconds on a large repository. Keep it
+    /// off the main actor so selecting the PR-request sidebar item remains
+    /// immediate and the list can show its own loading state.
+    func loadRepositoryBranches() async {
         guard !isLoadingBranches else { return }
         isLoadingBranches = true
         defer { isLoadingBranches = false }
-        var loaded: [RepositoryBranch] = []
-        for repository in repositories {
-            do { loaded += try workspaces.branches(in: repository) }
-            catch { statusMessage = "\(repository.fullName) 브랜치를 불러오지 못했습니다: \(error.localizedDescription)" }
+        let registeredRepositories = repositories
+        let manager = workspaces
+        let result: ([RepositoryBranch], [String])
+        do {
+            result = try await background { () -> ([RepositoryBranch], [String]) in
+                var loaded: [RepositoryBranch] = []
+                var failures: [String] = []
+                for repository in registeredRepositories {
+                    do { loaded += try manager.branches(in: repository) }
+                    catch { failures.append("\(repository.fullName) 브랜치를 불러오지 못했습니다: \(error.localizedDescription)") }
+                }
+                return (loaded, failures)
+            }
+        } catch {
+            result = ([], ["브랜치 목록을 불러오지 못했습니다: \(error.localizedDescription)"])
         }
-        repositoryBranches = loaded
+        repositoryBranches = result.0
+        if let failure = result.1.first { statusMessage = failure }
         // Preserve user-added branches, but refresh their metadata whenever
         // origin reports the same branch again.
         requestedBranches = requestedBranches.compactMap { requested in
-            loaded.first(where: { $0.id == requested.id }) ?? requested
+            result.0.first(where: { $0.id == requested.id }) ?? requested
         }
         if selectedBranch == nil { selectedBranchID = requestedBranches.first?.id }
     }

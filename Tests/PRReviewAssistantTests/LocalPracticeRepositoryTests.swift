@@ -58,7 +58,7 @@ struct LocalPracticeRepositoryTests {
     }
 
     @Test("PR 요청 브랜치 목록은 origin 추적 브랜치만 읽고 체크아웃하지 않는다")
-    func readsOriginBranchesForPullRequestRequests() throws {
+    func readsOriginBranchesForPullRequestRequests() async throws {
         let practice = LocalPracticeRepository()
         let fixture = try practice.create()
         defer { try? practice.remove(at: fixture.repository.localPath) }

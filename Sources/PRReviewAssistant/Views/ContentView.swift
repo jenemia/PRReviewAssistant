@@ -130,7 +130,7 @@ struct ContentView: View {
                             await store.classifyUpdatedCursorSessions()
                         }
                     }
-                    else if selection == .prRequest { store.loadRepositoryBranches() }
+                    else if selection == .prRequest { Task { await store.loadRepositoryBranches() } }
                     else { store.refresh() }
                 } label: {
                     Label("새로 고침", systemImage: "arrow.clockwise")

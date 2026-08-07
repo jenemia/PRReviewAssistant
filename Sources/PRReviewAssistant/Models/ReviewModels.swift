@@ -178,7 +178,7 @@ struct ChangedFile: Hashable, Codable {
     var deletions: Int
 }
 
-struct RegisteredRepository: Identifiable, Hashable, Codable {
+struct RegisteredRepository: Identifiable, Hashable, Codable, Sendable {
     var id = UUID()
     var localPath: String
     var fullName: String
@@ -193,7 +193,7 @@ struct RegisteredRepository: Identifiable, Hashable, Codable {
 
 /// An origin branch shown in the PR-request flow. Selecting it only records a
 /// PR-request choice; it never checks out the repository working tree.
-struct RepositoryBranch: Identifiable, Hashable, Codable {
+struct RepositoryBranch: Identifiable, Hashable, Codable, Sendable {
     var repositoryID: UUID
     var repositoryName: String
     var name: String

@@ -43,7 +43,7 @@ struct BranchRequestListView: View {
             if store.isLoadingBranches { ProgressView("origin 브랜치 불러오는 중") }
             else if store.requestedBranches.isEmpty { ContentUnavailableView("PR 요청 브랜치가 없습니다", systemImage: "point.3.connected.trianglepath.dotted", description: Text("오른쪽 위 + 버튼으로 origin 브랜치를 추가하세요.")) }
         }
-        .task { store.loadRepositoryBranches() }
+        .task { await store.loadRepositoryBranches() }
     }
 }
 
@@ -123,7 +123,7 @@ private struct BranchPickerSheet: View {
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button("origin 새로 고침", systemImage: "arrow.clockwise") {
-                    store.loadRepositoryBranches()
+                    Task { await store.loadRepositoryBranches() }
                 }
                 .disabled(store.isLoadingBranches)
                 Button("취소", role: .cancel) { dismiss() }
@@ -131,7 +131,7 @@ private struct BranchPickerSheet: View {
         }
         .padding(24)
         .frame(width: 560, height: 520)
-        .task { store.loadRepositoryBranches() }
+        .task { await store.loadRepositoryBranches() }
     }
 }
 
