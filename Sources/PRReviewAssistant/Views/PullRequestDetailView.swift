@@ -59,6 +59,7 @@ struct PullRequestDetailView: View {
     @State private var showingMergeApproval = false
     @State private var showingCardRebuildConfirmation = false
     @State private var showingReviewResponseSheet = false
+    @State private var showingManualCommitSheet = false
     @State private var responseCardID: AgentReviewCard.ID?
     @State private var pendingImplementationCardID: AgentReviewCard.ID?
     @State private var pendingCommitCardID: AgentReviewCard.ID?
@@ -202,16 +203,14 @@ struct PullRequestDetailView: View {
                     }
                 }
                 .help(detailNavigation.isShowingComments ? "댓글 닫기" : "모든 코멘트")
-                if pullRequest.reviewState != .approved {
-                    Button("분석 실행", systemImage: "sparkles") { Task { await store.startAnalysis(for: pullRequest) } }
-                        .disabled(pullRequest.analysisStatus == .analyzing)
-                        .help("분석 실행")
-                    Button("반영 계획", systemImage: "checklist") {
-                        showingImplementationPlan = true
-                    }
-                    .disabled(store.comments(for: pullRequest).isEmpty)
-                    .help("반영 계획")
+                Button("분석 실행", systemImage: "sparkles") { Task { await store.startAnalysis(for: pullRequest) } }
+                    .disabled(pullRequest.analysisStatus == .analyzing)
+                    .help("분석 실행")
+                Button("반영 계획", systemImage: "checklist") {
+                    showingImplementationPlan = true
                 }
+                .disabled(store.comments(for: pullRequest).isEmpty)
+                .help("반영 계획")
                 if detailNavigation.selectedAgentCardID != nil {
                     Button("검토 닫기", systemImage: "xmark.rectangle") {
                         detailNavigation.closePanel()
@@ -230,11 +229,11 @@ struct PullRequestDetailView: View {
                 reviewSummary
                 if pullRequest.reviewState == .approved {
                     mergeArea
-                } else {
-                    analysis
-                    workArea
-                    executionLog
+                    approvedFollowUpArea
                 }
+                analysis
+                workArea
+                executionLog
             }
             .padding(28)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -493,6 +492,41 @@ struct PullRequestDetailView: View {
         }
     }
 
+    private var approvedFollowUpArea: some View {
+        GroupBox("추가 수정 및 재리뷰") {
+            VStack(alignment: .leading, spacing: 12) {
+                Label("승인 후에도 같은 PR 브랜치에서 추가 수정을 이어갈 수 있습니다.", systemImage: "arrow.triangle.2.circlepath")
+                    .font(.headline)
+                Text("검토 카드에서 수정 계획을 만들고 로컬 커밋을 생성한 뒤, 재리뷰 요청에서 푸시·PR 코멘트·리뷰어 재요청을 순서대로 진행합니다. 이전 커밋은 Git 기록에 유지됩니다.")
+                    .foregroundStyle(.secondary)
+                HStack {
+                    Button("추가 수정 계획", systemImage: "checklist") {
+                        showingImplementationPlan = true
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(store.comments(for: pullRequest).isEmpty)
+                    .help("승인된 PR의 기존 리뷰 코멘트를 바탕으로 새 작업 계획을 만듭니다")
+                    Button("수동 커밋", systemImage: "terminal") {
+                        showingManualCommitSheet = true
+                    }
+                    .buttonStyle(.bordered)
+                    .help("검토 카드 없이 현재 PR 작업 폴더의 변경 파일을 직접 커밋합니다")
+                    Spacer()
+                    Text("재리뷰 요청: GitHub reviewer 재요청")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if store.comments(for: pullRequest).isEmpty {
+                    Text("추가 수정 계획을 만들 리뷰 코멘트가 없습니다. 새로 고침 후 코멘트를 불러오거나, 기존 검토 카드를 선택하세요.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(4)
+        }
+    }
+
     private var executionLog: some View {
         GroupBox("실행 결과") {
             VStack(alignment: .leading, spacing: 12) {
@@ -500,6 +534,8 @@ struct PullRequestDetailView: View {
                     LabeledContent("PR 작업 폴더") { Text(worktree).font(.caption.monospaced()).lineLimit(1) }
                 }
                 Button("재리뷰 요청") { showingReviewApproval = true }
+                Button("수동 커밋", systemImage: "terminal") { showingManualCommitSheet = true }
+                    .help("검토 카드 없이 현재 PR 작업 폴더의 변경 파일을 직접 커밋합니다")
                 if let diff = store.diffStat(for: pullRequest) {
                     Text(diff.isEmpty ? "아직 변경된 파일이 없습니다." : diff)
                         .font(.system(.caption, design: .monospaced))
@@ -541,6 +577,14 @@ struct PullRequestDetailView: View {
                 submit: { comment in
                     Task { await store.requestReReview(for: pullRequest, comment: comment) }
                 }
+            )
+        }
+        .sheet(isPresented: $showingManualCommitSheet) {
+            ManualCommitSheet(
+                pullRequest: pullRequest,
+                loadChanges: { await store.manualChangedFiles(for: pullRequest) },
+                prepareWorkspace: { await prepareAndOpenWorkspace() },
+                commit: { message in await store.commitManualChanges(for: pullRequest, message: message) }
             )
         }
         .alert("커밋 승인", isPresented: $showingPushApproval) {
@@ -598,6 +642,107 @@ struct PullRequestDetailView: View {
     }
 }
 
+private struct ManualCommitSheet: View {
+    let pullRequest: PullRequest
+    let loadChanges: () async -> [String]
+    let prepareWorkspace: () async -> Void
+    let commit: (String) async -> Bool
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var files: [String] = []
+    @State private var message = ""
+    @State private var isLoading = true
+    @State private var isCommitting = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("수동 커밋").font(.title2.bold())
+                Text("검토 카드가 없어도 PR 브랜치의 현재 변경 파일만 선택적으로 커밋할 수 있습니다.")
+                    .foregroundStyle(.secondary)
+            }
+
+            if isLoading {
+                Spacer()
+                ProgressView("PR 작업 폴더의 변경 파일을 확인하는 중…")
+                    .frame(maxWidth: .infinity)
+                Spacer()
+            } else if files.isEmpty {
+                ContentUnavailableView {
+                    Label("커밋할 변경 파일이 없습니다", systemImage: "doc.badge.plus")
+                } description: {
+                    Text("작업 폴더에서 수동으로 수정한 뒤 다시 확인하세요.")
+                } actions: {
+                    HStack {
+                        Button("작업 폴더 열기", systemImage: "folder") {
+                            Task { await prepareWorkspace() }
+                        }
+                        Button("다시 확인", systemImage: "arrow.clockwise") {
+                            Task { await refreshChanges() }
+                        }
+                    }
+                }
+            } else {
+                GroupBox("커밋 대상 파일 (\(files.count)개)") {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 5) {
+                            ForEach(files, id: \.self) { file in
+                                Label(file, systemImage: "doc")
+                                    .font(.system(.caption, design: .monospaced))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 130)
+                    .padding(4)
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("커밋 메시지").font(.headline)
+                    TextEditor(text: $message)
+                        .font(.body)
+                        .scrollContentBackground(.hidden)
+                        .padding(8)
+                        .frame(minHeight: 100)
+                        .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+                    Text("표시된 파일만 로컬 \(pullRequest.headBranch) 브랜치에 커밋합니다. 아직 원격에는 푸시하지 않습니다.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Divider()
+
+            HStack {
+                Button("닫기", role: .cancel) { dismiss() }
+                Spacer()
+                Button("변경 파일 다시 확인", systemImage: "arrow.clockwise") {
+                    Task { await refreshChanges() }
+                }
+                .disabled(isLoading || isCommitting)
+                Button(isCommitting ? "커밋 중…" : "로컬 커밋", systemImage: "checkmark.circle") {
+                    Task {
+                        isCommitting = true
+                        defer { isCommitting = false }
+                        if await commit(message) { dismiss() }
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(files.isEmpty || message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isLoading || isCommitting)
+            }
+        }
+        .padding(24)
+        .frame(width: 620, height: 480)
+        .task { await refreshChanges() }
+    }
+
+    private func refreshChanges() async {
+        isLoading = true
+        files = await loadChanges()
+        isLoading = false
+    }
+}
+
 private struct ReReviewRequestSheet: View {
     let pullRequest: PullRequest
     let generateMessage: () async -> String?
@@ -611,7 +756,7 @@ private struct ReReviewRequestSheet: View {
         VStack(alignment: .leading, spacing: 18) {
             VStack(alignment: .leading, spacing: 6) {
                 Text("재리뷰 요청").font(.title2.bold())
-                Text("메시지를 확인한 뒤 푸시, PR 코멘트 등록, \(pullRequest.reviewer) 재요청을 순서대로 진행합니다.")
+                Text("메시지를 확인한 뒤 푸시, PR 코멘트 등록, 기존 GitHub 리뷰어 재요청을 순서대로 진행합니다.")
                     .foregroundStyle(.secondary)
             }
 

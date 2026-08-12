@@ -55,12 +55,7 @@ struct ContentView: View {
                     }
                 } header: {
                     HStack(spacing: 6) {
-                        Button {
-                            selection = .prRequest
-                        } label: {
-                            Label("PR 요청", systemImage: "arrow.up.right.square")
-                        }
-                        .buttonStyle(.plain)
+                        Text("PR 요청")
                         Spacer()
                         Button {
                             selection = .prRequest
@@ -76,14 +71,91 @@ struct ContentView: View {
                 Section {
                     Button {
                         selection = .agentHistory
+                        store.selectCursorSpec(nil)
                     } label: {
-                        Label("에이전트 기록", systemImage: "clock.arrow.circlepath")
+                        Label("최근 세션", systemImage: "clock.arrow.circlepath")
                     }
                     .buttonStyle(.plain)
-                    .help("Spec별 에이전트 세션 기록 보기")
+                    Group {
+                    ForEach(store.cursorSpecSidebarNames, id: \.self) { specName in
+                        Button {
+                            selection = .agentHistory
+                            store.selectCursorSpec(specName)
+                        } label: {
+                            HStack(spacing: 7) {
+                                Image(systemName: "doc.text")
+                                    .foregroundStyle(BrandColor.prPurple)
+                                Text(specName).lineLimit(1)
+                                if store.isCursorSpecPinned(specName) {
+                                    Image(systemName: "pin.fill")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Text("\(store.cursorSessionCount(forSpec: specName))")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help("\(specName) spec의 세션 목록 보기")
+                        .contextMenu {
+                            Button {
+                                store.toggleCursorSpecPinned(specName)
+                            } label: {
+                                Label(
+                                    store.isCursorSpecPinned(specName) ? "고정 해제" : "고정",
+                                    systemImage: store.isCursorSpecPinned(specName) ? "pin.slash" : "pin"
+                                )
+                            }
+                            .disabled(!store.canPinCursorSpec(specName))
+
+                            Divider()
+
+                            Button {
+                                store.closeCursorSpecFromSidebar(specName)
+                            } label: {
+                                Label("목록에서 닫기", systemImage: "xmark")
+                            }
+                        }
+                    }
+                    if store.unclassifiedCursorSessionCount > 0 {
+                        Button(
+                            store.isClassifyingCursorSessions
+                                ? "미분류 분류 중…"
+                                : "미분류 전체 분류 (\(store.unclassifiedCursorSessionCount)개)",
+                            systemImage: "sparkles"
+                        ) {
+                            selection = .agentHistory
+                            Task { await store.classifyUnclassifiedCursorSessions() }
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(store.isClassifyingCursorSessions)
+                        .help("미분류로 남은 모든 Cursor 세션을 spec 문서와 다시 연결합니다")
+                    }
+                    if !store.cursorSpecClassificationStatus.isEmpty {
+                        Text(store.cursorSpecClassificationStatus)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                    }
+                    .disabled(!store.automaticCursorSessionClassification)
+                    .opacity(store.automaticCursorSessionClassification ? 1 : 0.45)
+                    if store.isLoadingCursorHistory {
+                        Label("세션 기록 불러오는 중…", systemImage: "arrow.triangle.2.circlepath")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 } header: {
                     HStack(spacing: 6) {
                         Text("에이전트")
+                        if !store.automaticCursorSessionClassification {
+                            Text("자동 분류 꺼짐")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
                         Spacer()
                         Button {
                             selection = .agentHistory
@@ -92,9 +164,11 @@ struct ContentView: View {
                             Image(systemName: "magnifyingglass")
                         }
                         .buttonStyle(.borderless)
-                        .help("Spec을 찾아 해당 그룹을 목록 최상단으로 이동")
+                        .disabled(!store.automaticCursorSessionClassification)
+                        .help("Spec을 검색해 에이전트 목록에 열기")
                         .popover(isPresented: $showingAgentSpecSearch, arrowEdge: .leading) {
-                            AgentSpecSearchPopover(query: $cursorHistorySearch) {
+                            AgentSpecSearchPopover(query: $cursorHistorySearch, specNames: store.cursorSpecNames) { specName in
+                                store.selectCursorSpec(specName)
                                 showingAgentSpecSearch = false
                             }
                         }
@@ -109,7 +183,7 @@ struct ContentView: View {
                 InitialLoadingView()
             } else if selection == .agentHistory {
                 HSplitView {
-                    CursorSessionListView(store: store, searchText: $cursorHistorySearch)
+                    CursorSessionListView(store: store)
                         .frame(minWidth: 360, idealWidth: 460, maxWidth: .infinity)
                     CursorSessionDetailView(store: store)
                         .frame(minWidth: 420, idealWidth: 620, maxWidth: .infinity)
@@ -146,7 +220,6 @@ struct ContentView: View {
                     if selection == .agentHistory {
                         Task {
                             await store.loadCursorHistory()
-                            await store.classifyUpdatedCursorSessions()
                         }
                     }
                     else if selection == .prRequest { Task { await store.loadRepositoryBranches() } }
@@ -161,6 +234,7 @@ struct ContentView: View {
         .sheet(isPresented: $showingPRBranchPicker) {
             BranchPickerSheet(store: store)
         }
+        .task { await store.loadCursorHistory() }
     }
 }
 
@@ -191,23 +265,49 @@ private struct PRBranchSidebarRow: View {
 
 private struct AgentSpecSearchPopover: View {
     @Binding var query: String
-    let close: () -> Void
+    let specNames: [String]
+    let select: (String) -> Void
+
+    private var matches: [String] {
+        let value = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return specNames }
+        return specNames.filter { $0.localizedCaseInsensitiveContains(value) }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Spec 찾기").font(.headline)
-            Text("입력한 Spec과 일치하는 그룹을 에이전트 목록의 최상단으로 올립니다.")
+            Text("찾은 spec을 선택하면 해당 세션 목록을 중앙에 표시합니다.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             TextField("Spec 이름", text: $query)
                 .textFieldStyle(.roundedBorder)
                 .frame(width: 240)
+                .onSubmit { if let first = matches.first { select(first) } }
+            if matches.isEmpty {
+                Text("일치하는 spec이 없습니다.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 3) {
+                        ForEach(matches, id: \.self) { name in
+                            Button(name) { select(name) }
+                                .buttonStyle(.plain)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.vertical, 4)
+                        }
+                    }
+                }
+                .frame(maxHeight: 130)
+            }
             HStack {
                 Button("지우기") { query = "" }
                     .disabled(query.isEmpty)
                 Spacer()
-                Button("완료", action: close)
+                Button("완료") { if let first = matches.first { select(first) } }
                     .buttonStyle(.borderedProminent)
+                    .disabled(matches.isEmpty)
             }
         }
         .padding(16)

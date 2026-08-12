@@ -261,6 +261,12 @@ struct BranchQuizQuestion: Identifiable, Hashable, Codable {
     }
 }
 
+struct BranchQuizGeneration: Decodable {
+    let needsQuiz: Bool
+    let reason: String
+    let questions: [BranchQuizQuestion]
+}
+
 struct ReviewComment: Identifiable, Hashable, Codable {
     var id: String
     var author: String

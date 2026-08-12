@@ -150,6 +150,10 @@ struct WorkspaceManager: Sendable {
         guard !files.isEmpty else {
             throw CommandError.failed(.init(output: "", error: "이 작업 카드에서 변경된 파일을 찾을 수 없습니다.", status: 1))
         }
+        // `git commit --only` does not add an untracked file by itself. Stage
+        // only the reviewed paths first, then keep the commit scoped to those
+        // paths so unrelated staged work is never included.
+        _ = try runner.run("git", arguments: ["add", "--"] + files, workingDirectory: path)
         _ = try runner.run("git", arguments: ["commit", "--only", "-m", message, "--"] + files, workingDirectory: path)
         return try runner.run("git", arguments: ["rev-parse", "HEAD"], workingDirectory: path)
             .output.trimmingCharacters(in: .whitespacesAndNewlines)

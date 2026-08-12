@@ -30,6 +30,11 @@ struct CursorSessionSpecStore: Sendable {
         try database.prepare()
         try database.upsert(spec)
     }
+
+    static func isCanonicalSpecPath(_ path: String?) -> Bool {
+        guard let path else { return false }
+        return URL(fileURLWithPath: path).lastPathComponent.lowercased() == "spec.md"
+    }
 }
 
 struct WorkspaceSpecCatalog: Sendable {
@@ -41,7 +46,10 @@ struct WorkspaceSpecCatalog: Sendable {
         guard let enumerator = FileManager.default.enumerator(
             at: root,
             includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles]
+            // `.specs` is intentionally hidden on disk, but it is the
+            // primary source of candidate documents for session grouping.
+            // Only the explicit excluded directories below are skipped.
+            options: []
         ) else { return [] }
 
         var documents: [WorkspaceSpecDocument] = []
@@ -50,12 +58,11 @@ struct WorkspaceSpecCatalog: Sendable {
                 enumerator.skipDescendants()
                 continue
             }
-            guard fileURL.pathExtension.lowercased() == "md" else { continue }
+            guard fileURL.lastPathComponent.lowercased() == "spec.md" else { continue }
             let relative = fileURL.path.replacingOccurrences(of: root.path + "/", with: "")
             let components = relative.lowercased().split(separator: "/")
-            guard components.contains(where: { $0 == "specs" || $0 == ".specs" }) || fileURL.lastPathComponent.lowercased() == "spec.md" else { continue }
-            let baseName = fileURL.deletingPathExtension().lastPathComponent
-            let name = baseName.lowercased() == "spec" ? fileURL.deletingLastPathComponent().lastPathComponent : baseName
+            guard components.contains(where: { $0 == "specs" || $0 == ".specs" }) else { continue }
+            let name = fileURL.deletingLastPathComponent().lastPathComponent
             documents.append(.init(name: name, relativePath: relative))
             if documents.count == 200 { break }
         }

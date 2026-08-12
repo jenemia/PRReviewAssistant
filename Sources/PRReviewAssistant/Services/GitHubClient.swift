@@ -101,8 +101,32 @@ struct GitHubClient: Sendable {
     }
 
     func requestReview(repository: String, number: Int, reviewers: [String]) throws {
-        let body = try JSONEncoder().encode(["reviewers": reviewers])
-        _ = try runner.run("gh", arguments: ["api", "repos/\(repository)/pulls/\(number)/requested_reviewers", "--method", "POST", "--input", "-"], input: String(decoding: body, as: UTF8.self))
+        let requested = reviewers
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && $0 != "리뷰 대기" }
+        guard !requested.isEmpty else {
+            throw CommandError.failed(.init(output: "", error: "재리뷰를 요청할 GitHub 리뷰어가 없습니다.", status: 1))
+        }
+        // `gh pr edit --add-reviewer` explicitly supports re-requesting a
+        // reviewer who has already approved this PR.
+        _ = try runner.run(
+            "gh",
+            arguments: ["pr", "edit", String(number), "--repo", repository, "--add-reviewer", requested.joined(separator: ",")]
+        )
+    }
+
+    /// `gh pr list --json reviewDecision` does not include the reviewer's
+    /// login. Resolve the latest human reviewer from the PR review history
+    /// before using `gh pr edit --add-reviewer` to re-request review.
+    func latestReviewer(repository: String, number: Int) throws -> String? {
+        let reviews: [GitHubReview] = try paged("repos/\(repository)/pulls/\(number)/reviews")
+        return reviews
+            .filter { review in
+                ["APPROVED", "CHANGES_REQUESTED", "COMMENTED"].contains(review.state)
+            }
+            .sorted { ($0.submittedAt ?? $0.createdAt ?? .distantPast) < ($1.submittedAt ?? $1.createdAt ?? .distantPast) }
+            .last?
+            .user.login
     }
 
     func addComment(repository: String, number: Int, body: String) throws {
@@ -114,12 +138,45 @@ struct GitHubClient: Sendable {
         )
     }
 
-    func createPullRequest(repository: RegisteredRepository, branch: String, title: String, body: String) throws -> String {
-        try runner.run(
+    func createPullRequest(
+        repository: RegisteredRepository,
+        branch: String,
+        baseBranch: String,
+        title: String,
+        body: String,
+        reviewers: [String]
+    ) throws -> String {
+        var arguments = [
+            "pr", "create", "--repo", repository.fullName,
+            "--head", branch, "--base", baseBranch,
+            "--title", title, "--body", body
+        ]
+        let reviewerList = reviewers
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        if !reviewerList.isEmpty {
+            arguments += ["--reviewer", reviewerList.joined(separator: ",")]
+        }
+        return try runner.run(
             "gh",
-            arguments: ["pr", "create", "--repo", repository.fullName, "--head", branch, "--base", repository.defaultBranch, "--title", title, "--body", body],
+            arguments: arguments,
             workingDirectory: repository.localPath
         ).output.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func pullRequest(repository: RegisteredRepository, headBranch: String) throws -> PullRequestProposal.ExistingPullRequest? {
+        let result = try runner.run(
+            "gh",
+            arguments: [
+                "pr", "list", "--repo", repository.fullName,
+                "--head", headBranch, "--state", "all",
+                "--limit", "20", "--json", "number,state,url,createdAt"
+            ],
+            workingDirectory: repository.localPath
+        )
+        let items = try githubDecoder.decode([GitHubBranchPullRequest].self, from: Data(result.output.utf8))
+        guard let latest = items.max(by: { $0.createdAt < $1.createdAt }) else { return nil }
+        return .init(number: latest.number, state: latest.state, url: latest.url)
     }
 
     /// Merges on GitHub using the same "Create a merge commit" strategy as the
@@ -183,6 +240,7 @@ private struct GitHubAuthor: Codable { let login: String }
 private struct GitHubPullRequest: Codable {
     let number: Int; let title: String; let author: GitHubAuthor; let headRefName: String; let baseRefName: String; let headRefOid: String; let updatedAt: Date; let isDraft: Bool; let reviewDecision: GitHubReviewDecision?; let url: String
 }
+private struct GitHubBranchPullRequest: Codable { let number: Int; let state: String; let url: String; let createdAt: Date }
 private struct GitHubReviewDecision: Codable {
     let state: ReviewState; let reviewer: String?
     init(from decoder: Decoder) throws {

@@ -160,10 +160,19 @@ struct BranchRequestDetailView: View {
         }
         .navigationTitle("PR 요청")
         .sheet(isPresented: $showingRequestSheet) {
-            PullRequestRequestSheet(branch: branch, store: store)
+            PullRequestRequestSheet(branch: branch, store: store, isPresented: $showingRequestSheet)
         }
         .sheet(isPresented: $showingQuizSheet) {
             BranchQuizSheet(branch: branch, store: store)
+        }
+        .alert(store.branchAgentPermissionRequest?.title ?? "에이전트 권한 요청", isPresented: Binding(
+            get: { store.branchAgentPermissionRequest?.branch.id == branch.id },
+            set: { presented in if !presented { store.cancelBranchAgentPermission() } }
+        )) {
+            Button("취소", role: .cancel) { store.cancelBranchAgentPermission() }
+            Button(store.branchAgentPermissionRequest?.approvalTitle ?? "확인") { store.approveBranchAgentPermission() }
+        } message: {
+            Text(branchPermissionMessage)
         }
         .onChange(of: branch.id) { _, _ in selectedCardID = nil }
     }
@@ -175,7 +184,7 @@ struct BranchRequestDetailView: View {
                     VStack(alignment: .leading, spacing: 9) {
                         Text(branch.name).font(.title3.bold()).textSelection(.enabled)
                         LabeledContent("저장소", value: branch.repositoryName)
-                        LabeledContent("기준 브랜치", value: repository?.defaultBranch ?? "main")
+                        LabeledContent("PR 기준 브랜치", value: requestProposal?.base ?? "Agent가 프로젝트 스킬로 확인")
                         LabeledContent("HEAD", value: branch.sha)
                         if !branch.subject.isEmpty { LabeledContent("최근 커밋", value: branch.subject) }
                     }
@@ -221,9 +230,14 @@ struct BranchRequestDetailView: View {
 
                 GroupBox("PR 요청하기") {
                     VStack(alignment: .leading, spacing: 10) {
-                        Label(isClear ? "리뷰에서 특이사항이 확인되지 않았습니다." : "리뷰를 통과해야 PR을 요청할 수 있습니다.", systemImage: isClear ? "checkmark.seal.fill" : "lock.fill")
+                        Label(
+                            cards.isEmpty
+                                ? "내부 리뷰 없이 PR을 요청할 수 있습니다."
+                                : (isClear ? "내부 리뷰에서 특이사항이 확인되지 않았습니다." : "내부 리뷰 결과와 관계없이 PR을 요청할 수 있습니다."),
+                            systemImage: cards.isEmpty ? "arrow.up.right.square" : (isClear ? "checkmark.seal.fill" : "arrow.up.right.square")
+                        )
                             .foregroundStyle(isClear ? .green : .secondary)
-                        Text(isClear ? "기준 브랜치 `\(repository?.defaultBranch ?? "main")`로 PR을 생성합니다." : "리뷰를 실행한 뒤 모든 분류에서 ‘특이사항 없음’으로 확인되면 활성화됩니다.")
+                        Text("Agent가 저장소의 PR 생성 스킬을 읽기 전용으로 적용해 base·리뷰어·제목·본문을 준비합니다. 앱이 Git 이력과 원격 SHA를 검증한 뒤에만 PR을 생성합니다.")
                             .font(.caption).foregroundStyle(.secondary)
                         HStack {
                             Button("(선택적) 퀴즈", systemImage: "questionmark.circle") { showingQuizSheet = true }
@@ -231,7 +245,7 @@ struct BranchRequestDetailView: View {
                                 .disabled(cards.isEmpty)
                                 .help("PR의 핵심 기능과 흐름을 확인하는 5문제 퀴즈")
                             Spacer()
-                            Button("PR 요청하기", systemImage: "arrow.up.right.square") { showingRequestSheet = true }.buttonStyle(.borderedProminent).disabled(!isClear)
+                            Button("PR 요청하기", systemImage: "arrow.up.right.square") { showingRequestSheet = true }.buttonStyle(.borderedProminent)
                         }
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(4)
                 }
@@ -241,6 +255,19 @@ struct BranchRequestDetailView: View {
     }
 
     private var repository: RegisteredRepository? { store.repositories.first { $0.id == branch.repositoryID } }
+    private var requestProposal: PullRequestProposal? { store.pullRequestProposal(for: branch) }
+
+    private var branchPermissionMessage: String {
+        guard let request = store.branchAgentPermissionRequest else { return "에이전트 권한 확인이 필요합니다." }
+        switch request.kind {
+        case .workspaceTrust:
+            return "Cursor Agent가 이 저장소의 코드를 읽으려면 작업 공간 신뢰가 필요합니다. 승인하면 이 브랜치의 현재 요청만 읽기 전용으로 다시 시도합니다. 수정·테스트·푸시는 실행되지 않습니다."
+        case .cursorLogin:
+            return "Cursor Agent 로그인이 필요합니다. 승인하면 Terminal과 브라우저에서 Cursor 인증을 시작합니다. 인증 후 브랜치 요청을 다시 시도하세요."
+        case .other:
+            return "Cursor Agent가 추가 권한을 요청했습니다. 앱은 범위를 알 수 없는 권한을 자동 허용하지 않습니다. Cursor에서 요청 내용을 확인하고 승인하세요.\n\n\(request.detail)"
+        }
+    }
 }
 
 private struct BranchReviewCardView: View {
@@ -294,18 +321,192 @@ private struct BranchChatBubble: View {
 private struct PullRequestRequestSheet: View {
     let branch: RepositoryBranch
     @Bindable var store: ReviewStore
+    @Binding var isPresented: Bool
     @Environment(\.dismiss) private var dismiss
     @State private var title = ""
-    @State private var description = ""
+    @State private var bodyText = ""
     @State private var isSubmitting = false
+    @State private var submissionError = ""
+
+    private var proposal: PullRequestProposal? { store.pullRequestProposal(for: branch) }
+    private var isPreparing: Bool { store.isPreparingPullRequestProposal(for: branch) }
+    private var preparationError: String { store.branchPullRequestProposalErrors[branch.id] ?? "" }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("PR 요청하기").font(.title2.bold())
-            Text("`\(branch.name)`에서 PR을 생성합니다. 요청 후 GitHub에서 리뷰어와 내용을 계속 확인할 수 있습니다.").foregroundStyle(.secondary)
-            TextField("PR 제목", text: $title)
-            TextEditor(text: $description).frame(minHeight: 140).overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
-            HStack { Spacer(); Button("취소", role: .cancel) { dismiss() }; Button(isSubmitting ? "요청 중…" : "PR 요청 생성") { Task { isSubmitting = true; defer { isSubmitting = false }; if await store.requestPullRequest(for: branch, title: title.isEmpty ? branch.subject : title, body: description) != nil { dismiss() } } }.buttonStyle(.borderedProminent).disabled(isSubmitting || (title.isEmpty && branch.subject.isEmpty)) }
-        }.padding(24).frame(width: 520)
+        VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("PR 요청 준비").font(.title2.bold())
+                    Text("프로젝트 PR 스킬의 제안을 확인한 뒤 생성합니다.").foregroundStyle(.secondary)
+                }
+                Spacer()
+                if proposal != nil {
+                    Button("다시 분석", systemImage: "arrow.clockwise") {
+                        Task { await prepare(force: true) }
+                    }
+                    .disabled(isPreparing || isSubmitting)
+                    .help("프로젝트 PR 스킬을 다시 적용해 base·리뷰어·본문을 새로 준비합니다.")
+                }
+            }
+            .padding(24)
+
+            Divider()
+
+            Group {
+                if isPreparing && proposal == nil {
+                    VStack(spacing: 14) {
+                        ProgressView()
+                        Text("Agent가 프로젝트 PR 스킬을 적용하는 중…").font(.headline)
+                        Text("이 단계에서는 파일 수정, push, PR 생성을 실행하지 않습니다.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if let proposal {
+                    proposalForm(proposal)
+                } else {
+                    ContentUnavailableView {
+                        Label("PR 요청을 준비하지 못했습니다", systemImage: "exclamationmark.triangle")
+                    } description: {
+                        Text(preparationError.isEmpty ? "Agent 요청이 중단되었습니다." : preparationError)
+                    } actions: {
+                        Button("다시 시도") { Task { await prepare(force: true) } }
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            Divider()
+
+            HStack {
+                if isPreparing { ProgressView().controlSize(.small) }
+                if !submissionError.isEmpty {
+                    Text(submissionError).font(.caption).foregroundStyle(.red).lineLimit(2)
+                }
+                Spacer()
+                Button("취소", role: .cancel) { dismiss() }
+                Button(isSubmitting ? "요청 중…" : submissionButtonTitle) {
+                    Task { await submit() }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(proposal == nil || isPreparing || isSubmitting || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            .padding(16)
+        }
+        .frame(width: 680, height: 720)
+        .task { await prepare(force: true) }
+        .onChange(of: proposal, initial: true) { _, newProposal in
+            guard let newProposal else { return }
+            title = newProposal.title
+            bodyText = newProposal.body
+            submissionError = ""
+        }
+        .alert(store.branchAgentPermissionRequest?.title ?? "에이전트 권한 요청", isPresented: Binding(
+            get: { store.branchAgentPermissionRequest?.branch.id == branch.id },
+            set: { presented in if !presented { store.cancelBranchAgentPermission() } }
+        )) {
+            Button("취소", role: .cancel) { store.cancelBranchAgentPermission() }
+            Button(store.branchAgentPermissionRequest?.approvalTitle ?? "확인") { store.approveBranchAgentPermission() }
+        } message: {
+            Text(branchPermissionMessage)
+        }
+    }
+
+    @ViewBuilder
+    private func proposalForm(_ proposal: PullRequestProposal) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                GroupBox("Agent 제안") {
+                    VStack(alignment: .leading, spacing: 9) {
+                        LabeledContent("적용 스킬", value: proposal.skillName)
+                        LabeledContent("Base", value: proposal.base)
+                        LabeledContent("Head", value: proposal.head)
+                        LabeledContent("선택 근거", value: proposal.baseSource)
+                        LabeledContent("포함 범위", value: "커밋 \(proposal.commitCount)개 · 변경 파일 \(proposal.changedFiles)개")
+                        LabeledContent("리뷰어", value: proposal.reviewers.isEmpty ? "없음" : proposal.reviewers.joined(separator: ", "))
+                        if let existing = proposal.existingPullRequest {
+                            HStack {
+                                Text("기존 PR")
+                                Spacer()
+                                if let url = URL(string: existing.url) {
+                                    Link("#\(existing.number) · \(existing.state)", destination: url)
+                                } else {
+                                    Text("#\(existing.number) · \(existing.state)")
+                                }
+                            }
+                        }
+                    }
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(4)
+                }
+
+                if !proposal.warnings.isEmpty {
+                    GroupBox("확인 필요") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(proposal.warnings, id: \.self) { warning in
+                                Label(warning, systemImage: "exclamationmark.triangle.fill")
+                            }
+                        }
+                        .foregroundStyle(.orange)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(4)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("PR 제목").font(.headline)
+                    TextField("PR 제목", text: $title)
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("PR 본문").font(.headline)
+                    TextEditor(text: $bodyText)
+                        .font(.body.monospaced())
+                        .frame(minHeight: 190)
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
+                }
+                Text("생성 버튼을 누르면 앱이 base/head SHA와 커밋 범위를 다시 검증한 뒤 GitHub PR을 생성합니다.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .padding(24)
+        }
+    }
+
+    private func prepare(force: Bool) async {
+        _ = await store.preparePullRequestProposal(for: branch, force: force)
+    }
+
+    private var submissionButtonTitle: String {
+        proposal?.existingPullRequest?.state.uppercased() == "OPEN" ? "기존 PR 사용" : "PR 요청 생성"
+    }
+
+    private func submit() async {
+        guard let proposal else { return }
+        isSubmitting = true
+        submissionError = ""
+        let created = await store.requestPullRequest(
+            for: branch,
+            proposal: proposal,
+            title: title.trimmingCharacters(in: .whitespacesAndNewlines),
+            body: bodyText
+        ) != nil
+        isSubmitting = false
+        guard created else {
+            submissionError = store.statusMessage
+            return
+        }
+        isPresented = false
+    }
+
+    private var branchPermissionMessage: String {
+        guard let request = store.branchAgentPermissionRequest else { return "에이전트 권한 확인이 필요합니다." }
+        switch request.kind {
+        case .workspaceTrust:
+            return "Cursor Agent가 PR 생성 스킬과 저장소를 읽으려면 작업 공간 신뢰가 필요합니다. 승인해도 준비 단계에서는 수정·push·PR 생성을 실행하지 않습니다."
+        case .cursorLogin:
+            return "Cursor Agent 로그인이 필요합니다. 승인하면 Terminal과 브라우저에서 Cursor 인증을 시작합니다. 인증 후 다시 시도하세요."
+        case .other:
+            return "Cursor Agent가 추가 권한을 요청했습니다. Cursor에서 요청 범위를 확인한 뒤 다시 시도하세요.\n\n\(request.detail)"
+        }
     }
 }
 
@@ -318,6 +519,8 @@ private struct BranchQuizSheet: View {
     @State private var currentIndex = 0
     @State private var isLoading = true
     @State private var isFinished = false
+    @State private var notice = ""
+    @State private var errorMessage = ""
 
     private var question: BranchQuizQuestion? { questions.indices.contains(currentIndex) ? questions[currentIndex] : nil }
     private var score: Int { questions.reduce(0) { $0 + (answers[$1.id] == $1.correctIndex ? 1 : 0) } }
@@ -371,16 +574,42 @@ private struct BranchQuizSheet: View {
                         if currentIndex == questions.count - 1 { isFinished = true } else { currentIndex += 1 }
                     }.buttonStyle(.borderedProminent).disabled(answers[question.id] == nil)
                 }
+            } else if !notice.isEmpty {
+                ContentUnavailableView("퀴즈가 필요하지 않습니다", systemImage: "checkmark.circle", description: Text(notice))
             } else {
-                ContentUnavailableView("퀴즈를 만들지 못했습니다", systemImage: "exclamationmark.triangle")
+                ContentUnavailableView {
+                    Label("퀴즈를 만들지 못했습니다", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(errorMessage.isEmpty ? "생성 요청이 아직 끝나지 않았거나 응답을 받지 못했습니다." : errorMessage)
+                } actions: {
+                    Button("다시 만들기", systemImage: "arrow.clockwise") {
+                        Task { await loadQuiz(retry: true) }
+                    }
+                    .disabled(store.isMakingBranchQuiz)
+                }
             }
         }
         .padding(24).frame(width: 590, height: 520)
         .task {
-            if let cached = store.branchQuizzes[branch.id] { questions = cached }
-            else if let created = await store.makeBranchQuiz(for: branch) { questions = created }
-            isLoading = false
+            await loadQuiz()
         }
+    }
+
+    private func loadQuiz(retry: Bool = false) async {
+        isLoading = true
+        notice = ""
+        errorMessage = ""
+        if !retry, let cached = store.branchQuizzes[branch.id] {
+            questions = cached
+        } else if !retry, let storedNotice = store.branchQuizNotices[branch.id] {
+            notice = storedNotice
+        } else {
+            let created = retry ? await store.retryBranchQuiz(for: branch) : await store.makeBranchQuiz(for: branch)
+            if let created { questions = created }
+            else if let storedNotice = store.branchQuizNotices[branch.id] { notice = storedNotice }
+            else { errorMessage = store.branchQuizErrors[branch.id] ?? "퀴즈 생성이 진행 중이면 잠시 후 ‘다시 만들기’를 선택하세요." }
+        }
+        isLoading = false
     }
 }
 

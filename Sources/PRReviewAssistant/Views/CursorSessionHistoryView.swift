@@ -3,62 +3,35 @@ import AppKit
 
 struct CursorSessionListView: View {
     @Bindable var store: ReviewStore
-    @Binding var searchText: String
-    @State private var visibleCounts: [String: Int] = [:]
+    @State private var visibleCount = 10
 
-    private struct SpecGroup: Identifiable {
-        let name: String
-        let sessions: [CursorSession]
-        var id: String { name }
-    }
-
-    private var specGroups: [SpecGroup] {
-        let grouped = Dictionary(grouping: store.cursorSessions) { session in
-            store.cursorSessionSpecs[session.id]?.specName ?? CursorSessionSpec.unclassifiedName
-        }
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        return grouped.map { name, sessions in
-            SpecGroup(name: name, sessions: sessions.sorted { $0.updatedAt > $1.updatedAt })
-        }
-        .sorted { lhs, rhs in
-            // Searching a spec never hides the remaining history: a match is
-            // simply moved to the top of the grouped list.
-            let leftMatch = !query.isEmpty && lhs.name.localizedCaseInsensitiveContains(query)
-            let rightMatch = !query.isEmpty && rhs.name.localizedCaseInsensitiveContains(query)
-            if leftMatch != rightMatch { return leftMatch }
-            if lhs.name == CursorSessionSpec.unclassifiedName { return false }
-            if rhs.name == CursorSessionSpec.unclassifiedName { return true }
-            return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
-        }
-    }
+    private var selectedSpecName: String { store.selectedCursorSpecName ?? "전체 세션" }
+    private var sessions: [CursorSession] { store.cursorSessions(forSpec: store.selectedCursorSpecName) }
 
     var body: some View {
         List(selection: $store.selectedCursorSessionID) {
-            ForEach(specGroups) { group in
-                Section {
-                    let visibleCount = visibleCounts[group.id, default: 10]
-                    ForEach(group.sessions.prefix(visibleCount)) { session in
-                        CursorSessionRow(session: session, spec: store.cursorSessionSpecs[session.id])
-                            .tag(session.id)
+            Section {
+                ForEach(sessions.prefix(visibleCount)) { session in
+                    CursorSessionRow(session: session, spec: store.cursorSessionSpecs[session.id])
+                        .tag(session.id)
+                }
+                if sessions.count > visibleCount {
+                    Button("더 보기 (\(min(10, sessions.count - visibleCount))개)", systemImage: "ellipsis.circle") {
+                        visibleCount = min(sessions.count, visibleCount + 10)
                     }
-                    if group.sessions.count > visibleCount {
-                        Button("더 보기 (\(min(10, group.sessions.count - visibleCount))개)", systemImage: "ellipsis.circle") {
-                            visibleCounts[group.id] = min(group.sessions.count, visibleCount + 10)
-                        }
-                        .buttonStyle(.borderless)
-                        .foregroundStyle(BrandColor.prPurple)
-                    }
-                } header: {
-                    HStack {
-                        Label(group.name, systemImage: group.name == CursorSessionSpec.unclassifiedName ? "questionmark.folder" : "doc.text")
-                        Spacer()
-                        Text("\(group.sessions.count)개")
-                            .foregroundStyle(.secondary)
-                    }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(BrandColor.prPurple)
+                }
+            } header: {
+                HStack {
+                    Label(selectedSpecName, systemImage: store.selectedCursorSpecName == nil ? "clock.arrow.circlepath" : "doc.text")
+                    Spacer()
+                    Text("\(sessions.count)개")
+                        .foregroundStyle(.secondary)
                 }
             }
         }
-        .navigationTitle("에이전트 기록")
+        .navigationTitle("\(selectedSpecName) 세션")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
@@ -66,22 +39,26 @@ struct CursorSessionListView: View {
                 } label: {
                     Label(store.isClassifyingCursorSessions ? "분류 중" : "갱신 세션 분류", systemImage: "sparkles")
                 }
-                .disabled(store.isClassifyingCursorSessions || store.pendingCursorSpecClassificationCount == 0)
+                .disabled(!store.automaticCursorSessionClassification || store.isClassifyingCursorSessions || store.pendingCursorSpecClassificationCount == 0)
                 .help("연결된 LLM으로 갱신된 세션을 spec 문서에 연결")
             }
         }
         .overlay {
             if store.isLoadingCursorHistory {
                 ProgressView("Cursor 세션 기록을 읽는 중")
-            } else if specGroups.isEmpty {
+            } else if sessions.isEmpty {
                 ContentUnavailableView(
-                    "표시할 Cursor 세션이 없습니다",
+                    "이 spec의 Cursor 세션이 없습니다",
                     systemImage: "clock.arrow.circlepath",
                     description: Text(store.cursorHistoryStatus)
                 )
             }
         }
         .task { await store.loadCursorHistory() }
+        .onChange(of: store.selectedCursorSpecName) { _, _ in
+            visibleCount = 10
+            store.selectCursorSpec(store.selectedCursorSpecName)
+        }
     }
 }
 
@@ -90,12 +67,17 @@ private struct CursorSessionRow: View {
     let spec: CursorSessionSpec?
     @State private var copied = false
 
+    private var isCanonicalSpec: Bool {
+        guard let spec else { return false }
+        return spec.specName != CursorSessionSpec.unclassifiedName && CursorSessionSpecStore.isCanonicalSpecPath(spec.specPath)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(session.title).font(.headline).lineLimit(2)
-            Label(spec?.specName ?? "Spec 분류 대기", systemImage: spec == nil ? "clock" : "doc.text")
+            Label(isCanonicalSpec ? (spec?.specName ?? "") : "미분류 또는 재분류 대기", systemImage: isCanonicalSpec ? "doc.text" : "clock")
                 .font(.caption)
-                .foregroundStyle(spec == nil ? .secondary : Color.accentColor)
+                .foregroundStyle(isCanonicalSpec ? Color.accentColor : .secondary)
             HStack(spacing: 5) {
                 Text(session.id)
                     .font(.caption.monospaced())
@@ -186,11 +168,17 @@ struct CursorSessionDetailView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text(session.title).font(.title2.bold())
             Text(session.id).font(.caption.monospaced()).textSelection(.enabled).foregroundStyle(.secondary)
-            if let spec = store.cursorSessionSpecs[session.id] {
+            if let spec = store.cursorSessionSpecs[session.id],
+               spec.specName != CursorSessionSpec.unclassifiedName,
+               CursorSessionSpecStore.isCanonicalSpecPath(spec.specPath) {
                 Label(spec.specName, systemImage: "doc.text")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .help(spec.specPath ?? "연결된 spec 문서 없음")
+            } else {
+                Label("미분류 또는 재분류 대기", systemImage: "clock")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             HStack {
                 Button("전체 복사", systemImage: "doc.on.doc") { copy(session.plainText) }

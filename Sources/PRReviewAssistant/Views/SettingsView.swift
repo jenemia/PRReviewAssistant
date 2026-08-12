@@ -16,6 +16,12 @@ struct SettingsView: View {
                 Text("기본은 macOS 시스템 외관을 따릅니다.")
                     .font(.caption).foregroundStyle(.secondary)
 
+                Section("에이전트 세션 기록") {
+                    Toggle("세션 기록 자동 분류", isOn: $store.automaticCursorSessionClassification)
+                    Text("기본적으로 꺼져 있습니다. 켜면 새로 읽은 세션을 설정된 LLM으로 spec 문서에 자동 연결합니다.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
                 Section("리뷰 Inbox") {
                     TextField("작업자 이름", text: $store.reviewAuthorFilter)
                     Text(store.authorFilterDescription)

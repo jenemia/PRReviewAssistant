@@ -39,13 +39,20 @@ struct PersistedState: Codable {
     /// origin branches are refreshed separately and are not persisted as UI
     /// choices by themselves.
     var requestedBranches: [RepositoryBranch] = []
+    /// The five spec groups shown under the Agent sidebar, including pin and
+    /// non-destructive dismissal state.
+    var cursorSpecSidebarCache = CursorSpecSidebarCache()
+    /// Whether newly read Agent sessions are automatically linked to a spec.
+    /// This remains opt-in because classification sends session context to the
+    /// configured LLM.
+    var automaticCursorSessionClassification = false
 
     private enum CodingKeys: String, CodingKey {
         case repositories, processedCommentIDs, knownPullRequestIDs, unreadPullRequestIDs, unreadCommentIDs
         case hasEstablishedNotificationBaseline, approvedPullRequestIDs, hasEstablishedApprovalBaseline
-        case monitoringEnabled, monitoringInterval, analyses, agentReviewCards, implementationPlans, committedHeads, postedReReviewCommentTokens, agentModel, customAgentModel, reviewAuthorFilter, petVisible, petSize, petReduceMotion, latestPetNotification, hasCompletedOnboarding, skippedOnboardingSteps, projectCopyFolder, updateRepository, updatesEnabled, lastNotifiedUpdateTag, requestedBranches
+        case monitoringEnabled, monitoringInterval, analyses, agentReviewCards, implementationPlans, committedHeads, postedReReviewCommentTokens, agentModel, customAgentModel, reviewAuthorFilter, petVisible, petSize, petReduceMotion, latestPetNotification, hasCompletedOnboarding, skippedOnboardingSteps, projectCopyFolder, updateRepository, updatesEnabled, lastNotifiedUpdateTag, requestedBranches, cursorSpecSidebarCache, automaticCursorSessionClassification
     }
-    init(repositories: [RegisteredRepository] = [], processedCommentIDs: Set<String> = [], knownPullRequestIDs: Set<String> = [], unreadPullRequestIDs: Set<String> = [], unreadCommentIDs: Set<String> = [], hasEstablishedNotificationBaseline: Bool = false, approvedPullRequestIDs: Set<String> = [], hasEstablishedApprovalBaseline: Bool = false, monitoringEnabled: Bool = true, monitoringInterval: Int = 60, analyses: [String: AgentAnalysis] = [:], agentReviewCards: [AgentReviewCard] = [], implementationPlans: [String: ImplementationPlan] = [:], committedHeads: [String: String] = [:], postedReReviewCommentTokens: Set<String> = [], agentModel: String = "auto", customAgentModel: String = "", reviewAuthorFilter: String = "", petVisible: Bool = true, petSize: Double = 190.0, petReduceMotion: Bool = false, latestPetNotification: PetBubbleContent? = nil, hasCompletedOnboarding: Bool = false, skippedOnboardingSteps: Set<String> = [], projectCopyFolder: String = "", updateRepository: String = "", updatesEnabled: Bool = true, lastNotifiedUpdateTag: String = "", requestedBranches: [RepositoryBranch] = []) {
+    init(repositories: [RegisteredRepository] = [], processedCommentIDs: Set<String> = [], knownPullRequestIDs: Set<String> = [], unreadPullRequestIDs: Set<String> = [], unreadCommentIDs: Set<String> = [], hasEstablishedNotificationBaseline: Bool = false, approvedPullRequestIDs: Set<String> = [], hasEstablishedApprovalBaseline: Bool = false, monitoringEnabled: Bool = true, monitoringInterval: Int = 60, analyses: [String: AgentAnalysis] = [:], agentReviewCards: [AgentReviewCard] = [], implementationPlans: [String: ImplementationPlan] = [:], committedHeads: [String: String] = [:], postedReReviewCommentTokens: Set<String> = [], agentModel: String = "auto", customAgentModel: String = "", reviewAuthorFilter: String = "", petVisible: Bool = true, petSize: Double = 190.0, petReduceMotion: Bool = false, latestPetNotification: PetBubbleContent? = nil, hasCompletedOnboarding: Bool = false, skippedOnboardingSteps: Set<String> = [], projectCopyFolder: String = "", updateRepository: String = "", updatesEnabled: Bool = true, lastNotifiedUpdateTag: String = "", requestedBranches: [RepositoryBranch] = [], cursorSpecSidebarCache: CursorSpecSidebarCache = CursorSpecSidebarCache(), automaticCursorSessionClassification: Bool = false) {
         self.repositories = repositories
         self.processedCommentIDs = processedCommentIDs
         self.knownPullRequestIDs = knownPullRequestIDs
@@ -75,6 +82,8 @@ struct PersistedState: Codable {
         self.updatesEnabled = updatesEnabled
         self.lastNotifiedUpdateTag = lastNotifiedUpdateTag
         self.requestedBranches = requestedBranches
+        self.cursorSpecSidebarCache = cursorSpecSidebarCache
+        self.automaticCursorSessionClassification = automaticCursorSessionClassification
     }
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -107,6 +116,8 @@ struct PersistedState: Codable {
         updatesEnabled = try container.decodeIfPresent(Bool.self, forKey: .updatesEnabled) ?? true
         lastNotifiedUpdateTag = try container.decodeIfPresent(String.self, forKey: .lastNotifiedUpdateTag) ?? ""
         requestedBranches = try container.decodeIfPresent([RepositoryBranch].self, forKey: .requestedBranches) ?? []
+        cursorSpecSidebarCache = try container.decodeIfPresent(CursorSpecSidebarCache.self, forKey: .cursorSpecSidebarCache) ?? CursorSpecSidebarCache()
+        automaticCursorSessionClassification = try container.decodeIfPresent(Bool.self, forKey: .automaticCursorSessionClassification) ?? false
     }
 }
 
