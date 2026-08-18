@@ -72,7 +72,7 @@ struct PullRequestDetailView: View {
                let plan = store.implementationPlan(for: card, pullRequest: pullRequest) {
                 HSplitView {
                     detailContent
-                    WorkReviewSidePanel(card: card, workResult: plan.result, close: { detailNavigation.closePanel() })
+                    WorkReviewSidePanel(card: card, plan: plan, close: { detailNavigation.closePanel() })
                         // Recreate the panel when another work card is selected,
                         // so its scroll position and review context never leak.
                         .id(cardID)
@@ -353,7 +353,7 @@ struct PullRequestDetailView: View {
                         .help("개선된 규칙으로 자동 검토카드를 다시 만듭니다")
                     }
                     let categories = Dictionary(grouping: cards) { card in
-                        ReviewCommentSection.displayLabel(for: card.sectionTitle) ?? "일반 코멘트"
+                        ReviewCommentSection.categoryLabel(for: card.sectionTitle) ?? "일반 코멘트"
                     }
                     let sortedCategories = categories.sorted { lhs, rhs in
                         let leftRank = ReviewCommentSection.severitySortRank(for: lhs.value.first?.sectionTitle)
@@ -367,8 +367,9 @@ struct PullRequestDetailView: View {
                                 .font(.subheadline.weight(.semibold))
                                 .foregroundStyle(.secondary)
                             ForEach(categoryCards) { card in
-                                Button { openAgentCard(card.id) } label: {
-                                    AgentReviewCardRow(card: card)
+                                let workStatus = store.implementationPlan(for: card, pullRequest: pullRequest)?.status
+                                Button { openReviewOrWorkCard(card.id) } label: {
+                                    AgentReviewCardRow(card: card, workStatus: workStatus)
                                 }
                                 .buttonStyle(.plain)
                             }
@@ -563,8 +564,8 @@ struct PullRequestDetailView: View {
                 WorkAreaSheet(
                     pullRequest: pullRequest,
                     plan: plan,
-                    confirm: {
-                        Task { await store.startImplementation(for: card, pullRequest: pullRequest) }
+                    confirm: { finalPrompt in
+                        Task { await store.startImplementation(for: card, pullRequest: pullRequest, prompt: finalPrompt) }
                         showingWorkArea = false
                     }
                 )
@@ -618,8 +619,14 @@ struct PullRequestDetailView: View {
         Task { await store.beginAgentReview(id: id, pullRequest: pullRequest) }
     }
 
-    private func openAgentCard(_ id: AgentReviewCard.ID) {
+    private func openReviewOrWorkCard(_ id: AgentReviewCard.ID) {
         store.markAgentCardRead(id)
+        if let card = store.agentCard(id: id),
+           let plan = store.implementationPlan(for: card, pullRequest: pullRequest),
+           plan.status != .ready {
+            detailNavigation.showWork(id)
+            return
+        }
         detailNavigation.showAgent(id)
     }
 
@@ -990,31 +997,57 @@ private struct ImplementationPlanSheet: View {
 private struct WorkAreaSheet: View {
     let pullRequest: PullRequest
     let plan: ImplementationPlan
-    let confirm: () -> Void
+    let confirm: (String) -> Void
     @Environment(\.dismiss) private var dismiss
+    @State private var memo = ""
 
-    init(pullRequest: PullRequest, plan: ImplementationPlan, confirm: @escaping () -> Void) {
+    init(pullRequest: PullRequest, plan: ImplementationPlan, confirm: @escaping (String) -> Void) {
         self.pullRequest = pullRequest
         self.plan = plan
         self.confirm = confirm
     }
 
+    private var finalPrompt: String {
+        let trimmedMemo = memo.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedMemo.isEmpty else { return plan.content }
+        return """
+        \(plan.content)
+
+        ## 개발자 추가 메모
+        \(trimmedMemo)
+        """
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             VStack(alignment: .leading, spacing: 6) {
-                Text("작업 영역").font(.title2.bold())
-                Text("검토 세션에서 전달된 계획입니다. PR 소스 브랜치에서 에이전트 구현을 시작합니다.")
+                Text("에이전트 구현 요청").font(.title2.bold())
+                Text("마지막 검토 내용을 확인하고 메모를 추가한 뒤, 최종 프롬프트로 구현을 시작하세요.")
                     .foregroundStyle(.secondary)
             }
 
-            ScrollView {
-                MarkdownContentView(plan.content)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            GroupBox("마지막 검토 및 구현 계획") {
+                ScrollView {
+                    MarkdownContentView(plan.content)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 180)
+                .padding(4)
             }
-            .frame(maxHeight: 260)
-            .padding(12)
-            .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("작업 메모").font(.headline)
+                Text("에이전트가 구현할 때 반드시 반영할 조건, 제외 범위, 테스트 요청을 적으세요.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                TextEditor(text: $memo)
+                    .font(.body)
+                    .frame(minHeight: 76, maxHeight: 110)
+                    .padding(7)
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+                    .accessibilityLabel("에이전트 구현 작업 메모")
+            }
 
             Label("체크아웃 브랜치: \(pullRequest.headBranch)", systemImage: "arrow.triangle.branch")
                 .font(.subheadline.weight(.medium))
@@ -1026,14 +1059,14 @@ private struct WorkAreaSheet: View {
                 Button("나중에") { dismiss() }
                 Spacer()
                 Button("에이전트 구현 시작", systemImage: "hammer.fill") {
-                    confirm()
+                    confirm(finalPrompt)
                     dismiss()
                 }
                 .buttonStyle(.borderedProminent)
             }
         }
         .padding(24)
-        .frame(width: 680, height: 640)
+        .frame(width: 700, height: 590)
     }
 }
 
@@ -1077,7 +1110,7 @@ private struct WorkReviewCardThumbnail: View {
 
 private struct WorkReviewSidePanel: View {
     let card: AgentReviewCard
-    let workResult: String?
+    let plan: ImplementationPlan
     let close: () -> Void
 
     var body: some View {
@@ -1100,43 +1133,33 @@ private struct WorkReviewSidePanel: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    GroupBox("검토한 리뷰") {
-                        MarkdownContentView(card.sectionBody ?? card.commentBody)
+                    GroupBox("구현 요청") {
+                        MarkdownContentView(plan.implementationRequest ?? plan.content)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    GroupBox("검토 결과") {
-                        if let answer = card.messages.last(where: { $0.role == .agent })?.body {
-                            MarkdownContentView(answer)
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        } else {
-                            Text("아직 이 검토 카드의 결과가 없습니다.")
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    if !card.messages.isEmpty {
-                        GroupBox("검토 대화 전체") {
-                            VStack(alignment: .leading, spacing: 12) {
-                                ForEach(card.messages) { message in
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text(message.role == .user ? "요청" : "에이전트")
-                                            .font(.caption.weight(.semibold))
-                                            .foregroundStyle(.secondary)
-                                        MarkdownContentView(message.body)
-                                            .textSelection(.enabled)
-                                    }
-                                    if message.id != card.messages.last?.id { Divider() }
-                                }
+                    GroupBox("작업 결과") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Label(plan.status.rawValue, systemImage: plan.status.symbol)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(plan.status == .failed ? .orange : (plan.status == .completed ? .green : BrandColor.prPurple))
+                            if let workResult = plan.result, !workResult.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                MarkdownContentView(workResult)
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            } else {
+                                Text("에이전트 구현 결과를 기다리고 있습니다.")
+                                    .foregroundStyle(.secondary)
                             }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                    }
-                    if let workResult, !workResult.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        GroupBox("작업 결과 전체") {
-                            MarkdownContentView(workResult)
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                            if let changedFiles = plan.changedFiles, !changedFiles.isEmpty {
+                                Divider()
+                                Text("변경 파일 \(changedFiles.count)개")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                Text(changedFiles.joined(separator: "\n"))
+                                    .font(.system(.caption, design: .monospaced))
+                                    .textSelection(.enabled)
+                            }
                         }
                     }
                 }
@@ -1318,6 +1341,7 @@ private struct ReviewSectionRow: View {
 
 private struct AgentReviewCardRow: View {
     let card: AgentReviewCard
+    let workStatus: ImplementationWorkStatus?
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -1328,6 +1352,11 @@ private struct AgentReviewCardRow: View {
                 Text(card.title)
                     .font(.subheadline.weight(.medium))
                     .lineLimit(2)
+                if let workStatus, workStatus != .ready {
+                    Label(workStatus.rawValue, systemImage: workStatus.symbol)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(workStatus == .failed ? .orange : (workStatus == .completed ? .green : BrandColor.prPurple))
+                }
                 if let reviewID = card.reviewID {
                     Text(reviewID)
                         .font(.caption2.monospaced())

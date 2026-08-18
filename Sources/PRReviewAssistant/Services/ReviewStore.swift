@@ -995,12 +995,13 @@ final class ReviewStore {
         do {
             let repository = try registeredRepository(for: pullRequest)
             let path = try await background { try self.workspaces.prepareRepositoryWorkspace(repository: repository, pullRequest: pullRequest) }
-            try await background { try self.workspaces.verifyHead(path, expectedSHA: pullRequest.headSHA, expectedBranch: pullRequest.headBranch) }
+            let workspaceSHA = try await background { try self.workspaces.verifiedHead(path, expectedSHA: pullRequest.headSHA, expectedBranch: pullRequest.headBranch) }
             setActiveWorkspace(path, for: pullRequest)
             let prComments = comments[worktreeKey(pullRequest)] ?? []
             let agent = cursor
             let model = effectiveAgentModel
-            let result = try await background { try agent.analyze(worktreePath: path, pullRequest: pullRequest, comments: prComments, model: model) }
+            let analysisPullRequest = pullRequestWithCurrentWorkspaceSHA(pullRequest, sha: workspaceSHA)
+            let result = try await background { try agent.analyze(worktreePath: path, pullRequest: analysisPullRequest, comments: prComments, model: model) }
             analyses[worktreeKey(pullRequest)] = result
             updateStatus(.needsChanges, for: pullRequest.id)
             statusMessage = "분석이 완료되었습니다."
@@ -1497,7 +1498,17 @@ final class ReviewStore {
         // A previously committed card is historical work. Reopening an
         // approved PR must create a fresh local-work cycle for the same
         // review card, while the old commit remains in Git history.
-        if let existing = implementationPlans[planKey], existing.committedSHA == nil { return existing }
+        if var existing = implementationPlans[planKey], existing.committedSHA == nil {
+            // Reopening the request sheet before implementation must reflect
+            // the latest side-view conversation, not its initial analysis.
+            guard existing.status != .inProgress && existing.status != .completed else { return existing }
+            existing.content = content
+            existing.implementationRequest = nil
+            existing.result = nil
+            implementationPlans[planKey] = existing
+            persist()
+            return existing
+        }
         let plan = ImplementationPlan(
             repository: pullRequest.repository,
             pullRequestNumber: pullRequest.number,
@@ -1522,7 +1533,7 @@ final class ReviewStore {
 
     /// Starts a real, user-approved implementation run on the PR source branch.
     /// This never commits or pushes; those remain separate approval steps.
-    func startImplementation(for card: AgentReviewCard, pullRequest: PullRequest) async {
+    func startImplementation(for card: AgentReviewCard, pullRequest: PullRequest, prompt: String? = nil) async {
         guard reserveActiveWorkspace(for: pullRequest) else { return }
         let key = implementationPlanKey(for: card, pullRequest: pullRequest)
         guard var plan = implementationPlans[key] else {
@@ -1530,6 +1541,15 @@ final class ReviewStore {
             return
         }
         guard plan.status != .inProgress else { return }
+        if let prompt {
+            let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedPrompt.isEmpty else {
+                statusMessage = "에이전트 구현 프롬프트를 확인하세요."
+                return
+            }
+            plan.content = trimmedPrompt
+            plan.implementationRequest = trimmedPrompt
+        }
         plan.destination = .currentLocal
         plan.status = .inProgress
         plan.result = "PR 소스 브랜치 \(pullRequest.headBranch)를 체크아웃하고 에이전트 구현을 시작하는 중입니다."
@@ -1542,7 +1562,7 @@ final class ReviewStore {
         do {
             let repository = try registeredRepository(for: pullRequest)
             let path = try await background { try self.workspaces.prepareRepositoryWorkspace(repository: repository, pullRequest: pullRequest) }
-            try await background { try self.workspaces.verifyHead(path, expectedSHA: pullRequest.headSHA, expectedBranch: pullRequest.headBranch) }
+            let workspaceSHA = try await background { try self.workspaces.verifiedHead(path, expectedSHA: pullRequest.headSHA, expectedBranch: pullRequest.headBranch) }
             setActiveWorkspace(path, for: pullRequest)
             let baselineFiles = try await background { try self.workspaces.changedFiles(at: path) }
             plan.baselineChangedFiles = baselineFiles
@@ -1551,7 +1571,8 @@ final class ReviewStore {
             let agent = cursor
             let model = effectiveAgentModel
             let implementationPlan = plan
-            let result = try await background { try agent.implement(worktreePath: path, pullRequest: pullRequest, plan: implementationPlan, model: model) }
+            let implementationPullRequest = pullRequestWithCurrentWorkspaceSHA(pullRequest, sha: workspaceSHA)
+            let result = try await background { try agent.implement(worktreePath: path, pullRequest: implementationPullRequest, plan: implementationPlan, model: model) }
             let changedFiles = try await background { try self.workspaces.changedFiles(at: path) }
             let cardChangedFiles = changedFiles.filter { !baselineFiles.contains($0) }
             diffStats[worktreeKey(pullRequest)] = (try? await background { try self.workspaces.changes(at: path) }) ?? ""
@@ -1869,17 +1890,19 @@ final class ReviewStore {
         do {
             let key = worktreeKey(pullRequest)
             let path: String
+            let workspaceSHA: String
             if activePullRequestKeys[pullRequest.repository] == key, let activePath = worktreePaths[key] {
-                try await background { try self.workspaces.verifyHead(activePath, expectedSHA: pullRequest.headSHA, expectedBranch: pullRequest.headBranch) }
+                workspaceSHA = try await background { try self.workspaces.verifiedHead(activePath, expectedSHA: pullRequest.headSHA, expectedBranch: pullRequest.headBranch) }
                 path = activePath
             } else {
                 path = try await background { try self.workspaces.prepareRepositoryWorkspace(repository: repository, pullRequest: pullRequest) }
-                try await background { try self.workspaces.verifyHead(path, expectedSHA: pullRequest.headSHA, expectedBranch: pullRequest.headBranch) }
+                workspaceSHA = try await background { try self.workspaces.verifiedHead(path, expectedSHA: pullRequest.headSHA, expectedBranch: pullRequest.headBranch) }
                 setActiveWorkspace(path, for: pullRequest)
             }
             let isTrusted = trustedAgentReviewIDs.contains(id)
             let model = effectiveAgentModel
-            let answer = try await background { try agent.ask(repositoryPath: path, pullRequest: pullRequest, card: card, question: question, trustWorkspace: isTrusted, model: model) }
+            let analysisPullRequest = pullRequestWithCurrentWorkspaceSHA(pullRequest, sha: workspaceSHA)
+            let answer = try await background { try agent.ask(repositoryPath: path, pullRequest: analysisPullRequest, card: card, question: question, trustWorkspace: isTrusted, model: model) }
             guard let updatedIndex = agentReviewCards.firstIndex(where: { $0.id == id }) else { return }
             agentReviewCards[updatedIndex].messages.append(.init(role: .agent, body: answer))
             agentReviewCards[updatedIndex].status = .complete
@@ -2131,6 +2154,14 @@ final class ReviewStore {
         petNotificationEventID = UUID()
     }
     private func worktreeKey(_ pr: PullRequest) -> String { "\(pr.repository)#\(pr.number)" }
+
+    /// Agent prompts describe the checked-out commit, while remote validation
+    /// continues to use the PR snapshot received from GitHub.
+    private func pullRequestWithCurrentWorkspaceSHA(_ pullRequest: PullRequest, sha: String) -> PullRequest {
+        var current = pullRequest
+        current.headSHA = String(sha.prefix(12))
+        return current
+    }
     private func implementationPlanKey(for card: AgentReviewCard, pullRequest: PullRequest) -> String {
         implementationPlanKey(repository: pullRequest.repository, pullRequestNumber: pullRequest.number, card: card)
     }

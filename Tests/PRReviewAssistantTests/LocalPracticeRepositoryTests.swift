@@ -55,6 +55,13 @@ struct LocalPracticeRepositoryTests {
         #expect(committedFiles.contains("card-work.txt"))
         #expect(!committedFiles.contains("other-work.txt"))
         #expect(remainingChanges.contains("other-work.txt"))
+
+        let verifiedSHA = try workspace.verifiedHead(
+            path,
+            expectedSHA: fixture.pullRequest.headSHA,
+            expectedBranch: fixture.pullRequest.headBranch
+        )
+        #expect(!verifiedSHA.hasPrefix(fixture.pullRequest.headSHA))
     }
 
     @Test("PR 요청 브랜치 목록은 origin 추적 브랜치만 읽고 체크아웃하지 않는다")

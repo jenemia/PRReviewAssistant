@@ -297,6 +297,7 @@ struct ReviewCommentSection: Identifiable, Hashable {
         var groups: [(title: String, lines: [String])] = []
         var currentTitle: String?
         var currentLines: [String] = []
+        var currentSeverityName: String?
 
         func appendCurrent() {
             let content = currentLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -309,8 +310,21 @@ struct ReviewCommentSection: Identifiable, Hashable {
                 appendCurrent()
                 currentTitle = title
                 currentLines = []
-            } else if let activeTitle = currentTitle,
-                      let severityName = severityName(in: activeTitle),
+                currentSeverityName = severityName(in: title)
+            } else if currentTitle != nil,
+                      currentSeverityName != nil,
+                      let finding = codedFinding(in: line) {
+                // External review tools commonly use headings such as
+                // `### W1 - ...` and `### S1 - ...`. They are findings in the
+                // current severity group, not Markdown context headings.
+                let hasFindingContent = currentLines.contains {
+                    !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                }
+                if hasFindingContent { appendCurrent() }
+                currentTitle = finding
+                currentLines = [line]
+            } else if currentTitle != nil,
+                      let severityName = currentSeverityName,
                       let itemNumber = numberedItemNumber(in: line) {
                 // A numbered finding beneath one severity heading is its own
                 // work unit: `Suggestion (3)` with `1.`, `2.`, `3.` becomes
@@ -367,8 +381,23 @@ struct ReviewCommentSection: Identifiable, Hashable {
         return String(trimmed[numberRange])
     }
 
+    private static func codedFinding(in line: String) -> String? {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        let pattern = "^(?:#{1,6}\\s*)?([BCEWSI])(\\d+)\\s*(?:[-–—:]\\s*|[.)]\\s+).+$"
+        guard let expression = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return nil }
+        let range = NSRange(trimmed.startIndex..., in: trimmed)
+        guard expression.firstMatch(in: trimmed, range: range) != nil else { return nil }
+        return trimmed
+    }
+
     static func severitySortRank(for title: String?) -> Int {
         let normalized = (title ?? "").lowercased()
+        if normalized.range(of: "^(?:#{1,6}\\s*)?b\\d+", options: .regularExpression) != nil { return 0 }
+        if normalized.range(of: "^(?:#{1,6}\\s*)?c\\d+", options: .regularExpression) != nil { return 1 }
+        if normalized.range(of: "^(?:#{1,6}\\s*)?e\\d+", options: .regularExpression) != nil { return 2 }
+        if normalized.range(of: "^(?:#{1,6}\\s*)?w\\d+", options: .regularExpression) != nil { return 3 }
+        if normalized.range(of: "^(?:#{1,6}\\s*)?s\\d+", options: .regularExpression) != nil { return 4 }
+        if normalized.range(of: "^(?:#{1,6}\\s*)?i\\d+", options: .regularExpression) != nil { return 5 }
         if normalized.contains("blocker") { return 0 }
         if normalized.contains("critical") { return 1 }
         if normalized.contains("error") || normalized.contains("오류") { return 2 }
@@ -378,11 +407,50 @@ struct ReviewCommentSection: Identifiable, Hashable {
         return 6
     }
 
+    /// The major severity grouping used by the PR comment classification UI.
+    /// Coded findings (`W1`, `S2`, ...) remain individual cards within it.
+    static func categoryLabel(for title: String?) -> String? {
+        let normalized = (title ?? "").lowercased()
+        let codePattern = "^(?:#{1,6}\\s*)?([bcewsi])\\d+"
+        if let expression = try? NSRegularExpression(pattern: codePattern),
+           let match = expression.firstMatch(in: normalized, range: NSRange(normalized.startIndex..., in: normalized)),
+           let codeRange = Range(match.range(at: 1), in: normalized) {
+            switch normalized[codeRange] {
+            case "b": return "Blocker"
+            case "c": return "Critical"
+            case "e": return "Error"
+            case "w": return "Warning"
+            case "s": return "Suggestion"
+            case "i": return "Info"
+            default: break
+            }
+        }
+        let pattern = "^(?:#{1,6}\\s*)?(?:[🔴🟠🟡🔵⚪]\\s*)?(Blocker|Critical|Error|Warning|Suggestion|Info|주의|오류|제안)"
+        guard let expression = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return nil }
+        let range = NSRange(normalized.startIndex..., in: normalized)
+        guard let match = expression.firstMatch(in: normalized, range: range),
+              let levelRange = Range(match.range(at: 1), in: normalized) else { return nil }
+        switch normalized[levelRange] {
+        case "주의": return "Warning"
+        case "오류": return "Error"
+        case "제안": return "Suggestion"
+        default: return String(normalized[levelRange]).capitalized
+        }
+    }
+
     /// Turns a severity heading such as `Suggestion (2)` into the compact
     /// center-list label `Suggestion-2` while retaining the original title
     /// and body for the detail view.
     static func displayLabel(for title: String?) -> String? {
         guard let title else { return nil }
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let codedPattern = "^(?:#{1,6}\\s*)?([BCEWSI])(\\d+)\\b"
+        if let expression = try? NSRegularExpression(pattern: codedPattern, options: [.caseInsensitive]),
+           let match = expression.firstMatch(in: trimmed, range: NSRange(trimmed.startIndex..., in: trimmed)),
+           let prefixRange = Range(match.range(at: 1), in: trimmed),
+           let numberRange = Range(match.range(at: 2), in: trimmed) {
+            return "\(trimmed[prefixRange].uppercased())\(trimmed[numberRange])"
+        }
         let pattern = "^(?:#{1,6}\\s*)?(?:[🔴🟠🟡🔵⚪]\\s*)?(Blocker|Critical|Error|Warning|Suggestion|Info|주의|오류|제안)\\s*\\(\\s*(\\d+)\\s*\\)"
         guard let expression = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return nil }
         let range = NSRange(title.startIndex..., in: title)
@@ -469,6 +537,9 @@ struct ImplementationPlan: Codable, Hashable {
     var repository: String
     var pullRequestNumber: Int
     var content: String
+    /// The exact implementation request submitted after the user confirms the
+    /// work-request sheet. It is displayed first on the work card.
+    var implementationRequest: String?
     var sourceCardIDs: [UUID]
     /// New plans depend on review-section IDs; UUIDs remain for old saved plans.
     var sourceReviewIDs: [String]?

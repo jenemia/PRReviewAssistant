@@ -68,6 +68,33 @@ struct ReviewCommentSectionTests {
         #expect(sections[2].body.contains("세 번째 개선점"))
     }
 
+    @Test("Warning과 Suggestion의 W/S 항목 헤더는 각각 독립 카드로 분리한다")
+    func separatesCodedFindingsWithinSeverity() {
+        let body = """
+        ## 🟠 Warning (2)
+
+        ### W1 - 결제 전 리스트 재적재
+        결제가 실패해도 리스트가 이미 바뀝니다.
+
+        ### W2 - 점수 0 처리
+        0점 응답도 유효합니다.
+
+        ## 🔵 Suggestion (1)
+
+        ### S1 - partial 분리
+        partial을 정리합니다.
+        """
+
+        let sections = ReviewCommentSection.parse(commentID: "comment-coded", body: body)
+
+        #expect(sections.count == 3)
+        #expect(sections.map(\.title) == ["### W1 - 결제 전 리스트 재적재", "### W2 - 점수 0 처리", "### S1 - partial 분리"])
+        #expect(ReviewCommentSection.displayLabel(for: sections[0].title) == "W1")
+        #expect(ReviewCommentSection.displayLabel(for: sections[2].title) == "S1")
+        #expect(ReviewCommentSection.categoryLabel(for: sections[0].title) == "Warning")
+        #expect(ReviewCommentSection.categoryLabel(for: sections[2].title) == "Suggestion")
+    }
+
     @Test("원문 코드 위치 URL은 스크립트와 라인 링크로 읽기 쉽게 표시한다")
     func formatsRawCodeLocationURL() {
         let raw = "(prreview://open?path=unity_project/devil_hunter_idle/Assets/Supercent/Devil_Hunter_Idle/0.%20Battle/Scripts/BattleManager.cs&line=662)"

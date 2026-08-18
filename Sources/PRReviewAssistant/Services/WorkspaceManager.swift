@@ -93,11 +93,22 @@ struct WorkspaceManager: Sendable {
         return path
     }
 
+    /// A local review commit is valid context when it contains the PR's latest
+    /// remote HEAD. Requiring exact SHA equality rejects that current context.
     func verifyHead(_ workspacePath: String, expectedSHA: String, expectedBranch: String) throws {
+        _ = try verifiedHead(workspacePath, expectedSHA: expectedSHA, expectedBranch: expectedBranch)
+    }
+
+    func verifiedHead(_ workspacePath: String, expectedSHA: String, expectedBranch: String) throws -> String {
         let sha = try runner.run("git", arguments: ["rev-parse", "HEAD"], workingDirectory: workspacePath).output.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard sha.hasPrefix(expectedSHA) else { throw CommandError.failed(.init(output: "", error: "작업 폴더의 SHA가 최신 PR HEAD와 다릅니다.", status: 1)) }
         let branch = try runner.run("git", arguments: ["symbolic-ref", "--quiet", "--short", "HEAD"], workingDirectory: workspacePath).output.trimmingCharacters(in: .whitespacesAndNewlines)
         guard branch == expectedBranch else { throw CommandError.failed(.init(output: "", error: "작업 폴더가 PR 브랜치에 체크아웃되지 않았습니다.", status: 1)) }
+        if sha.hasPrefix(expectedSHA) { return sha }
+        let containsLatestPRHead = (try? runner.run("git", arguments: ["merge-base", "--is-ancestor", expectedSHA, sha], workingDirectory: workspacePath)) != nil
+        guard containsLatestPRHead else {
+            throw CommandError.failed(.init(output: "", error: "작업 폴더의 SHA가 최신 PR HEAD를 포함하지 않습니다. 새로 고침 후 다시 시도하세요.", status: 1))
+        }
+        return sha
     }
 
     func changes(at path: String) throws -> String { try runner.run("git", arguments: ["diff", "--stat"], workingDirectory: path).output }
