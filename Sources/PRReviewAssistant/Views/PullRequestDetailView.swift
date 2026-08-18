@@ -72,7 +72,16 @@ struct PullRequestDetailView: View {
                let plan = store.implementationPlan(for: card, pullRequest: pullRequest) {
                 HSplitView {
                     detailContent
-                    WorkReviewSidePanel(card: card, plan: plan, close: { detailNavigation.closePanel() })
+                    WorkReviewSidePanel(
+                        card: card,
+                        plan: plan,
+                        retry: {
+                            guard store.createImplementationPlan(for: card, pullRequest: pullRequest) != nil else { return }
+                            pendingImplementationCardID = card.id
+                            showingWorkArea = true
+                        },
+                        close: { detailNavigation.closePanel() }
+                    )
                         // Recreate the panel when another work card is selected,
                         // so its scroll position and review context never leak.
                         .id(cardID)
@@ -1111,6 +1120,7 @@ private struct WorkReviewCardThumbnail: View {
 private struct WorkReviewSidePanel: View {
     let card: AgentReviewCard
     let plan: ImplementationPlan
+    let retry: () -> Void
     let close: () -> Void
 
     var body: some View {
@@ -1159,6 +1169,12 @@ private struct WorkReviewSidePanel: View {
                                 Text(changedFiles.joined(separator: "\n"))
                                     .font(.system(.caption, design: .monospaced))
                                     .textSelection(.enabled)
+                            }
+                            if plan.status == .failed {
+                                Divider()
+                                Button("작업 다시 요청", systemImage: "arrow.clockwise", action: retry)
+                                    .buttonStyle(.borderedProminent)
+                                    .help("최신 검토 내용을 기준으로 구현 요청 팝업을 다시 엽니다.")
                             }
                         }
                     }

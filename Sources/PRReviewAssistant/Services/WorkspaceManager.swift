@@ -60,9 +60,6 @@ struct WorkspaceManager: Sendable {
         _ = try runner.run("git", arguments: ["fetch", repository.remoteName, remoteRef], workingDirectory: path)
         let target = try runner.run("git", arguments: ["rev-parse", "\(repository.remoteName)/\(pullRequest.headBranch)"], workingDirectory: path)
             .output.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard target.hasPrefix(pullRequest.headSHA) else {
-            throw CommandError.failed(.init(output: "", error: "가져온 PR 브랜치가 최신 PR HEAD와 다릅니다. 새로 고침 후 다시 시도하세요.", status: 1))
-        }
 
         // A newly cloned remote with a misconfigured default branch can have an
         // unborn HEAD. Treat it as a checkout that needs preparing instead of
@@ -93,21 +90,17 @@ struct WorkspaceManager: Sendable {
         return path
     }
 
-    /// A local review commit is valid context when it contains the PR's latest
-    /// remote HEAD. Requiring exact SHA equality rejects that current context.
+    /// The freshly fetched PR branch is the source of truth. The GitHub list
+    /// snapshot can be stale while a user is already working on that branch.
     func verifyHead(_ workspacePath: String, expectedSHA: String, expectedBranch: String) throws {
         _ = try verifiedHead(workspacePath, expectedSHA: expectedSHA, expectedBranch: expectedBranch)
     }
 
     func verifiedHead(_ workspacePath: String, expectedSHA: String, expectedBranch: String) throws -> String {
+        _ = expectedSHA
         let sha = try runner.run("git", arguments: ["rev-parse", "HEAD"], workingDirectory: workspacePath).output.trimmingCharacters(in: .whitespacesAndNewlines)
         let branch = try runner.run("git", arguments: ["symbolic-ref", "--quiet", "--short", "HEAD"], workingDirectory: workspacePath).output.trimmingCharacters(in: .whitespacesAndNewlines)
         guard branch == expectedBranch else { throw CommandError.failed(.init(output: "", error: "작업 폴더가 PR 브랜치에 체크아웃되지 않았습니다.", status: 1)) }
-        if sha.hasPrefix(expectedSHA) { return sha }
-        let containsLatestPRHead = (try? runner.run("git", arguments: ["merge-base", "--is-ancestor", expectedSHA, sha], workingDirectory: workspacePath)) != nil
-        guard containsLatestPRHead else {
-            throw CommandError.failed(.init(output: "", error: "작업 폴더의 SHA가 최신 PR HEAD를 포함하지 않습니다. 새로 고침 후 다시 시도하세요.", status: 1))
-        }
         return sha
     }
 
@@ -148,9 +141,15 @@ struct WorkspaceManager: Sendable {
         return name.isEmpty ? nil : name
     }
     func verifyRemoteHead(_ remote: String, branch: String, expectedSHA: String, at path: String) throws {
+        _ = expectedSHA
         let result = try runner.run("git", arguments: ["ls-remote", remote, "refs/heads/\(branch)"], workingDirectory: path)
-        guard let sha = result.output.split(whereSeparator: { $0 == "\t" || $0 == " " }).first.map(String.init), sha.hasPrefix(expectedSHA) else {
-            throw CommandError.failed(.init(output: "", error: "원격 브랜치가 분석 기준 SHA 이후 변경되었습니다. 새로 고침 후 다시 분석하세요.", status: 1))
+        guard let remoteSHA = result.output.split(whereSeparator: { $0 == "\t" || $0 == " " }).first.map(String.init) else {
+            throw CommandError.failed(.init(output: "", error: "원격 PR 브랜치의 HEAD를 확인할 수 없습니다.", status: 1))
+        }
+        let fetchedSHA = try runner.run("git", arguments: ["rev-parse", "\(remote)/\(branch)"], workingDirectory: path)
+            .output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard remoteSHA == fetchedSHA else {
+            throw CommandError.failed(.init(output: "", error: "작업 폴더 준비 이후 원격 PR 브랜치가 변경되었습니다. 다시 시도하세요.", status: 1))
         }
     }
     func test(at path: String, command: String) throws -> CommandResult { try runner.run("/bin/zsh", arguments: ["-lc", command], workingDirectory: path) }
@@ -171,6 +170,7 @@ struct WorkspaceManager: Sendable {
     }
 
     func pushCommittedChanges(at path: String, branch: String, expectedRemoteSHA: String, committedSHA: String, remote: String = "origin") throws {
+        _ = expectedRemoteSHA
         let localSHA = try runner.run("git", arguments: ["rev-parse", "HEAD"], workingDirectory: path)
             .output.trimmingCharacters(in: .whitespacesAndNewlines)
         guard localSHA == committedSHA else {
@@ -185,8 +185,10 @@ struct WorkspaceManager: Sendable {
         guard let remoteSHA = result.output.split(whereSeparator: { $0 == "\t" || $0 == " " }).first.map(String.init) else {
             throw CommandError.failed(.init(output: "", error: "원격 PR 브랜치의 HEAD를 확인할 수 없습니다.", status: 1))
         }
-        guard remoteSHA == committedSHA || remoteSHA.hasPrefix(expectedRemoteSHA) else {
-            throw CommandError.failed(.init(output: "", error: "원격 브랜치가 커밋 기준 SHA 이후 변경되었습니다. 새로 고침 후 다시 분석하세요.", status: 1))
+        let fetchedSHA = try runner.run("git", arguments: ["rev-parse", "\(remote)/\(branch)"], workingDirectory: path)
+            .output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard remoteSHA == committedSHA || remoteSHA == fetchedSHA else {
+            throw CommandError.failed(.init(output: "", error: "작업 폴더 준비 이후 원격 PR 브랜치가 변경되었습니다. 다시 시도하세요.", status: 1))
         }
         _ = try runner.run("git", arguments: ["push", remote, "HEAD:\(branch)"], workingDirectory: path)
         let confirmed = try runner.run("git", arguments: ["ls-remote", remote, "refs/heads/\(branch)"], workingDirectory: path)

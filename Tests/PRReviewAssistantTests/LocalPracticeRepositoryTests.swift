@@ -64,6 +64,25 @@ struct LocalPracticeRepositoryTests {
         #expect(!verifiedSHA.hasPrefix(fixture.pullRequest.headSHA))
     }
 
+    @Test("저장된 PR SHA가 오래되어도 현재 원격 브랜치로 작업 폴더를 준비한다")
+    func preparesCurrentBranchWhenStoredPRSHAIsStale() throws {
+        let practice = LocalPracticeRepository()
+        let fixture = try practice.create()
+        defer { try? practice.remove(at: fixture.repository.localPath) }
+
+        var stalePullRequest = fixture.pullRequest
+        stalePullRequest.headSHA = "000000000000"
+        let workspace = WorkspaceManager()
+        let path = try workspace.prepareRepositoryWorkspace(repository: fixture.repository, pullRequest: stalePullRequest)
+        let currentSHA = try workspace.verifiedHead(
+            path,
+            expectedSHA: stalePullRequest.headSHA,
+            expectedBranch: stalePullRequest.headBranch
+        )
+
+        #expect(!currentSHA.hasPrefix(stalePullRequest.headSHA))
+    }
+
     @Test("PR 요청 브랜치 목록은 origin 추적 브랜치만 읽고 체크아웃하지 않는다")
     func readsOriginBranchesForPullRequestRequests() async throws {
         let practice = LocalPracticeRepository()
