@@ -1,8 +1,13 @@
 /Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/BrandColor.swift
+/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Models/CursorSessionHistoryModels.swift
+/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Models/CursorSpecSidebarCache.swift
+/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Models/PullRequestProposal.swift
 /Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Models/ReviewModels.swift
 /Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/PRReviewAssistantApp.swift
 /Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Services/AppPersistence.swift
 /Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Services/CursorAgent.swift
+/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Services/CursorSessionHistoryService.swift
+/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Services/CursorSessionSpecStore.swift
 /Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Services/GitHubClient.swift
 /Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Services/LocalPracticeRepository.swift
 /Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Services/NotificationService.swift
@@ -10,7 +15,9 @@
 /Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Services/ProcessRunner.swift
 /Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Services/ReviewStore.swift
 /Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Services/WorkspaceManager.swift
+/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Views/BranchRequestView.swift
 /Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Views/ContentView.swift
+/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Views/CursorSessionHistoryView.swift
 /Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Views/MarkdownContentView.swift
 /Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Views/MenuBarView.swift
 /Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Views/PetWindowView.swift

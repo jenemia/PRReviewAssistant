@@ -1,7 +1,14 @@
 /Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/AppPersistence.swift.o
+/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/BranchRequestView.swift.o
 /Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/BrandColor.swift.o
 /Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/ContentView.swift.o
 /Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/CursorAgent.swift.o
+/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/CursorReviewWorkflow.swift.o
+/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/CursorSessionHistoryModels.swift.o
+/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/CursorSessionHistoryService.swift.o
+/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/CursorSessionHistoryView.swift.o
+/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/CursorSessionSpecStore.swift.o
+/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/CursorSpecSidebarCache.swift.o
 /Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/GitHubClient.swift.o
 /Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/LocalPracticeRepository.swift.o
 /Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/MarkdownContentView.swift.o
@@ -12,6 +19,7 @@
 /Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/PetWindowView.swift.o
 /Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/ProcessRunner.swift.o
 /Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/PullRequestDetailView.swift.o
+/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/PullRequestProposal.swift.o
 /Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/RepositoryManagementView.swift.o
 /Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/ReviewModels.swift.o
 /Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/ReviewStore.swift.o

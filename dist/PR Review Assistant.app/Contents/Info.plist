@@ -15,12 +15,14 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
+	<string>1.2.2</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+	<string>17</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSDocumentsFolderUsageDescription</key>
+    <string>등록한 Git 저장소의 PR과 사람 리뷰를 확인하고, 승인한 작업을 반영하기 위해 문서 폴더의 저장소에 접근합니다.</string>
 </dict>
 </plist>

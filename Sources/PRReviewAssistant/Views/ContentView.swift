@@ -52,6 +52,11 @@ struct ContentView: View {
                         }
                         .buttonStyle(.plain)
                         .help("PR 요청 브랜치 \(branch.name) 보기")
+                        .contextMenu {
+                            Button("PR 요청 삭제", systemImage: "trash", role: .destructive) {
+                                store.removeRequestedBranch(branch)
+                            }
+                        }
                     }
                 } header: {
                     HStack(spacing: 6) {

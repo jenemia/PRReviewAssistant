@@ -438,9 +438,8 @@ struct ReviewCommentSection: Identifiable, Hashable {
         }
     }
 
-    /// Turns a severity heading such as `Suggestion (2)` into the compact
-    /// center-list label `Suggestion-2` while retaining the original title
-    /// and body for the detail view.
+    /// Keeps coded finding titles intact and formats severity headings such as
+    /// `Suggestion (2)` as `Suggestion-2` for display.
     static func displayLabel(for title: String?) -> String? {
         guard let title else { return nil }
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -449,7 +448,9 @@ struct ReviewCommentSection: Identifiable, Hashable {
            let match = expression.firstMatch(in: trimmed, range: NSRange(trimmed.startIndex..., in: trimmed)),
            let prefixRange = Range(match.range(at: 1), in: trimmed),
            let numberRange = Range(match.range(at: 2), in: trimmed) {
-            return "\(trimmed[prefixRange].uppercased())\(trimmed[numberRange])"
+            let suffix = trimmed[numberRange.upperBound...].components(separatedBy: .newlines)[0]
+            return "\(trimmed[prefixRange].uppercased())\(trimmed[numberRange])\(suffix)"
+                .trimmingCharacters(in: .whitespaces)
         }
         let pattern = "^(?:#{1,6}\\s*)?(?:[🔴🟠🟡🔵⚪]\\s*)?(Blocker|Critical|Error|Warning|Suggestion|Info|주의|오류|제안)\\s*\\(\\s*(\\d+)\\s*\\)"
         guard let expression = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return nil }

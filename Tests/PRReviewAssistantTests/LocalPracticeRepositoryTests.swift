@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import PRReviewAssistant
 
+@Suite(.serialized)
 struct LocalPracticeRepositoryTests {
     @Test("로컬 연습 PR은 GitHub 없이 로컬 bare 원격에만 생성된다")
     func createsDisposableLocalOnlyFixture() throws {
@@ -101,4 +102,43 @@ struct LocalPracticeRepositoryTests {
         #expect(branches.allSatisfy { $0.isRemote && $0.reference.hasPrefix("origin/") })
         #expect(before == after)
     }
+    @Test("재리뷰 커밋 조회는 PR 기준 이후 본문을 시간순으로 읽고 다른 브랜치와 미커밋 작업을 제외한다")
+    func readsReviewCommitMessages() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let runner = ProcessRunner()
+        func git(_ arguments: [String]) throws -> String {
+            try runner.run("git", arguments: arguments, workingDirectory: directory.path).output.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        _ = try git(["init", "-b", "review"])
+        _ = try git(["config", "user.name", "Test"])
+        _ = try git(["config", "user.email", "test@example.com"])
+        _ = try git(["commit", "--allow-empty", "-m", "초기 PR"])
+        let base = try git(["rev-parse", "HEAD"])
+        _ = try git(["switch", "-c", "unrelated"])
+        _ = try git(["commit", "--allow-empty", "-m", "무관한 커밋"])
+        let unrelated = try git(["rev-parse", "HEAD"])
+        _ = try git(["switch", "review"])
+        _ = try git(["commit", "--allow-empty", "-m", "W2 반영\n\n작업내용: spec 문서만 갱신"])
+        let first = try git(["rev-parse", "HEAD"])
+        _ = try git(["commit", "--allow-empty", "-m", "W2 보완\n\n이유: 초기화 조건 명시"])
+        let last = try git(["rev-parse", "HEAD"])
+        try "미커밋 작업".write(to: directory.appendingPathComponent("draft.txt"), atomically: true, encoding: .utf8)
+        let workspace = WorkspaceManager()
+        let commits = try workspace.reviewCommits(at: directory.path, branch: "review", baseSHA: base, committedSHA: last)
+        #expect(commits.map(\.sha) == [first, last])
+        #expect(commits[0].message == "W2 반영\n\n작업내용: spec 문서만 갱신")
+        #expect(!commits.map(\.message).joined().contains("무관한 커밋"))
+        #expect(try git(["rev-parse", "HEAD"]) == last)
+        #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent("draft.txt").path))
+        #expect(throws: (any Error).self) {
+            try workspace.reviewCommits(at: directory.path, branch: "review", baseSHA: base, committedSHA: first)
+        }
+        #expect(throws: (any Error).self) {
+            try workspace.reviewCommits(at: directory.path, branch: "review", baseSHA: unrelated, committedSHA: last)
+        }
+        #expect(try workspace.reviewCommits(at: directory.path, branch: "review", baseSHA: last, committedSHA: last).isEmpty)
+    }
+
 }

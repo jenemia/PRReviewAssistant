@@ -1,4 +1,10 @@
+/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/AppVersionTests.swift
+/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/CursorAgentTests.swift
+/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/CursorSessionHistoryTests.swift
+/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/GitHubReleaseTests.swift
 /Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/LocalPracticeRepositoryTests.swift
 /Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/PetModelsTests.swift
 /Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/ProcessRunnerTests.swift
+/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/PullRequestProposalTests.swift
+/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/ReviewCommentSectionTests.swift
 /Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/ReviewDetailNavigationTests.swift

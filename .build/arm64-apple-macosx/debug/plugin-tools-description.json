@@ -7,6 +7,34 @@
     }
   ],
   "copyCommands" : {
+    "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant_PRReviewAssistant.bundle/AppIcon.icns" : {
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Resources/AppIcon.icns"
+        }
+      ],
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant_PRReviewAssistant.bundle/AppIcon.icns"
+        }
+      ]
+    },
+    "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant_PRReviewAssistant.bundle/AppIconSource.png" : {
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Resources/AppIconSource.png"
+        }
+      ],
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant_PRReviewAssistant.bundle/AppIconSource.png"
+        }
+      ]
+    },
     "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant_PRReviewAssistant.bundle/PetMascot.png" : {
       "inputs" : [
         {
@@ -18,6 +46,174 @@
         {
           "kind" : "file",
           "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant_PRReviewAssistant.bundle/PetMascot.png"
+        }
+      ]
+    },
+    "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant_PRReviewAssistant.bundle/PetMascotPRWeapons.png" : {
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Resources/PetMascotPRWeapons.png"
+        }
+      ],
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant_PRReviewAssistant.bundle/PetMascotPRWeapons.png"
+        }
+      ]
+    },
+    "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant_PRReviewAssistant.bundle/PetMascotShield.png" : {
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Resources/PetMascotShield.png"
+        }
+      ],
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant_PRReviewAssistant.bundle/PetMascotShield.png"
+        }
+      ]
+    },
+    "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant_PRReviewAssistant.bundle/icon_128x128.png" : {
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Resources/AppIcon.iconset/icon_128x128.png"
+        }
+      ],
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant_PRReviewAssistant.bundle/icon_128x128.png"
+        }
+      ]
+    },
+    "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant_PRReviewAssistant.bundle/icon_128x128@2x.png" : {
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Resources/AppIcon.iconset/icon_128x128@2x.png"
+        }
+      ],
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant_PRReviewAssistant.bundle/icon_128x128@2x.png"
+        }
+      ]
+    },
+    "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant_PRReviewAssistant.bundle/icon_16x16.png" : {
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Resources/AppIcon.iconset/icon_16x16.png"
+        }
+      ],
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant_PRReviewAssistant.bundle/icon_16x16.png"
+        }
+      ]
+    },
+    "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant_PRReviewAssistant.bundle/icon_16x16@2x.png" : {
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Resources/AppIcon.iconset/icon_16x16@2x.png"
+        }
+      ],
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant_PRReviewAssistant.bundle/icon_16x16@2x.png"
+        }
+      ]
+    },
+    "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant_PRReviewAssistant.bundle/icon_256x256.png" : {
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Resources/AppIcon.iconset/icon_256x256.png"
+        }
+      ],
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant_PRReviewAssistant.bundle/icon_256x256.png"
+        }
+      ]
+    },
+    "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant_PRReviewAssistant.bundle/icon_256x256@2x.png" : {
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Resources/AppIcon.iconset/icon_256x256@2x.png"
+        }
+      ],
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant_PRReviewAssistant.bundle/icon_256x256@2x.png"
+        }
+      ]
+    },
+    "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant_PRReviewAssistant.bundle/icon_32x32.png" : {
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Resources/AppIcon.iconset/icon_32x32.png"
+        }
+      ],
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant_PRReviewAssistant.bundle/icon_32x32.png"
+        }
+      ]
+    },
+    "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant_PRReviewAssistant.bundle/icon_32x32@2x.png" : {
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Resources/AppIcon.iconset/icon_32x32@2x.png"
+        }
+      ],
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant_PRReviewAssistant.bundle/icon_32x32@2x.png"
+        }
+      ]
+    },
+    "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant_PRReviewAssistant.bundle/icon_512x512.png" : {
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Resources/AppIcon.iconset/icon_512x512.png"
+        }
+      ],
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant_PRReviewAssistant.bundle/icon_512x512.png"
+        }
+      ]
+    },
+    "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant_PRReviewAssistant.bundle/icon_512x512@2x.png" : {
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Resources/AppIcon.iconset/icon_512x512@2x.png"
+        }
+      ],
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant_PRReviewAssistant.bundle/icon_512x512@2x.png"
         }
       ]
     }
@@ -45,6 +241,18 @@
         },
         {
           "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Models/CursorSessionHistoryModels.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Models/CursorSpecSidebarCache.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Models/PullRequestProposal.swift"
+        },
+        {
+          "kind" : "file",
           "name" : "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Models/ReviewModels.swift"
         },
         {
@@ -58,6 +266,14 @@
         {
           "kind" : "file",
           "name" : "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Services/CursorAgent.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Services/CursorSessionHistoryService.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Services/CursorSessionSpecStore.swift"
         },
         {
           "kind" : "file",
@@ -89,7 +305,15 @@
         },
         {
           "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Views/BranchRequestView.swift"
+        },
+        {
+          "kind" : "file",
           "name" : "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Views/ContentView.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Views/CursorSessionHistoryView.swift"
         },
         {
           "kind" : "file",
@@ -137,10 +361,15 @@
       "moduleOutputPath" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/Modules/PRReviewAssistant.swiftmodule",
       "objects" : [
         "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/BrandColor.swift.o",
+        "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/CursorSessionHistoryModels.swift.o",
+        "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/CursorSpecSidebarCache.swift.o",
+        "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/PullRequestProposal.swift.o",
         "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/ReviewModels.swift.o",
         "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/PRReviewAssistantApp.swift.o",
         "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/AppPersistence.swift.o",
         "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/CursorAgent.swift.o",
+        "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/CursorSessionHistoryService.swift.o",
+        "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/CursorSessionSpecStore.swift.o",
         "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/GitHubClient.swift.o",
         "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/LocalPracticeRepository.swift.o",
         "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/NotificationService.swift.o",
@@ -148,7 +377,9 @@
         "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/ProcessRunner.swift.o",
         "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/ReviewStore.swift.o",
         "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/WorkspaceManager.swift.o",
+        "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/BranchRequestView.swift.o",
         "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/ContentView.swift.o",
+        "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/CursorSessionHistoryView.swift.o",
         "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/MarkdownContentView.swift.o",
         "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/MenuBarView.swift.o",
         "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/PetWindowView.swift.o",
@@ -208,6 +439,18 @@
         },
         {
           "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/CursorSessionHistoryModels.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/CursorSpecSidebarCache.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/PullRequestProposal.swift.o"
+        },
+        {
+          "kind" : "file",
           "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/ReviewModels.swift.o"
         },
         {
@@ -221,6 +464,14 @@
         {
           "kind" : "file",
           "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/CursorAgent.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/CursorSessionHistoryService.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/CursorSessionSpecStore.swift.o"
         },
         {
           "kind" : "file",
@@ -252,7 +503,15 @@
         },
         {
           "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/BranchRequestView.swift.o"
+        },
+        {
+          "kind" : "file",
           "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/ContentView.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/CursorSessionHistoryView.swift.o"
         },
         {
           "kind" : "file",
@@ -290,10 +549,15 @@
       "prepareForIndexing" : false,
       "sources" : [
         "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/BrandColor.swift",
+        "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Models/CursorSessionHistoryModels.swift",
+        "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Models/CursorSpecSidebarCache.swift",
+        "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Models/PullRequestProposal.swift",
         "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Models/ReviewModels.swift",
         "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/PRReviewAssistantApp.swift",
         "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Services/AppPersistence.swift",
         "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Services/CursorAgent.swift",
+        "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Services/CursorSessionHistoryService.swift",
+        "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Services/CursorSessionSpecStore.swift",
         "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Services/GitHubClient.swift",
         "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Services/LocalPracticeRepository.swift",
         "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Services/NotificationService.swift",
@@ -301,7 +565,9 @@
         "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Services/ProcessRunner.swift",
         "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Services/ReviewStore.swift",
         "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Services/WorkspaceManager.swift",
+        "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Views/BranchRequestView.swift",
         "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Views/ContentView.swift",
+        "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Views/CursorSessionHistoryView.swift",
         "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Views/MarkdownContentView.swift",
         "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Views/MenuBarView.swift",
         "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Views/PetWindowView.swift",
@@ -409,6 +675,22 @@
       "inputs" : [
         {
           "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/AppVersionTests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/CursorAgentTests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/CursorSessionHistoryTests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/GitHubReleaseTests.swift"
+        },
+        {
+          "kind" : "file",
           "name" : "/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/LocalPracticeRepositoryTests.swift"
         },
         {
@@ -418,6 +700,14 @@
         {
           "kind" : "file",
           "name" : "/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/ProcessRunnerTests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/PullRequestProposalTests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/ReviewCommentSectionTests.swift"
         },
         {
           "kind" : "file",
@@ -440,9 +730,15 @@
       "moduleName" : "PRReviewAssistantTests",
       "moduleOutputPath" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/Modules/PRReviewAssistantTests.swiftmodule",
       "objects" : [
+        "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/AppVersionTests.swift.o",
+        "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/CursorAgentTests.swift.o",
+        "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/CursorSessionHistoryTests.swift.o",
+        "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/GitHubReleaseTests.swift.o",
         "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/LocalPracticeRepositoryTests.swift.o",
         "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/PetModelsTests.swift.o",
         "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/ProcessRunnerTests.swift.o",
+        "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/PullRequestProposalTests.swift.o",
+        "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/ReviewCommentSectionTests.swift.o",
         "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/ReviewDetailNavigationTests.swift.o"
       ],
       "otherArguments" : [
@@ -493,6 +789,22 @@
       "outputs" : [
         {
           "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/AppVersionTests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/CursorAgentTests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/CursorSessionHistoryTests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/GitHubReleaseTests.swift.o"
+        },
+        {
+          "kind" : "file",
           "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/LocalPracticeRepositoryTests.swift.o"
         },
         {
@@ -505,6 +817,14 @@
         },
         {
           "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/PullRequestProposalTests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/ReviewCommentSectionTests.swift.o"
+        },
+        {
+          "kind" : "file",
           "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/ReviewDetailNavigationTests.swift.o"
         },
         {
@@ -514,9 +834,15 @@
       ],
       "prepareForIndexing" : false,
       "sources" : [
+        "/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/AppVersionTests.swift",
+        "/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/CursorAgentTests.swift",
+        "/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/CursorSessionHistoryTests.swift",
+        "/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/GitHubReleaseTests.swift",
         "/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/LocalPracticeRepositoryTests.swift",
         "/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/PetModelsTests.swift",
         "/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/ProcessRunnerTests.swift",
+        "/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/PullRequestProposalTests.swift",
+        "/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/ReviewCommentSectionTests.swift",
         "/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/ReviewDetailNavigationTests.swift"
       ],
       "tempsPath" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build",
@@ -535,10 +861,15 @@
       "prreviewassistant",
       "-c",
       "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/BrandColor.swift",
+      "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Models/CursorSessionHistoryModels.swift",
+      "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Models/CursorSpecSidebarCache.swift",
+      "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Models/PullRequestProposal.swift",
       "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Models/ReviewModels.swift",
       "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/PRReviewAssistantApp.swift",
       "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Services/AppPersistence.swift",
       "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Services/CursorAgent.swift",
+      "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Services/CursorSessionHistoryService.swift",
+      "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Services/CursorSessionSpecStore.swift",
       "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Services/GitHubClient.swift",
       "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Services/LocalPracticeRepository.swift",
       "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Services/NotificationService.swift",
@@ -546,7 +877,9 @@
       "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Services/ProcessRunner.swift",
       "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Services/ReviewStore.swift",
       "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Services/WorkspaceManager.swift",
+      "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Views/BranchRequestView.swift",
       "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Views/ContentView.swift",
+      "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Views/CursorSessionHistoryView.swift",
       "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Views/MarkdownContentView.swift",
       "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Views/MenuBarView.swift",
       "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Views/PetWindowView.swift",
@@ -661,9 +994,15 @@
       "-package-name",
       "prreviewassistant",
       "-c",
+      "/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/AppVersionTests.swift",
+      "/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/CursorAgentTests.swift",
+      "/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/CursorSessionHistoryTests.swift",
+      "/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/GitHubReleaseTests.swift",
       "/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/LocalPracticeRepositoryTests.swift",
       "/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/PetModelsTests.swift",
       "/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/ProcessRunnerTests.swift",
+      "/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/PullRequestProposalTests.swift",
+      "/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/ReviewCommentSectionTests.swift",
       "/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/ReviewDetailNavigationTests.swift",
       "-I",
       "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/Modules",
@@ -774,6 +1113,18 @@
         },
         {
           "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Models/CursorSessionHistoryModels.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Models/CursorSpecSidebarCache.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Models/PullRequestProposal.swift"
+        },
+        {
+          "kind" : "file",
           "name" : "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Models/ReviewModels.swift"
         },
         {
@@ -787,6 +1138,14 @@
         {
           "kind" : "file",
           "name" : "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Services/CursorAgent.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Services/CursorSessionHistoryService.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Services/CursorSessionSpecStore.swift"
         },
         {
           "kind" : "file",
@@ -818,7 +1177,15 @@
         },
         {
           "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Views/BranchRequestView.swift"
+        },
+        {
+          "kind" : "file",
           "name" : "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Views/ContentView.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Views/CursorSessionHistoryView.swift"
         },
         {
           "kind" : "file",
@@ -864,6 +1231,10 @@
         },
         {
           "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/BranchRequestView.swift.o"
+        },
+        {
+          "kind" : "file",
           "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/BrandColor.swift.o"
         },
         {
@@ -873,6 +1244,26 @@
         {
           "kind" : "file",
           "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/CursorAgent.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/CursorSessionHistoryModels.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/CursorSessionHistoryService.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/CursorSessionHistoryView.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/CursorSessionSpecStore.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/CursorSpecSidebarCache.swift.o"
         },
         {
           "kind" : "file",
@@ -913,6 +1304,10 @@
         {
           "kind" : "file",
           "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/PullRequestDetailView.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/PullRequestProposal.swift.o"
         },
         {
           "kind" : "file",
@@ -968,6 +1363,10 @@
         },
         {
           "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/BranchRequestView.swift.o"
+        },
+        {
+          "kind" : "file",
           "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/BrandColor.swift.o"
         },
         {
@@ -977,6 +1376,26 @@
         {
           "kind" : "file",
           "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/CursorAgent.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/CursorSessionHistoryModels.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/CursorSessionHistoryService.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/CursorSessionHistoryView.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/CursorSessionSpecStore.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/CursorSpecSidebarCache.swift.o"
         },
         {
           "kind" : "file",
@@ -1020,6 +1439,10 @@
         },
         {
           "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/PullRequestProposal.swift.o"
+        },
+        {
+          "kind" : "file",
           "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistant.build/RepositoryManagementView.swift.o"
         },
         {
@@ -1048,6 +1471,22 @@
         },
         {
           "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/AppVersionTests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/CursorAgentTests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/CursorSessionHistoryTests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/GitHubReleaseTests.swift.o"
+        },
+        {
+          "kind" : "file",
           "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/LocalPracticeRepositoryTests.swift.o"
         },
         {
@@ -1057,6 +1496,14 @@
         {
           "kind" : "file",
           "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/ProcessRunnerTests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/PullRequestProposalTests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/ReviewCommentSectionTests.swift.o"
         },
         {
           "kind" : "file",
@@ -1074,6 +1521,22 @@
         },
         {
           "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/AppVersionTests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/CursorAgentTests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/CursorSessionHistoryTests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/GitHubReleaseTests.swift"
+        },
+        {
+          "kind" : "file",
           "name" : "/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/LocalPracticeRepositoryTests.swift"
         },
         {
@@ -1083,6 +1546,14 @@
         {
           "kind" : "file",
           "name" : "/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/ProcessRunnerTests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/PullRequestProposalTests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/ReviewCommentSectionTests.swift"
         },
         {
           "kind" : "file",

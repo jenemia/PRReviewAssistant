@@ -116,6 +116,24 @@ struct WorkspaceManager: Sendable {
             .flatMap { $0.split(whereSeparator: \.isNewline).map(String.init) })
             .sorted()
     }
+    /// Reads only committed review work after the PR snapshot, never drafts or
+    /// commits from unrelated branches. Full bodies retain multi-line summaries.
+    func reviewCommits(at path: String, branch: String, baseSHA: String, committedSHA: String) throws -> [(sha: String, message: String)] {
+        let head = try verifiedHead(path, expectedSHA: baseSHA, expectedBranch: branch)
+        let base = try runner.run("git", arguments: ["rev-parse", "--verify", "--end-of-options", "\(baseSHA)^{commit}"], workingDirectory: path).output.trimmingCharacters(in: .whitespacesAndNewlines)
+        let end = try runner.run("git", arguments: ["rev-parse", "--verify", "--end-of-options", "\(committedSHA)^{commit}"], workingDirectory: path).output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard head == end else {
+            throw CommandError.failed(.init(output: "", error: "작업 폴더 HEAD가 마지막 리뷰 반영 커밋과 다릅니다. 커밋 상태를 확인하세요.", status: 1))
+        }
+        _ = try runner.run("git", arguments: ["merge-base", "--is-ancestor", base, end], workingDirectory: path)
+        let log = try runner.run("git", arguments: ["log", "--reverse", "--format=%H%x00%B%x00", "\(base)..\(end)", "--"], workingDirectory: path).output
+        let fields = log.components(separatedBy: "\0")
+        return stride(from: 0, to: max(0, fields.count - 1), by: 2).map { index in
+            (sha: fields[index].trimmingCharacters(in: .whitespacesAndNewlines),
+             message: fields[index + 1].trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+    }
+
     func developerName(at path: String) throws -> String {
         let subjects = try runner.run("git", arguments: ["log", "-20", "--format=%s"], workingDirectory: path).output
         if let name = subjects

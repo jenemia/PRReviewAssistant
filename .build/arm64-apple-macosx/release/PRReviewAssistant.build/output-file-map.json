@@ -10,6 +10,24 @@
     "swift-dependencies": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/BrandColor.swiftdeps",
     "diagnostics": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/BrandColor.dia"
   },
+  "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Models/CursorSessionHistoryModels.swift": {
+    "object": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/CursorSessionHistoryModels.swift.o",
+    "swiftmodule": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/CursorSessionHistoryModels~partial.swiftmodule",
+    "swift-dependencies": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/CursorSessionHistoryModels.swiftdeps",
+    "diagnostics": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/CursorSessionHistoryModels.dia"
+  },
+  "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Models/CursorSpecSidebarCache.swift": {
+    "object": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/CursorSpecSidebarCache.swift.o",
+    "swiftmodule": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/CursorSpecSidebarCache~partial.swiftmodule",
+    "swift-dependencies": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/CursorSpecSidebarCache.swiftdeps",
+    "diagnostics": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/CursorSpecSidebarCache.dia"
+  },
+  "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Models/PullRequestProposal.swift": {
+    "object": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/PullRequestProposal.swift.o",
+    "swiftmodule": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/PullRequestProposal~partial.swiftmodule",
+    "swift-dependencies": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/PullRequestProposal.swiftdeps",
+    "diagnostics": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/PullRequestProposal.dia"
+  },
   "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Models/ReviewModels.swift": {
     "object": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/ReviewModels.swift.o",
     "swiftmodule": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/ReviewModels~partial.swiftmodule",
@@ -33,6 +51,24 @@
     "swiftmodule": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/CursorAgent~partial.swiftmodule",
     "swift-dependencies": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/CursorAgent.swiftdeps",
     "diagnostics": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/CursorAgent.dia"
+  },
+  "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Services/CursorReviewWorkflow.swift": {
+    "object": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/CursorReviewWorkflow.swift.o",
+    "swiftmodule": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/CursorReviewWorkflow~partial.swiftmodule",
+    "swift-dependencies": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/CursorReviewWorkflow.swiftdeps",
+    "diagnostics": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/CursorReviewWorkflow.dia"
+  },
+  "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Services/CursorSessionHistoryService.swift": {
+    "object": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/CursorSessionHistoryService.swift.o",
+    "swiftmodule": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/CursorSessionHistoryService~partial.swiftmodule",
+    "swift-dependencies": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/CursorSessionHistoryService.swiftdeps",
+    "diagnostics": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/CursorSessionHistoryService.dia"
+  },
+  "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Services/CursorSessionSpecStore.swift": {
+    "object": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/CursorSessionSpecStore.swift.o",
+    "swiftmodule": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/CursorSessionSpecStore~partial.swiftmodule",
+    "swift-dependencies": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/CursorSessionSpecStore.swiftdeps",
+    "diagnostics": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/CursorSessionSpecStore.dia"
   },
   "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Services/GitHubClient.swift": {
     "object": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/GitHubClient.swift.o",
@@ -76,11 +112,23 @@
     "swift-dependencies": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/WorkspaceManager.swiftdeps",
     "diagnostics": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/WorkspaceManager.dia"
   },
+  "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Views/BranchRequestView.swift": {
+    "object": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/BranchRequestView.swift.o",
+    "swiftmodule": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/BranchRequestView~partial.swiftmodule",
+    "swift-dependencies": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/BranchRequestView.swiftdeps",
+    "diagnostics": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/BranchRequestView.dia"
+  },
   "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Views/ContentView.swift": {
     "object": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/ContentView.swift.o",
     "swiftmodule": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/ContentView~partial.swiftmodule",
     "swift-dependencies": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/ContentView.swiftdeps",
     "diagnostics": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/ContentView.dia"
+  },
+  "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Views/CursorSessionHistoryView.swift": {
+    "object": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/CursorSessionHistoryView.swift.o",
+    "swiftmodule": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/CursorSessionHistoryView~partial.swiftmodule",
+    "swift-dependencies": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/CursorSessionHistoryView.swiftdeps",
+    "diagnostics": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/CursorSessionHistoryView.dia"
   },
   "/Users/supercent/Documents/PRReviewAssistant/Sources/PRReviewAssistant/Views/MarkdownContentView.swift": {
     "object": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/release/PRReviewAssistant.build/MarkdownContentView.swift.o",

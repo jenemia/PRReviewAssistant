@@ -89,10 +89,21 @@ struct ReviewCommentSectionTests {
 
         #expect(sections.count == 3)
         #expect(sections.map(\.title) == ["### W1 - 결제 전 리스트 재적재", "### W2 - 점수 0 처리", "### S1 - partial 분리"])
-        #expect(ReviewCommentSection.displayLabel(for: sections[0].title) == "W1")
-        #expect(ReviewCommentSection.displayLabel(for: sections[2].title) == "S1")
+        #expect(ReviewCommentSection.displayLabel(for: sections[0].title) == "W1 - 결제 전 리스트 재적재")
+        #expect(ReviewCommentSection.displayLabel(for: sections[1].title) == "W2 - 점수 0 처리")
+        #expect(ReviewCommentSection.displayLabel(for: sections[2].title) == "S1 - partial 분리")
         #expect(ReviewCommentSection.categoryLabel(for: sections[0].title) == "Warning")
         #expect(ReviewCommentSection.categoryLabel(for: sections[2].title) == "Suggestion")
+    }
+
+    @Test("분류된 카드 제목에는 W2 이후 제목 전체를 보존하고 본문은 포함하지 않는다")
+    func preservesCodedFindingTitle() {
+        let title = "W2 - 신규 SaveData 2종이 계정 전환 리스너(OnSwitch)를 등록하지 않음"
+
+        #expect(AgentReviewCard.title(for: "### \(title)") == title)
+        #expect(AgentReviewCard.title(for: "### \(title)\n본문 설명") == title)
+        #expect(ReviewCommentSection.displayLabel(for: "w2: 점수 0 처리") == "W2: 점수 0 처리")
+        #expect(ReviewCommentSection.displayLabel(for: "W2") == "W2")
     }
 
     @Test("원문 코드 위치 URL은 스크립트와 라인 링크로 읽기 쉽게 표시한다")
@@ -130,6 +141,25 @@ struct ReviewCommentSectionTests {
         #expect(draft.contains("Suggestion-1"))
         #expect(draft.contains("판단 근거"))
         #expect(draft.contains("BattleManager.SetPaused"))
+    }
+
+    @Test("새 설명 형식의 현재 동작과 이유도 GitHub 응답 초안에 유지한다")
+    @MainActor
+    func replyDraftIncludesNarrativeEvidence() {
+        let card = AgentReviewCard(
+            repository: "owner/repository", pullRequestNumber: 1, commentID: "comment-new",
+            commentAuthor: "reviewer", commentBody: "캐시 갱신", title: "캐시 갱신",
+            messages: [.init(role: .agent, body: """
+            ## 판단
+            수정 불필요
+            ## 현재 동작과 이유
+            계정을 전환하면 기존 캐시를 비우므로 이전 계정 데이터가 남지 않습니다.
+            ## 대응 계획
+            현재 처리를 유지합니다.
+            """)]
+        )
+        let draft = ReviewStore.defaultReviewResponseDraft(for: card)
+        #expect(draft.contains("기존 캐시를 비우므로 이전 계정 데이터가 남지 않습니다."))
     }
 
     @Test("기존 에이전트의 핵심 근거 형식도 응답 초안의 판단 근거로 포함한다")
@@ -181,49 +211,95 @@ struct ReviewCommentSectionTests {
         #expect(!formatted.contains("prreview://"))
     }
 
-    @Test("커밋 메시지에는 리뷰 코멘트와 작업 판단 및 변경 파일 요약을 함께 담는다")
+    @Test("커밋 메시지에는 문제와 이유 및 작업내용만 요약한다")
     @MainActor
     func synthesizesCommitMessageFromReviewAndWork() {
         let message = ReviewStore.synthesizedCommitMessage(
             pullRequestNumber: 42,
             developerName: "션킴",
             reviewTitle: "Suggestion (1)",
-            reviewComment: "캐시를 갱신해 주세요.",
-            implementationSummary: "캐시 무효화와 갱신 경로를 추가했습니다.",
-            diffStat: " Cache.swift | 12 ++++++++++--"
+            reviewComment: """
+            **연관도:** 직접
+            **파일·위치:** Secret.swift:12
+            **문제:** 캐시를 갱신해 주세요.
+            **이유:** 만료된 캐시가 남습니다.
+            **판단:** 수정 필요
+            """,
+            implementationSummary: """
+            ## 판단
+            수정 완료
+            ## 작업 내용
+            캐시 무효화와 갱신 경로를 추가했습니다.
+            ## 변경 파일
+            Secret.swift
+            ## 작업 카드 파일
+            Internal.swift
+            """
         )
 
         #expect(message.contains("[개발 - 션킴] PR #42 Suggestion (1) 검토 반영"))
         #expect(message.contains("캐시를 갱신해 주세요."))
         #expect(message.contains("캐시 무효화와 갱신 경로를 추가했습니다."))
-        #expect(message.contains("Cache.swift | 12"))
+        #expect(message.contains("이유:\n만료된 캐시가 남습니다."))
+        #expect(!message.contains("연관도"))
+        #expect(!message.contains("파일"))
+        #expect(!message.contains("판단"))
+        #expect(!message.contains("Secret.swift"))
+        #expect(!message.contains("Internal.swift"))
     }
 
-    @Test("재리뷰 요약은 게시한 검토 카드를 빼고 레벨별 코멘트 단락을 유지한다")
+    @Test("커밋 요약은 일반 문장을 유지하고 누락된 이유를 임의로 만들지 않는다")
     @MainActor
-    func excludesPostedReviewResponsesFromReReviewSummary() {
-        let activeCard = AgentReviewCard(
-            repository: "owner/repository",
-            pullRequestNumber: 1,
-            commentID: "comment-active",
-            commentAuthor: "reviewer",
-            commentBody: "Suggestion (1)",
-            sectionTitle: "Suggestion (1)",
-            sectionBody: "캐시를 갱신해 주세요.",
-            title: "Suggestion-1",
-            messages: [.init(role: .agent, body: "캐시 갱신 경로를 수정했습니다.")]
+    func commitSummaryHandlesPlainTextAndMissingReason() {
+        let message = ReviewStore.synthesizedCommitMessage(
+            pullRequestNumber: 42,
+            developerName: "션킴",
+            reviewTitle: "캐시 갱신",
+            reviewComment: "캐시를 갱신해 주세요.",
+            implementationSummary: "캐시 무효화를 추가했습니다."
         )
-        var postedCard = activeCard
-        postedCard.id = UUID()
-        postedCard.title = "Warning-1"
-        postedCard.reviewResponsePostedAt = .now
 
-        let sections = ReviewStore.reReviewWorkSections(from: [activeCard, postedCard])
+        #expect(message.contains("문제:\n캐시를 갱신해 주세요."))
+        #expect(message.contains("이유:\n이유 요약 없음"))
+        #expect(message.contains("작업내용:\n캐시 무효화를 추가했습니다."))
+    }
 
-        #expect(sections.count == 1)
-        #expect(sections[0].contains("## Suggestion (1)"))
-        #expect(sections[0].contains("### 리뷰 코멘트"))
-        #expect(sections[0].contains("캐시를 갱신해 주세요."))
-        #expect(!sections[0].contains("Warning-1"))
+    @Test("재리뷰 요약은 실제 커밋과 카드 연결만 사용하고 미반영 제안을 섞지 않는다")
+    @MainActor
+    func reReviewSummaryUsesCommits() {
+        var card = AgentReviewCard(
+            repository: "owner/repository", pullRequestNumber: 1, commentID: "comment-active",
+            commentAuthor: "reviewer", commentBody: "캐시를 갱신해 주세요.",
+            sectionTitle: "W2 - 캐시 갱신", title: "W2",
+            messages: [.init(role: .agent, body: "미반영 제안: 전체 캐시 재구현")]
+        )
+        card.reviewResponsePostedAt = .now
+        let plan = ImplementationPlan(repository: card.repository, pullRequestNumber: 1,
+                                      content: "미반영 계획", sourceCardIDs: [card.id], committedSHA: "fix-sha")
+        let summary = ReviewStore.reReviewCommitSummary(
+            commits: [(sha: "fix-sha", message: "문제: 캐시 잔류\n작업내용: spec 문서만 갱신")],
+            cards: [card], plans: [plan]
+        )
+        #expect(summary.contains("W2 - 캐시 갱신"))
+        #expect(summary.contains("spec 문서만 갱신"))
+        #expect(summary.contains("### 연결된 실제 커밋\nfix-sha"))
+        #expect(!summary.contains("미반영 제안"))
+        #expect(!summary.contains("미반영 계획"))
+
+        let unlinked = ReviewStore.reReviewCommitSummary(
+            commits: [(sha: "manual-sha", message: "수동 문서 갱신")], cards: [card], plans: [plan]
+        )
+        #expect(unlinked.contains("명시적 연결 없음"))
+        #expect(!unlinked.contains("fix-sha"))
+
+        var recreatedCard = card
+        recreatedCard.id = UUID()
+        recreatedCard.reviewID = "stable-review-id"
+        var linkedPlan = plan
+        linkedPlan.sourceReviewIDs = ["stable-review-id"]
+        let recreated = ReviewStore.reReviewCommitSummary(
+            commits: [(sha: "fix-sha", message: "문서 갱신")], cards: [recreatedCard], plans: [linkedPlan]
+        )
+        #expect(recreated.contains("### 연결된 실제 커밋\nfix-sha"))
     }
 }

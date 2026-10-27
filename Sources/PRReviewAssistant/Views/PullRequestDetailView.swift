@@ -66,86 +66,32 @@ struct PullRequestDetailView: View {
     
 
     var body: some View {
-        Group {
-            if let cardID = detailNavigation.selectedWorkCardID,
-               let card = store.agentCard(id: cardID),
-               let plan = store.implementationPlan(for: card, pullRequest: pullRequest) {
-                HSplitView {
-                    detailContent
-                    WorkReviewSidePanel(
-                        card: card,
-                        plan: plan,
-                        retry: {
-                            guard store.createImplementationPlan(for: card, pullRequest: pullRequest) != nil else { return }
-                            pendingImplementationCardID = card.id
-                            showingWorkArea = true
-                        },
-                        close: { detailNavigation.closePanel() }
-                    )
-                        // Recreate the panel when another work card is selected,
-                        // so its scroll position and review context never leak.
-                        .id(cardID)
-                        .frame(minWidth: 360, idealWidth: 480, maxWidth: .infinity, maxHeight: .infinity)
+        HSplitView {
+            detailContent
+            if detailNavigation.panel != nil {
+                // Keep this split pane's identity and size independent of the
+                // selected card and its content's intrinsic width.
+                GeometryReader { geometry in
+                    sidePanel
+                        .frame(width: geometry.size.width, height: geometry.size.height)
                 }
-            } else if let cardID = detailNavigation.selectedAgentCardID, let card = store.agentCard(id: cardID) {
-                let sourceComment = store.comments(for: pullRequest).first { $0.id == card.commentID }
-                HSplitView {
-                    detailContent
-                    
-                AgentChatSidePanel(
-                    card: card,
-                    sourceComment: sourceComment,
-                    sourceSection: sourceComment?.sections.first { $0.id == card.sectionID },
-                    pullRequest: pullRequest,
-                    send: { message in Task { await store.sendAgentMessage(id: cardID, pullRequest: pullRequest, message: message) } },
-                    startAnalysis: { Task { await store.beginAgentReview(id: cardID, pullRequest: pullRequest) } },
-                    retryAnalysis: { Task { await store.retryAgentReview(id: cardID, pullRequest: pullRequest) } },
-                    writeResponse: {
-                        responseCardID = cardID
-                        detailNavigation.closePanel()
-                        showingReviewResponseSheet = true
-                    },
-                    openCodeLocation: { path, line, column in
-                        store.openInCursor(path: path, line: line, column: column, for: pullRequest)
-                    },
-                    beginImplementation: {
-                        guard store.createImplementationPlan(for: card, pullRequest: pullRequest) != nil else { return }
-                        pendingImplementationCardID = card.id
-                        showingWorkArea = true
-                    },
-                    canRequestCommit: store.canCommit(for: card, pullRequest: pullRequest),
-                    requestCommit: {
-                        pendingCommitCardID = card.id
-                        showingPushApproval = true
-                    },
-                    close: { detailNavigation.closePanel() }
-                )
-                    // The panel owns draft and toast state. Give each review
-                    // card a distinct identity so selecting another card while
-                    // this side view is already open recreates it with that
-                    // card's PR-comment context and conversation.
-                    .id(cardID)
-                    .frame(minWidth: 320, idealWidth: 440, maxWidth: .infinity, maxHeight: .infinity)
-                }
-            } else if detailNavigation.isShowingComments {
-                HSplitView {
-                    detailContent
-                CommentSidePanel(
-                    pullRequest: pullRequest,
-                    comments: store.comments(for: pullRequest),
-                    expandedCommentIDs: $expandedCommentIDs,
-                    selectedSectionIDs: $selectedSectionIDs,
-                    isUnread: { store.isUnread($0) },
-                    reviewSection: { comment, section in reviewSection(comment, section: section) },
-                    close: { detailNavigation.closePanel() }
-                )
-                    .frame(minWidth: 300, idealWidth: 410, maxWidth: .infinity, maxHeight: .infinity)
-                }
-            } else {
-                detailContent
+                .frame(minWidth: 360, idealWidth: 440, maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
             }
         }
-        .animation(.default, value: detailNavigation)
+        .disabled(store.isMerging(pullRequest))
+        .overlay {
+            if store.isMerging(pullRequest) {
+                Color.black.opacity(0.18)
+                    .ignoresSafeArea()
+                    .overlay {
+                        ProgressView("GitHub에서 머지와 브랜치 삭제를 진행 중입니다…")
+                            .controlSize(.large)
+                            .padding(24)
+                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                    }
+            }
+        }
         .onAppear { store.markPullRequestRead(pullRequest) }
         .onChange(of: pullRequest.id) { _, _ in
             // Agent work continues in the background, but a result from the
@@ -227,6 +173,67 @@ struct PullRequestDetailView: View {
                     .help("검토 닫기")
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private var sidePanel: some View {
+        if let cardID = detailNavigation.selectedWorkCardID,
+           let card = store.agentCard(id: cardID),
+           let plan = store.implementationPlan(for: card, pullRequest: pullRequest) {
+            WorkReviewSidePanel(
+                card: card,
+                plan: plan,
+                retry: {
+                    guard store.createImplementationPlan(for: card, pullRequest: pullRequest) != nil else { return }
+                    pendingImplementationCardID = card.id
+                    showingWorkArea = true
+                },
+                close: { detailNavigation.closePanel() }
+            )
+                .id(cardID)
+        } else if let cardID = detailNavigation.selectedAgentCardID,
+                  let card = store.agentCard(id: cardID) {
+            let sourceComment = store.comments(for: pullRequest).first { $0.id == card.commentID }
+            AgentChatSidePanel(
+                card: card,
+                sourceComment: sourceComment,
+                sourceSection: sourceComment?.sections.first { $0.id == card.sectionID },
+                pullRequest: pullRequest,
+                send: { message in Task { await store.sendAgentMessage(id: cardID, pullRequest: pullRequest, message: message) } },
+                startAnalysis: { Task { await store.beginAgentReview(id: cardID, pullRequest: pullRequest) } },
+                retryAnalysis: { Task { await store.retryAgentReview(id: cardID, pullRequest: pullRequest) } },
+                writeResponse: {
+                    responseCardID = cardID
+                    detailNavigation.closePanel()
+                    showingReviewResponseSheet = true
+                },
+                openCodeLocation: { path, line, column in
+                    store.openInCursor(path: path, line: line, column: column, for: pullRequest)
+                },
+                beginImplementation: {
+                    guard store.createImplementationPlan(for: card, pullRequest: pullRequest) != nil else { return }
+                    pendingImplementationCardID = card.id
+                    showingWorkArea = true
+                },
+                canRequestCommit: store.canCommit(for: card, pullRequest: pullRequest),
+                requestCommit: {
+                    pendingCommitCardID = card.id
+                    showingPushApproval = true
+                },
+                close: { detailNavigation.closePanel() }
+            )
+                .id(cardID)
+        } else if detailNavigation.isShowingComments {
+            CommentSidePanel(
+                pullRequest: pullRequest,
+                comments: store.comments(for: pullRequest),
+                expandedCommentIDs: $expandedCommentIDs,
+                selectedSectionIDs: $selectedSectionIDs,
+                isUnread: { store.isUnread($0) },
+                reviewSection: { comment, section in reviewSection(comment, section: section) },
+                close: { detailNavigation.closePanel() }
+            )
         }
     }
 
@@ -495,6 +502,7 @@ struct PullRequestDetailView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(.green)
+                    .disabled(store.isMerging(pullRequest))
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -813,7 +821,7 @@ private struct ReReviewRequestSheet: View {
                         }
                     }
 
-                Text("추천 메시지는 에이전트 분석·코멘트별 검토·변경 및 테스트 결과를 압축해 만듭니다. 전송 전에 사실과 표현을 확인하세요.")
+                Text("추천 메시지는 리뷰 반영 커밋의 메시지를 종합해 코멘트별 처리 방법을 요약합니다. 전송 전에 사실과 표현을 확인하세요.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -1365,18 +1373,13 @@ private struct AgentReviewCardRow: View {
                 .foregroundStyle(BrandColor.prPurple)
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 4) {
-                Text(card.title)
+                Text(card.sectionTitle.map { AgentReviewCard.title(for: $0) } ?? card.title)
                     .font(.subheadline.weight(.medium))
                     .lineLimit(2)
                 if let workStatus, workStatus != .ready {
                     Label(workStatus.rawValue, systemImage: workStatus.symbol)
                         .font(.caption.weight(.medium))
                         .foregroundStyle(workStatus == .failed ? .orange : (workStatus == .completed ? .green : BrandColor.prPurple))
-                }
-                if let reviewID = card.reviewID {
-                    Text(reviewID)
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(.secondary)
                 }
                 HStack(spacing: 6) {
                     Text(card.status.rawValue)
@@ -1531,10 +1534,24 @@ private struct AgentChatSidePanel: View {
             .padding(12)
             Divider()
             HStack(alignment: .bottom, spacing: 8) {
-                TextField("추가 질문을 입력하세요", text: $draft, axis: .vertical)
-                    .textFieldStyle(.roundedBorder)
-                    .lineLimit(1...4)
-                    .onSubmit(sendDraft)
+                TextEditor(text: $draft)
+                    .font(.body)
+                    .frame(minHeight: 36, maxHeight: 88)
+                    .accessibilityLabel("추가 질문을 입력하세요")
+                    .overlay(alignment: .topLeading) {
+                        if draft.isEmpty {
+                            Text("추가 질문을 입력하세요")
+                                .foregroundStyle(.tertiary)
+                                .padding(.leading, 5)
+                                .padding(.top, 8)
+                                .allowsHitTesting(false)
+                        }
+                    }
+                    .onKeyPress(.return, phases: .down) { press in
+                        if press.modifiers.contains(.shift) { return .ignored }
+                        sendDraft()
+                        return .handled
+                    }
                 Button(action: sendDraft) {
                     Image(systemName: "arrow.up.circle.fill")
                         .font(.title2)

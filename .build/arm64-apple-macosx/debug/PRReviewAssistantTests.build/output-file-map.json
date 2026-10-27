@@ -2,6 +2,34 @@
   "": {
     "swift-dependencies": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/primary.swiftdeps"
   },
+  "/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/AppVersionTests.swift": {
+    "dependencies": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/AppVersionTests.d",
+    "object": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/AppVersionTests.swift.o",
+    "swiftmodule": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/AppVersionTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/AppVersionTests.swiftdeps",
+    "diagnostics": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/AppVersionTests.dia"
+  },
+  "/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/CursorAgentTests.swift": {
+    "dependencies": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/CursorAgentTests.d",
+    "object": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/CursorAgentTests.swift.o",
+    "swiftmodule": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/CursorAgentTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/CursorAgentTests.swiftdeps",
+    "diagnostics": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/CursorAgentTests.dia"
+  },
+  "/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/CursorSessionHistoryTests.swift": {
+    "dependencies": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/CursorSessionHistoryTests.d",
+    "object": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/CursorSessionHistoryTests.swift.o",
+    "swiftmodule": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/CursorSessionHistoryTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/CursorSessionHistoryTests.swiftdeps",
+    "diagnostics": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/CursorSessionHistoryTests.dia"
+  },
+  "/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/GitHubReleaseTests.swift": {
+    "dependencies": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/GitHubReleaseTests.d",
+    "object": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/GitHubReleaseTests.swift.o",
+    "swiftmodule": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/GitHubReleaseTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/GitHubReleaseTests.swiftdeps",
+    "diagnostics": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/GitHubReleaseTests.dia"
+  },
   "/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/LocalPracticeRepositoryTests.swift": {
     "dependencies": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/LocalPracticeRepositoryTests.d",
     "object": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/LocalPracticeRepositoryTests.swift.o",
@@ -22,6 +50,20 @@
     "swiftmodule": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/ProcessRunnerTests~partial.swiftmodule",
     "swift-dependencies": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/ProcessRunnerTests.swiftdeps",
     "diagnostics": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/ProcessRunnerTests.dia"
+  },
+  "/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/PullRequestProposalTests.swift": {
+    "dependencies": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/PullRequestProposalTests.d",
+    "object": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/PullRequestProposalTests.swift.o",
+    "swiftmodule": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/PullRequestProposalTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/PullRequestProposalTests.swiftdeps",
+    "diagnostics": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/PullRequestProposalTests.dia"
+  },
+  "/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/ReviewCommentSectionTests.swift": {
+    "dependencies": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/ReviewCommentSectionTests.d",
+    "object": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/ReviewCommentSectionTests.swift.o",
+    "swiftmodule": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/ReviewCommentSectionTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/ReviewCommentSectionTests.swiftdeps",
+    "diagnostics": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/ReviewCommentSectionTests.dia"
   },
   "/Users/supercent/Documents/PRReviewAssistant/Tests/PRReviewAssistantTests/ReviewDetailNavigationTests.swift": {
     "dependencies": "/Users/supercent/Documents/PRReviewAssistant/.build/arm64-apple-macosx/debug/PRReviewAssistantTests.build/ReviewDetailNavigationTests.d",

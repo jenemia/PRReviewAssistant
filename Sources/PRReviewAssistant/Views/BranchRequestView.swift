@@ -19,7 +19,7 @@ struct BranchRequestListView: View {
                         }
                         .tag(branch.id)
                         .contextMenu {
-                            Button("목록에서 제거", systemImage: "minus.circle", role: .destructive) {
+                            Button("PR 요청 삭제", systemImage: "trash", role: .destructive) {
                                 store.removeRequestedBranch(branch)
                             }
                         }
@@ -182,7 +182,14 @@ struct BranchRequestDetailView: View {
             VStack(alignment: .leading, spacing: 16) {
                 GroupBox("브랜치 정보") {
                     VStack(alignment: .leading, spacing: 9) {
-                        Text(branch.name).font(.title3.bold()).textSelection(.enabled)
+                        HStack(alignment: .top) {
+                            Text(branch.name).font(.title3.bold()).textSelection(.enabled)
+                            Spacer()
+                            Button("PR 요청 삭제", systemImage: "trash", role: .destructive) {
+                                store.removeRequestedBranch(branch)
+                            }
+                            .help("앱의 요청 목록에서 삭제합니다. 원격 브랜치와 GitHub PR은 유지됩니다.")
+                        }
                         LabeledContent("저장소", value: branch.repositoryName)
                         LabeledContent("PR 기준 브랜치", value: requestProposal?.base ?? "Agent가 프로젝트 스킬로 확인")
                         LabeledContent("HEAD", value: branch.sha)

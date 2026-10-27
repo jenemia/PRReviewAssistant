@@ -17,6 +17,9 @@ struct PersistedState: Codable {
     var monitoringInterval = 60
     var analyses: [String: AgentAnalysis] = [:]
     var agentReviewCards: [AgentReviewCard] = []
+    /// Comments from completed review rounds remain in history but are not
+    /// shown after a successful re-review request.
+    var hiddenReviewCommentIDsByPullRequest: [String: Set<String>] = [:]
     var implementationPlans: [String: ImplementationPlan] = [:]
     var committedHeads: [String: String] = [:]
     var postedReReviewCommentTokens: Set<String> = []
@@ -50,9 +53,9 @@ struct PersistedState: Codable {
     private enum CodingKeys: String, CodingKey {
         case repositories, processedCommentIDs, knownPullRequestIDs, unreadPullRequestIDs, unreadCommentIDs
         case hasEstablishedNotificationBaseline, approvedPullRequestIDs, hasEstablishedApprovalBaseline
-        case monitoringEnabled, monitoringInterval, analyses, agentReviewCards, implementationPlans, committedHeads, postedReReviewCommentTokens, agentModel, customAgentModel, reviewAuthorFilter, petVisible, petSize, petReduceMotion, latestPetNotification, hasCompletedOnboarding, skippedOnboardingSteps, projectCopyFolder, updateRepository, updatesEnabled, lastNotifiedUpdateTag, requestedBranches, cursorSpecSidebarCache, automaticCursorSessionClassification
+        case monitoringEnabled, monitoringInterval, analyses, agentReviewCards, hiddenReviewCommentIDsByPullRequest, implementationPlans, committedHeads, postedReReviewCommentTokens, agentModel, customAgentModel, reviewAuthorFilter, petVisible, petSize, petReduceMotion, latestPetNotification, hasCompletedOnboarding, skippedOnboardingSteps, projectCopyFolder, updateRepository, updatesEnabled, lastNotifiedUpdateTag, requestedBranches, cursorSpecSidebarCache, automaticCursorSessionClassification
     }
-    init(repositories: [RegisteredRepository] = [], processedCommentIDs: Set<String> = [], knownPullRequestIDs: Set<String> = [], unreadPullRequestIDs: Set<String> = [], unreadCommentIDs: Set<String> = [], hasEstablishedNotificationBaseline: Bool = false, approvedPullRequestIDs: Set<String> = [], hasEstablishedApprovalBaseline: Bool = false, monitoringEnabled: Bool = true, monitoringInterval: Int = 60, analyses: [String: AgentAnalysis] = [:], agentReviewCards: [AgentReviewCard] = [], implementationPlans: [String: ImplementationPlan] = [:], committedHeads: [String: String] = [:], postedReReviewCommentTokens: Set<String> = [], agentModel: String = "auto", customAgentModel: String = "", reviewAuthorFilter: String = "", petVisible: Bool = true, petSize: Double = 190.0, petReduceMotion: Bool = false, latestPetNotification: PetBubbleContent? = nil, hasCompletedOnboarding: Bool = false, skippedOnboardingSteps: Set<String> = [], projectCopyFolder: String = "", updateRepository: String = "", updatesEnabled: Bool = true, lastNotifiedUpdateTag: String = "", requestedBranches: [RepositoryBranch] = [], cursorSpecSidebarCache: CursorSpecSidebarCache = CursorSpecSidebarCache(), automaticCursorSessionClassification: Bool = false) {
+    init(repositories: [RegisteredRepository] = [], processedCommentIDs: Set<String> = [], knownPullRequestIDs: Set<String> = [], unreadPullRequestIDs: Set<String> = [], unreadCommentIDs: Set<String> = [], hasEstablishedNotificationBaseline: Bool = false, approvedPullRequestIDs: Set<String> = [], hasEstablishedApprovalBaseline: Bool = false, monitoringEnabled: Bool = true, monitoringInterval: Int = 60, analyses: [String: AgentAnalysis] = [:], agentReviewCards: [AgentReviewCard] = [], hiddenReviewCommentIDsByPullRequest: [String: Set<String>] = [:], implementationPlans: [String: ImplementationPlan] = [:], committedHeads: [String: String] = [:], postedReReviewCommentTokens: Set<String> = [], agentModel: String = "auto", customAgentModel: String = "", reviewAuthorFilter: String = "", petVisible: Bool = true, petSize: Double = 190.0, petReduceMotion: Bool = false, latestPetNotification: PetBubbleContent? = nil, hasCompletedOnboarding: Bool = false, skippedOnboardingSteps: Set<String> = [], projectCopyFolder: String = "", updateRepository: String = "", updatesEnabled: Bool = true, lastNotifiedUpdateTag: String = "", requestedBranches: [RepositoryBranch] = [], cursorSpecSidebarCache: CursorSpecSidebarCache = CursorSpecSidebarCache(), automaticCursorSessionClassification: Bool = false) {
         self.repositories = repositories
         self.processedCommentIDs = processedCommentIDs
         self.knownPullRequestIDs = knownPullRequestIDs
@@ -65,6 +68,7 @@ struct PersistedState: Codable {
         self.monitoringInterval = monitoringInterval
         self.analyses = analyses
         self.agentReviewCards = agentReviewCards
+        self.hiddenReviewCommentIDsByPullRequest = hiddenReviewCommentIDsByPullRequest
         self.implementationPlans = implementationPlans
         self.committedHeads = committedHeads
         self.postedReReviewCommentTokens = postedReReviewCommentTokens
@@ -99,6 +103,7 @@ struct PersistedState: Codable {
         monitoringInterval = try container.decodeIfPresent(Int.self, forKey: .monitoringInterval) ?? 60
         analyses = try container.decodeIfPresent([String: AgentAnalysis].self, forKey: .analyses) ?? [:]
         agentReviewCards = try container.decodeIfPresent([AgentReviewCard].self, forKey: .agentReviewCards) ?? []
+        hiddenReviewCommentIDsByPullRequest = try container.decodeIfPresent([String: Set<String>].self, forKey: .hiddenReviewCommentIDsByPullRequest) ?? [:]
         implementationPlans = try container.decodeIfPresent([String: ImplementationPlan].self, forKey: .implementationPlans) ?? [:]
         committedHeads = try container.decodeIfPresent([String: String].self, forKey: .committedHeads) ?? [:]
         postedReReviewCommentTokens = try container.decodeIfPresent(Set<String>.self, forKey: .postedReReviewCommentTokens) ?? []
