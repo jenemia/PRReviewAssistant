@@ -23,6 +23,9 @@ struct SettingsView: View {
                 }
 
                 Section("리뷰 Inbox") {
+                    Toggle("새 리뷰 자동 검토", isOn: $store.automaticReviewAnalysis)
+                    Text("기본적으로 켜져 있습니다. 새로 분류된 코멘트를 설정된 에이전트로 검토합니다. 다른 PR이 작업 중이면 전환 승인까지 대기합니다.")
+                        .font(.caption).foregroundStyle(.secondary)
                     TextField("작업자 이름", text: $store.reviewAuthorFilter)
                     Text(store.authorFilterDescription)
                         .font(.caption).foregroundStyle(.secondary)

@@ -126,6 +126,7 @@ final class ReviewStore {
     var cursorSessionSpecs: [String: CursorSessionSpec] = [:]
     var cursorSpecSidebarCache = CursorSpecSidebarCache()
     var automaticCursorSessionClassification = false { didSet { persist() } }
+    var automaticReviewAnalysis = true { didSet { persist() } }
     var isClassifyingCursorSessions = false
     var cursorSpecClassificationStatus = ""
     var repositoryBranches: [RepositoryBranch] = []
@@ -208,6 +209,7 @@ final class ReviewStore {
         requestedBranches = state.requestedBranches
         cursorSpecSidebarCache = state.cursorSpecSidebarCache
         automaticCursorSessionClassification = state.automaticCursorSessionClassification
+        automaticReviewAnalysis = state.automaticReviewAnalysis
         recoverInterruptedWork()
         Task { await startup() }
     }
@@ -934,8 +936,7 @@ final class ReviewStore {
                     let becameApproved = hasEstablishedApprovalBaseline && pr.reviewState == .approved && !approvedPullRequestIDs.contains(prKey)
                     // A review body can contain multiple independently actionable
                     // sections. Create one durable analysis card for each section
-                    // as soon as it is received. Analysis is always a user
-                    // action; polling must never check out a branch.
+                    // as soon as it is received.
                     let shouldNotify = hasEstablishedNotificationBaseline && matchesAuthorFilter(pr)
                     // The author filter scopes all automatic PR work, not just
                     // Inbox visibility and notifications. A filtered-out PR
@@ -1466,11 +1467,12 @@ final class ReviewStore {
         return created
     }
 
-    /// Polling creates and refreshes cards only. It must not reserve a
-    /// workspace, run Cursor, or check out a PR branch; those happen only
-    /// after the user explicitly starts a card analysis.
     private func createAutomaticReviewCards(for pullRequest: PullRequest, comments: [ReviewComment]) {
-        _ = createAnalysisCards(for: pullRequest, comments: comments)
+        let created = createAnalysisCards(for: pullRequest, comments: comments)
+        guard automaticReviewAnalysis else { return }
+        for id in created {
+            Task { await self.beginAgentReview(id: id, pullRequest: pullRequest, automatically: true) }
+        }
     }
 
     /// Rebuilds persisted automatic cards from the currently loaded GitHub
@@ -1719,7 +1721,7 @@ final class ReviewStore {
         }
     }
 
-    func beginAgentReview(id: AgentReviewCard.ID, pullRequest: PullRequest, allowsRetry: Bool = false) async {
+    func beginAgentReview(id: AgentReviewCard.ID, pullRequest: PullRequest, allowsRetry: Bool = false, automatically: Bool = false) async {
         guard let index = agentReviewCards.firstIndex(where: { $0.id == id }) else { return }
         let isLocalPractice = repositories.first(where: { $0.fullName == pullRequest.repository })?.isLocalPractice == true
         guard agentReviewCards[index].status != .reviewing,
@@ -1727,6 +1729,13 @@ final class ReviewStore {
         if !isLocalPractice {
             let targetKey = worktreeKey(pullRequest)
             if let activeKey = activePullRequestKeys[pullRequest.repository], activeKey != targetKey {
+                if automatically {
+                    agentReviewCards[index].status = .ready
+                    agentReviewCards[index].updatedAt = .now
+                    statusMessage = "다른 PR이 활성화되어 자동 검토가 대기 중입니다. 카드에서 분석을 시작하고 작업 폴더 전환을 승인하세요."
+                    persist()
+                    return
+                }
                 if agentReviewCards.contains(where: { $0.repository == pullRequest.repository && $0.pullRequestNumber != pullRequest.number && $0.status == .reviewing }) {
                     agentReviewCards[index].status = .queued
                     agentReviewCards[index].updatedAt = .now
@@ -2275,6 +2284,6 @@ final class ReviewStore {
         guard parts.count == 2, parts.allSatisfy({ !$0.isEmpty && !$0.contains(" ") }) else { return nil }
         return value
     }
-    private func persist() { persistence.save(.init(repositories: repositories, processedCommentIDs: processedCommentIDs, knownPullRequestIDs: knownPullRequestIDs, unreadPullRequestIDs: unreadPullRequestIDs, unreadCommentIDs: unreadCommentIDs, hasEstablishedNotificationBaseline: hasEstablishedNotificationBaseline, approvedPullRequestIDs: approvedPullRequestIDs, hasEstablishedApprovalBaseline: hasEstablishedApprovalBaseline, monitoringEnabled: monitoringEnabled, monitoringInterval: monitoringInterval, analyses: analyses, agentReviewCards: agentReviewCards, hiddenReviewCommentIDsByPullRequest: hiddenReviewCommentIDsByPullRequest, implementationPlans: implementationPlans, committedHeads: committedHeads, postedReReviewCommentTokens: postedReReviewCommentTokens, agentModel: agentModel, customAgentModel: customAgentModel, reviewAuthorFilter: reviewAuthorFilter, petVisible: petVisible, petSize: petSize, petReduceMotion: petReduceMotion, latestPetNotification: latestPetNotification, hasCompletedOnboarding: hasCompletedOnboarding, skippedOnboardingSteps: skippedOnboardingSteps, projectCopyFolder: projectCopyFolder, updateRepository: updateRepository, updatesEnabled: updatesEnabled, lastNotifiedUpdateTag: lastNotifiedUpdateTag, requestedBranches: requestedBranches, cursorSpecSidebarCache: cursorSpecSidebarCache, automaticCursorSessionClassification: automaticCursorSessionClassification)) }
+    private func persist() { persistence.save(.init(repositories: repositories, processedCommentIDs: processedCommentIDs, knownPullRequestIDs: knownPullRequestIDs, unreadPullRequestIDs: unreadPullRequestIDs, unreadCommentIDs: unreadCommentIDs, hasEstablishedNotificationBaseline: hasEstablishedNotificationBaseline, approvedPullRequestIDs: approvedPullRequestIDs, hasEstablishedApprovalBaseline: hasEstablishedApprovalBaseline, monitoringEnabled: monitoringEnabled, monitoringInterval: monitoringInterval, analyses: analyses, agentReviewCards: agentReviewCards, hiddenReviewCommentIDsByPullRequest: hiddenReviewCommentIDsByPullRequest, implementationPlans: implementationPlans, committedHeads: committedHeads, postedReReviewCommentTokens: postedReReviewCommentTokens, agentModel: agentModel, customAgentModel: customAgentModel, reviewAuthorFilter: reviewAuthorFilter, petVisible: petVisible, petSize: petSize, petReduceMotion: petReduceMotion, latestPetNotification: latestPetNotification, hasCompletedOnboarding: hasCompletedOnboarding, skippedOnboardingSteps: skippedOnboardingSteps, projectCopyFolder: projectCopyFolder, updateRepository: updateRepository, updatesEnabled: updatesEnabled, lastNotifiedUpdateTag: lastNotifiedUpdateTag, requestedBranches: requestedBranches, cursorSpecSidebarCache: cursorSpecSidebarCache, automaticCursorSessionClassification: automaticCursorSessionClassification, automaticReviewAnalysis: automaticReviewAnalysis)) }
     private func background<T: Sendable>(_ work: @escaping @Sendable () throws -> T) async throws -> T { try await Task.detached(priority: .userInitiated, operation: work).value }
 }

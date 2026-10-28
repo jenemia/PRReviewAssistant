@@ -49,7 +49,12 @@ jobs:
         shell: bash
         run: |
           version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist)"
+          notes="release-notes/v${version}.md"
+          if [[ -f "$notes" ]]; then
+            note_args=(--notes-file "$notes")
+          else
+            note_args=(--generate-notes)
+          fi
           gh release create "$GITHUB_REF_NAME" "dist/PR Review Assistant-v${version}.zip" \
             --title "PR Review Assistant ${version}" \
-            --verify-tag \
-            --generate-notes
+            --verify-tag "${note_args[@]}"
