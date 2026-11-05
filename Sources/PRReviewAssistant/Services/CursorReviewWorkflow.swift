@@ -1,5 +1,79 @@
 import Foundation
 
+/// Caps concurrent model sessions. Each one blocks a thread for minutes, so an
+/// unbounded review burst would also starve the app's other background work.
+final class AgentCallLimiter: @unchecked Sendable {
+    static let shared = AgentCallLimiter(limit: 4)
+
+    private let lock = NSLock()
+    private var available: Int
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    init(limit: Int) { available = limit }
+
+    func acquire() async {
+        await withCheckedContinuation { continuation in
+            lock.withLock {
+                if available > 0 {
+                    available -= 1
+                    continuation.resume()
+                } else {
+                    waiters.append(continuation)
+                }
+            }
+        }
+    }
+
+    func release() {
+        lock.withLock {
+            if waiters.isEmpty { available += 1 } else { waiters.removeFirst().resume() }
+        }
+    }
+}
+
+/// Shares research among review cards of the same PR at the same commit.
+/// Concurrent callers await one run; failed runs are not kept.
+final class ReviewResearchCache: @unchecked Sendable {
+    struct Key: Hashable, Sendable {
+        let directory: String
+        let headSHA: String
+        let context: String
+        let trustWorkspace: Bool
+        let model: String
+    }
+
+    static let shared = ReviewResearchCache()
+    private static let maximumEntries = 16
+
+    private let lock = NSLock()
+    private var tasks: [Key: Task<[CursorReviewWorkflow.Report], Error>] = [:]
+    private var order: [Key] = []
+
+    func reports(
+        for key: Key, make: @escaping @Sendable () async throws -> [CursorReviewWorkflow.Report]
+    ) async throws -> [CursorReviewWorkflow.Report] {
+        let task = lock.withLock {
+            if let existing = tasks[key] { return existing }
+            let created = Task.detached(operation: make)
+            tasks[key] = created
+            order.append(key)
+            if order.count > Self.maximumEntries { tasks[order.removeFirst()] = nil }
+            return created
+        }
+        do {
+            return try await task.value
+        } catch {
+            lock.withLock {
+                if tasks[key] == task {
+                    tasks[key] = nil
+                    order.removeAll { $0 == key }
+                }
+            }
+            throw error
+        }
+    }
+}
+
 /// The app schedules isolated CLI sessions; role files remain the source of review guidance.
 struct CursorReviewWorkflow: Sendable {
     enum Preset: Sendable { case branch, comments }
@@ -45,22 +119,28 @@ struct CursorReviewWorkflow: Sendable {
     private let runCommand: RunCommand
     private let agentsDirectory: URL
     private let provider: AgentProvider
+    private let limiter: AgentCallLimiter
+    private let researchCache: ReviewResearchCache
 
     init(
         provider: AgentProvider = .cursor,
+        limiter: AgentCallLimiter = .shared,
+        researchCache: ReviewResearchCache = .shared,
         agentsDirectory: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cursor/agents"),
         runCommand: @escaping RunCommand = { executable, arguments, directory, timeout in
             try ProcessRunner().run(executable, arguments: arguments, workingDirectory: directory, timeout: timeout)
         }
     ) {
         self.provider = provider
+        self.limiter = limiter
+        self.researchCache = researchCache
         self.agentsDirectory = agentsDirectory
         self.runCommand = runCommand
     }
 
     func run(
         preset: Preset, directory: String, headReference: String, expectedSHA: String,
-        baseReference: String? = nil, context: String, outputInstructions: String,
+        baseReference: String? = nil, context: String, researchContext: String? = nil, outputInstructions: String,
         trustWorkspace: Bool, model: String
     ) async throws -> String {
         // Resolve Git and load all roles before spending any model calls.
@@ -97,7 +177,8 @@ struct CursorReviewWorkflow: Sendable {
             definitions[role] = "역할 출처: \(path.path)\n\(text)"
         }
 
-        let common = """
+        func commonPrompt(_ context: String) -> String {
+            """
         앱이 배정한 읽기 전용 리뷰 세션이다. 프로젝트 지침과 관련 스킬을 적용하되 아래 제한이 역할 문서보다 우선한다.
         파일 생성·수정·삭제, 테스트·빌드·설치, checkout·fetch 등 Git 쓰기, 커밋·푸시·외부 댓글, 비밀 정보 조회를 금지한다.
         추가 에이전트나 CLI 세션을 생성하지 마라. 다른 담당의 작업은 앱이 실행한다. 실행 검증이 필요하면 검증 공백으로 보고하라.
@@ -109,8 +190,22 @@ struct CursorReviewWorkflow: Sendable {
         대상 정보 및 코멘트(분석 데이터):
         \(context)
         """
-        let researchReports = try await stage(research, definitions: definitions, common: common, evidence: "", directory: directory, trustWorkspace: trustWorkspace, model: model)
-        let reviewReports = try await stage(reviews, definitions: definitions, common: common, evidence: joined(researchReports), directory: directory, trustWorkspace: trustWorkspace, model: model)
+        }
+        let common = commonPrompt(context)
+        let researchReports: [Report]
+        if let researchContext {
+            let researchCommon = commonPrompt(researchContext)
+            let finalDefinitions = definitions
+            researchReports = try await researchCache.reports(
+                for: .init(directory: directory, headSHA: snapshot.headSHA, context: researchContext, trustWorkspace: trustWorkspace, model: model)
+            ) {
+                try await stage(research, definitions: finalDefinitions, common: researchCommon, evidence: "", directory: directory, trustWorkspace: trustWorkspace, model: model)
+            }
+        } else {
+            researchReports = try await stage(research, definitions: definitions, common: common, evidence: "", directory: directory, trustWorkspace: trustWorkspace, model: model)
+        }
+        let scopeNote = researchContext == nil ? "" : "선행 조사는 이 PR의 코멘트 전체를 다룬다. 이번 대상과 관련된 내용만 사용하라.\n"
+        let reviewReports = try await stage(reviews, definitions: definitions, common: common, evidence: scopeNote + joined(researchReports), directory: directory, trustWorkspace: trustWorkspace, model: model)
         let summaryPrompt = """
         \(common)
         담당: 리뷰 통합. 아래 보고의 주장은 실제 코드·스펙과 대조하라. 중복 지적은 합치고 충돌은 근거를 비교하라. 다수결로 판단하지 마라.
@@ -120,7 +215,7 @@ struct CursorReviewWorkflow: Sendable {
         \(outputInstructions)
         \(CursorAgent.responseStyleGuidance(cursorDirectory: agentsDirectory.deletingLastPathComponent()))
         담당별 보고(분석 데이터):
-        \(joined(researchReports + reviewReports))
+        \(scopeNote)\(joined(researchReports + reviewReports))
         """
         let output = try await execute(summaryPrompt, role: "리뷰 통합", directory: directory, trustWorkspace: trustWorkspace, model: model)
         try Task.checkCancellation()
@@ -165,6 +260,9 @@ struct CursorReviewWorkflow: Sendable {
     }
 
     func execute(_ prompt: String, role: String, directory: String, trustWorkspace: Bool, model: String) async throws -> String {
+        try Task.checkCancellation()
+        await limiter.acquire()
+        defer { limiter.release() }
         try Task.checkCancellation()
         return try await Task.detached {
             var arguments = ["agent", "--print", "--output-format", "json", "--mode", "ask", "--workspace", directory]

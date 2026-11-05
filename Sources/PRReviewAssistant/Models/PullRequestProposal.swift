@@ -69,7 +69,7 @@ struct PullRequestProposal: Hashable, Decodable, Sendable {
 struct PullRequestProposalVerifier: Sendable {
     static let suspiciousCommitLimit = 500
 
-    private let runner = ProcessRunner()
+    private let runner = ProcessRunner(defaultTimeout: 600)
 
     func verify(
         _ proposal: PullRequestProposal,

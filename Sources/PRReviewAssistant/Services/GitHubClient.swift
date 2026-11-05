@@ -20,7 +20,8 @@ struct GitHubRelease: Codable, Hashable, Sendable {
 }
 
 struct GitHubClient: Sendable {
-    private let runner = ProcessRunner()
+    /// A stalled `gh` call must not hold the monitoring loop forever.
+    private let runner = ProcessRunner(defaultTimeout: 120)
 
     func authentication() throws -> GitHubIdentity {
         let result = try runner.run("gh", arguments: ["api", "user"])
@@ -139,13 +140,22 @@ struct GitHubClient: Sendable {
             .user.login
     }
 
-    func addComment(repository: String, number: Int, body: String) throws {
+    /// Returns the created comment's ID in `ReviewComment.id` form. The comment
+    /// is already posted when the response is unreadable, so that is not an error.
+    @discardableResult
+    func addComment(repository: String, number: Int, body: String) throws -> String? {
         let input = try JSONEncoder().encode(["body": body])
-        _ = try runner.run(
+        let result = try runner.run(
             "gh",
             arguments: ["api", "repos/\(repository)/issues/\(number)/comments", "--method", "POST", "--input", "-"],
             input: String(decoding: input, as: UTF8.self)
         )
+        return Self.postedCommentID(from: result.output)
+    }
+
+    static func postedCommentID(from output: String) -> String? {
+        struct Created: Decodable { let id: Int }
+        return (try? JSONDecoder().decode(Created.self, from: Data(output.utf8))).map { "issue-\($0.id)" }
     }
 
     func createPullRequest(

@@ -24,6 +24,9 @@ struct PersistedState: Codable {
     var implementationPlans: [String: ImplementationPlan] = [:]
     var committedHeads: [String: String] = [:]
     var postedReReviewCommentTokens: Set<String> = []
+    /// Comments this app posted itself. They are the user's own replies, not
+    /// reviews to analyze.
+    var appPostedCommentIDs: Set<String> = []
     var agentModel = "composer-2.5"
     var customAgentModel = ""
     var agentProvider: AgentProvider = .cursor
@@ -64,6 +67,7 @@ struct PersistedState: Codable {
         case repositories, processedCommentIDs, knownPullRequestIDs, unreadPullRequestIDs, unreadCommentIDs
         case hasEstablishedNotificationBaseline, approvedPullRequestIDs, hasEstablishedApprovalBaseline
         case agentProvider, codexModel, claudeModel, monitoringEnabled, monitoringInterval, analyses, agentReviewCards, hiddenReviewCommentIDsByPullRequest, reviewHistoryRoundsByPullRequest, implementationPlans, committedHeads, postedReReviewCommentTokens, agentModel, customAgentModel, reviewAuthorFilter, petVisible, petSize, petReduceMotion, latestPetNotification, hasCompletedOnboarding, skippedOnboardingSteps, projectCopyFolder, updateRepository, updatesEnabled, lastNotifiedUpdateTag, requestedBranches, cursorSpecSidebarCache, automaticCursorSessionClassification, automaticReviewAnalysis
+        case appPostedCommentIDs
         case branchReviewCards, branchCardReviewed, branchImplementationResults, branchImplementationInProgress, branchUnitTestResults
     }
     init(repositories: [RegisteredRepository] = [], processedCommentIDs: Set<String> = [], knownPullRequestIDs: Set<String> = [], unreadPullRequestIDs: Set<String> = [], unreadCommentIDs: Set<String> = [], hasEstablishedNotificationBaseline: Bool = false, approvedPullRequestIDs: Set<String> = [], hasEstablishedApprovalBaseline: Bool = false, monitoringEnabled: Bool = true, monitoringInterval: Int = 60, analyses: [String: AgentAnalysis] = [:], agentReviewCards: [AgentReviewCard] = [], hiddenReviewCommentIDsByPullRequest: [String: Set<String>] = [:], reviewHistoryRoundsByPullRequest: [String: [Set<String>]] = [:], implementationPlans: [String: ImplementationPlan] = [:], committedHeads: [String: String] = [:], postedReReviewCommentTokens: Set<String> = [], agentModel: String = "composer-2.5", customAgentModel: String = "", reviewAuthorFilter: String = "", petVisible: Bool = true, petSize: Double = 190.0, petReduceMotion: Bool = false, latestPetNotification: PetBubbleContent? = nil, hasCompletedOnboarding: Bool = false, skippedOnboardingSteps: Set<String> = [], projectCopyFolder: String = "", updateRepository: String = "", updatesEnabled: Bool = true, lastNotifiedUpdateTag: String = "", requestedBranches: [RepositoryBranch] = [], cursorSpecSidebarCache: CursorSpecSidebarCache = CursorSpecSidebarCache(), automaticCursorSessionClassification: Bool = false, automaticReviewAnalysis: Bool = true) {
@@ -121,6 +125,7 @@ struct PersistedState: Codable {
         implementationPlans = try container.decodeIfPresent([String: ImplementationPlan].self, forKey: .implementationPlans) ?? [:]
         committedHeads = try container.decodeIfPresent([String: String].self, forKey: .committedHeads) ?? [:]
         postedReReviewCommentTokens = try container.decodeIfPresent(Set<String>.self, forKey: .postedReReviewCommentTokens) ?? []
+        appPostedCommentIDs = try container.decodeIfPresent(Set<String>.self, forKey: .appPostedCommentIDs) ?? []
         agentModel = try container.decodeIfPresent(String.self, forKey: .agentModel) ?? "composer-2.5"
         agentProvider = (try? container.decode(AgentProvider.self, forKey: .agentProvider)) ?? .cursor
         codexModel = try container.decodeIfPresent(String.self, forKey: .codexModel) ?? ""

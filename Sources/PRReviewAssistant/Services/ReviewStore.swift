@@ -181,6 +181,7 @@ final class ReviewStore {
     private var approvedPullRequestIDs: Set<String> = []
     private var hasEstablishedApprovalBaseline = false
     private var postedReReviewCommentTokens: Set<String> = []
+    private var appPostedCommentIDs: Set<String> = []
     /// One registered local folder can only be checked out to one PR at a time.
     private var activePullRequestKeys: [String: String] = [:]
     private var preparingWorkspaceKeys: Set<String> = []
@@ -209,6 +210,7 @@ final class ReviewStore {
         migrateImplementationPlansToWorkCards()
         committedHeads = state.committedHeads
         postedReReviewCommentTokens = state.postedReReviewCommentTokens
+        appPostedCommentIDs = state.appPostedCommentIDs
         for repository in repositories where committedHeads.keys.contains(where: { $0.hasPrefix("\(repository.fullName)#") }) {
             for key in committedHeads.keys where key.hasPrefix("\(repository.fullName)#") {
                 worktreePaths[key] = repository.localPath
@@ -1088,81 +1090,117 @@ final class ReviewStore {
         guard !isRefreshing else { return }
         isRefreshing = true
         defer { isRefreshing = false; lastRefreshed = .now }
-        do {
-            var fetched: [PullRequest] = []
-            for repository in repositories where repository.monitoringEnabled || repository.isLocalPractice == true {
-                if repository.isLocalPractice == true {
+        var fetched: [PullRequest] = []
+        // One unavailable repository or PR must not discard the others' results.
+        var failures: [String] = []
+        for repository in repositories where repository.monitoringEnabled || repository.isLocalPractice == true {
+            if repository.isLocalPractice == true {
+                do {
                     let fixture = try await background { try self.localPractice.load(from: repository) }
                     fetched.append(fixture.pullRequest)
                     comments[worktreeKey(fixture.pullRequest)] = fixture.comments
                     createAutomaticReviewCards(for: fixture.pullRequest, comments: fixture.comments)
+                } catch {
+                    failures.append("\(repository.fullName): \(error.localizedDescription)")
+                    fetched += allPullRequests.filter { $0.repository == repository.fullName }
+                }
+                continue
+            }
+            let prs: [PullRequest]
+            do {
+                prs = try await background { try self.github.pullRequests(for: repository) }
+            } catch {
+                failures.append("\(repository.fullName): \(error.localizedDescription)")
+                fetched += allPullRequests.filter { $0.repository == repository.fullName }
+                continue
+            }
+            for pr in prs {
+                let prKey = worktreeKey(pr)
+                let isNewPullRequest = !knownPullRequestIDs.contains(prKey)
+                let newComments: [ReviewComment]
+                do {
+                    newComments = try await background { try self.github.comments(repository: repository.fullName, number: pr.number) }
+                } catch {
+                    failures.append("\(prKey): \(error.localizedDescription)")
+                    fetched.append(Self.pullRequest(pr, keepingReviewDetailsFrom: allPullRequests.first { worktreeKey($0) == prKey }))
                     continue
                 }
-                let prs = try await background { try self.github.pullRequests(for: repository) }
-                for pr in prs {
-                    let prKey = worktreeKey(pr)
-                    let isNewPullRequest = !knownPullRequestIDs.contains(prKey)
-                    let newComments = try await background { try self.github.comments(repository: repository.fullName, number: pr.number) }
-                    comments[worktreeKey(pr)] = newComments
-                    reviewRequests[prKey] = try? await background { try self.github.reviewRequests(repository: repository.fullName, number: pr.number) }
-                    var enrichedPR = pr
-                    enrichedPR.commentCount = newComments.count
-                    if let latestReview = newComments.last(where: { $0.kind == .review }) {
-                        enrichedPR.reviewer = latestReview.author
-                        enrichedPR.summary = latestReview.body
-                    } else if let firstComment = newComments.first {
-                        enrichedPR.reviewer = firstComment.author
-                        enrichedPR.summary = firstComment.body
-                    }
-                    fetched.append(enrichedPR)
-                    let unseen = newComments.filter { !processedCommentIDs.contains($0.id) }
-                    let becameApproved = hasEstablishedApprovalBaseline && pr.reviewState == .approved && !approvedPullRequestIDs.contains(prKey)
-                    // A review body can contain multiple independently actionable
-                    // sections. Create one durable analysis card for each section
-                    // as soon as it is received.
-                    let shouldNotify = hasEstablishedNotificationBaseline && matchesAuthorFilter(pr)
-                    // The author filter scopes all automatic PR work, not just
-                    // Inbox visibility and notifications. A filtered-out PR
-                    // must never change the repository checkout in the
-                    // background.
-                    if matchesAuthorFilter(pr) {
-                        createAutomaticReviewCards(for: pr, comments: newComments)
-                    }
-                    if shouldNotify && becameApproved {
-                        publishPetNotification(.approved(pr))
-                        notificationStatus = await notifications.deliverApproval(for: pr)
-                    } else if shouldNotify && isNewPullRequest {
-                        publishPetNotification(.newPullRequest(pr))
-                        notificationStatus = await notifications.deliverNewPullRequest(pr)
-                    } else if shouldNotify && !unseen.isEmpty {
-                        publishPetNotification(.newReview(for: pr, count: unseen.count))
-                        notificationStatus = await notifications.deliverNewReview(for: pr, count: unseen.count, eventID: unseen.map(\.id).joined(separator: "-"))
-                    }
-                    if shouldNotify && (isNewPullRequest || !unseen.isEmpty || becameApproved) {
-                        unreadPullRequestIDs.insert(prKey)
-                        unreadCommentIDs.formUnion(unseen.map(\.id))
-                    }
-                    knownPullRequestIDs.insert(prKey)
-                    processedCommentIDs.formUnion(newComments.map(\.id))
-                    if pr.reviewState == .approved {
-                        approvedPullRequestIDs.insert(prKey)
-                    } else {
-                        approvedPullRequestIDs.remove(prKey)
-                    }
+                comments[worktreeKey(pr)] = newComments
+                reviewRequests[prKey] = try? await background { try self.github.reviewRequests(repository: repository.fullName, number: pr.number) }
+                var enrichedPR = pr
+                enrichedPR.commentCount = newComments.count
+                if let latestReview = newComments.last(where: { $0.kind == .review }) {
+                    enrichedPR.reviewer = latestReview.author
+                    enrichedPR.summary = latestReview.body
+                } else if let firstComment = newComments.first {
+                    enrichedPR.reviewer = firstComment.author
+                    enrichedPR.summary = firstComment.body
+                }
+                fetched.append(enrichedPR)
+                let unseen = newComments.filter { !processedCommentIDs.contains($0.id) }
+                let becameApproved = hasEstablishedApprovalBaseline && pr.reviewState == .approved && !approvedPullRequestIDs.contains(prKey)
+                // A review body can contain multiple independently actionable
+                // sections. Create one durable analysis card for each section
+                // as soon as it is received.
+                let shouldNotify = hasEstablishedNotificationBaseline && matchesAuthorFilter(pr)
+                // The author filter scopes all automatic PR work, not just
+                // Inbox visibility and notifications. A filtered-out PR
+                // must never change the repository checkout in the
+                // background.
+                if matchesAuthorFilter(pr) {
+                    createAutomaticReviewCards(for: pr, comments: newComments)
+                }
+                if shouldNotify && becameApproved {
+                    publishPetNotification(.approved(pr))
+                    notificationStatus = await notifications.deliverApproval(for: pr)
+                } else if shouldNotify && isNewPullRequest {
+                    publishPetNotification(.newPullRequest(pr))
+                    notificationStatus = await notifications.deliverNewPullRequest(pr)
+                } else if shouldNotify && !unseen.isEmpty {
+                    publishPetNotification(.newReview(for: pr, count: unseen.count))
+                    notificationStatus = await notifications.deliverNewReview(for: pr, count: unseen.count, eventID: unseen.map(\.id).joined(separator: "-"))
+                }
+                if shouldNotify && (isNewPullRequest || !unseen.isEmpty || becameApproved) {
+                    unreadPullRequestIDs.insert(prKey)
+                    unreadCommentIDs.formUnion(unseen.map(\.id))
+                }
+                knownPullRequestIDs.insert(prKey)
+                processedCommentIDs.formUnion(newComments.map(\.id))
+                if pr.reviewState == .approved {
+                    approvedPullRequestIDs.insert(prKey)
+                } else {
+                    approvedPullRequestIDs.remove(prKey)
                 }
             }
-            let previousSelectionKey = selectedPullRequest.map(worktreeKey)
-            let uniquePullRequests = Dictionary(fetched.map { (worktreeKey($0), $0) }, uniquingKeysWith: { current, candidate in
-                candidate.updatedAt > current.updatedAt ? candidate : current
-            }).values
-            allPullRequests = uniquePullRequests.sorted { $0.updatedAt > $1.updatedAt }
-            applyAuthorFilter()
+        }
+        let previousSelectionKey = selectedPullRequest.map(worktreeKey)
+        let uniquePullRequests = Dictionary(fetched.map { (worktreeKey($0), $0) }, uniquingKeysWith: { current, candidate in
+            candidate.updatedAt > current.updatedAt ? candidate : current
+        }).values
+        allPullRequests = uniquePullRequests.sorted { $0.updatedAt > $1.updatedAt }
+        applyAuthorFilter()
+        // A skipped PR was not recorded as known, so it must not alert as new later.
+        if failures.isEmpty {
             hasEstablishedNotificationBaseline = true
             hasEstablishedApprovalBaseline = true
-            selectedID = previousSelectionKey.flatMap { key in pullRequests.first(where: { worktreeKey($0) == key })?.id } ?? pullRequests.first?.id
+        }
+        selectedID = previousSelectionKey.flatMap { key in pullRequests.first(where: { worktreeKey($0) == key })?.id } ?? pullRequests.first?.id
+        if let failure = failures.first {
+            statusMessage = "새로 고침 일부 실패(\(failures.count)건): \(failure)"
+        } else {
             statusMessage = "PR \(pullRequests.count)개를 확인했습니다."
-            persist()
-        } catch { statusMessage = "새로 고침 실패: \(error.localizedDescription)" }
+        }
+        persist()
+    }
+
+    /// Keeps the last known review summary when only this PR's comments failed.
+    static func pullRequest(_ pullRequest: PullRequest, keepingReviewDetailsFrom previous: PullRequest?) -> PullRequest {
+        guard let previous else { return pullRequest }
+        var merged = pullRequest
+        merged.commentCount = previous.commentCount
+        merged.reviewer = previous.reviewer
+        merged.summary = previous.summary
+        return merged
     }
 
     func startAnalysis(for pullRequest: PullRequest) async {
@@ -1324,7 +1362,7 @@ final class ReviewStore {
             developerName: developerName,
             reviewTitle: card.sectionTitle ?? card.title,
             reviewComment: card.sectionBody ?? card.commentBody,
-            implementationSummary: card.messages.last(where: { $0.role == .agent })?.body ?? plan.content
+            implementationSummary: card.latestAgentJudgment ?? plan.content
         )
     }
 
@@ -1472,9 +1510,10 @@ final class ReviewStore {
             statusMessage = "푸시가 완료되었습니다. PR 코멘트를 등록하는 중입니다."
 
             if !postedReReviewCommentTokens.contains(commentToken) {
-                try await background {
+                let postedID = try await background {
                     try self.github.addComment(repository: pullRequest.repository, number: pullRequest.number, body: trimmedComment)
                 }
+                if let postedID { appPostedCommentIDs.insert(postedID) }
                 postedReReviewCommentTokens.insert(commentToken)
                 persist()
             }
@@ -1647,7 +1686,7 @@ final class ReviewStore {
                 !validSectionKeys.contains(sectionKey)
         }
         for comment in comments {
-            if hiddenIDs.contains(comment.id) {
+            if hiddenIDs.contains(comment.id) || appPostedCommentIDs.contains(comment.id) {
                 sectionIndex += comment.sections.count
                 continue
             }
@@ -1737,7 +1776,7 @@ final class ReviewStore {
     func createImplementationPlan(for card: AgentReviewCard, pullRequest: PullRequest) -> ImplementationPlan? {
         guard card.repository == pullRequest.repository,
               card.pullRequestNumber == pullRequest.number,
-              card.messages.contains(where: { $0.role == .agent }) else {
+              card.latestAgentJudgment != nil else {
             return nil
         }
 
@@ -1771,7 +1810,7 @@ final class ReviewStore {
 
     static func implementationPlanContent(for card: AgentReviewCard, pullRequestNumber: Int) -> String {
         let requests = card.messages.filter { $0.role == .user }.map(\.body).joined(separator: "\n\n")
-        let conclusion = card.messages.last(where: { $0.role == .agent })?.body ?? "판단 없음"
+        let conclusion = card.latestAgentJudgment ?? "판단 없음"
         return """
         # PR #\(pullRequestNumber) 작업 계획
 
@@ -1987,7 +2026,7 @@ final class ReviewStore {
                     setActiveWorkspace(path, for: pullRequest)
                 } catch {
                     agentReviewCards[index].status = .failed
-                    agentReviewCards[index].messages.append(.init(role: .agent, body: "작업 폴더 준비 실패: \(error.localizedDescription)"))
+                    agentReviewCards[index].messages.append(.init(role: .agent, body: "작업 폴더 준비 실패: \(error.localizedDescription)", isFailure: true))
                     agentReviewCards[index].updatedAt = .now
                     preparingWorkspaceKeys.remove(targetKey)
                     persist()
@@ -2017,7 +2056,7 @@ final class ReviewStore {
     /// a workspace: writing a reply must not cause a checkout.
     static func defaultReviewResponseDraft(for card: AgentReviewCard) -> String {
         let section = ReviewCommentSection.displayLabel(for: card.sectionTitle) ?? card.title
-        let agentResponse = card.messages.last(where: { $0.role == .agent })?.body
+        let agentResponse = card.latestAgentJudgment
         let agentJudgment = agentResponse.map { conciseReviewJudgment(from: $0) }
         let evidence = agentResponse.flatMap { reviewEvidence(from: $0) }
         let judgmentLine = agentJudgment.map { "- 검토 판단: \($0)" }
@@ -2037,7 +2076,7 @@ final class ReviewStore {
     func generateReviewResponseDraft(id: AgentReviewCard.ID, pullRequest: PullRequest) async -> String? {
         guard let card = agentCard(id: id) else { return nil }
         let fallback = Self.defaultReviewResponseDraft(for: card)
-        guard let analysis = card.messages.last(where: { $0.role == .agent })?.body,
+        guard let analysis = card.latestAgentJudgment,
               !analysis.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             statusMessage = "에이전트 검토 결과가 없어 기본 응답 초안을 만들었습니다. 내용을 편집해 게시할 수 있습니다."
             return fallback
@@ -2135,8 +2174,12 @@ final class ReviewStore {
             return false
         }
         do {
-            try await background {
+            let postedID = try await background {
                 try self.github.addComment(repository: pullRequest.repository, number: pullRequest.number, body: trimmed)
+            }
+            if let postedID {
+                appPostedCommentIDs.insert(postedID)
+                persist()
             }
             if let index = agentReviewCards.firstIndex(where: { $0.id == cardID }) {
                 agentReviewCards[index].reviewResponsePostedAt = .now
@@ -2186,7 +2229,8 @@ final class ReviewStore {
             let isTrusted = trustedAgentReviewIDs.contains(id)
             let analysisPullRequest = pullRequestWithCurrentWorkspaceSHA(pullRequest, sha: workspaceSHA)
             // Hidden starter messages cover initial review and explicit retries; follow-ups stay in one session.
-            let answer = try await agent.ask(repositoryPath: path, pullRequest: analysisPullRequest, card: card, question: question, trustWorkspace: isTrusted, model: model, reviewsComment: hidesUserMessage)
+            let researchContext = hidesUserMessage ? Self.sharedResearchContext(for: agentCards(for: pullRequest)) : nil
+            let answer = try await agent.ask(repositoryPath: path, pullRequest: analysisPullRequest, card: card, question: question, trustWorkspace: isTrusted, model: model, reviewsComment: hidesUserMessage, researchContext: researchContext)
             guard let updatedIndex = agentReviewCards.firstIndex(where: { $0.id == id }) else { return }
             agentReviewCards[updatedIndex].messages.append(.init(role: .agent, body: answer))
             agentReviewCards[updatedIndex].status = .complete
@@ -2201,11 +2245,19 @@ final class ReviewStore {
                 persist()
                 return
             }
-            agentReviewCards[updatedIndex].messages.append(.init(role: .agent, body: "에이전트 응답을 가져오지 못했습니다. \(error.localizedDescription)"))
+            agentReviewCards[updatedIndex].messages.append(.init(role: .agent, body: "에이전트 응답을 가져오지 못했습니다. \(error.localizedDescription)", isFailure: true))
             agentReviewCards[updatedIndex].status = .failed
             agentReviewCards[updatedIndex].updatedAt = .now
             persist()
         }
+    }
+
+    /// One research pass over every current section of a PR, so reviewing each
+    /// section does not repeat the same code investigation.
+    static func sharedResearchContext(for cards: [AgentReviewCard]) -> String {
+        cards.map { card in
+            "코멘트 ID: \(card.commentID) | 작성자: \(card.commentAuthor) | 섹션: \(card.sectionTitle ?? "전체 코멘트")\n\(card.sectionBody ?? card.commentBody)"
+        }.joined(separator: "\n\n")
     }
 
     func approveAgentPermission() {
@@ -2221,7 +2273,7 @@ final class ReviewStore {
             startCursorLogin()
         case .other:
             if let index = agentReviewCards.firstIndex(where: { $0.id == request.cardID }) {
-                agentReviewCards[index].messages.append(.init(role: .agent, body: "Cursor가 추가 권한을 요청했습니다. Cursor에서 권한을 승인한 뒤 검토 카드를 다시 선택해 재시도하세요.\n\n\(request.detail)"))
+                agentReviewCards[index].messages.append(.init(role: .agent, body: "Cursor가 추가 권한을 요청했습니다. Cursor에서 권한을 승인한 뒤 검토 카드를 다시 선택해 재시도하세요.\n\n\(request.detail)", isFailure: true))
                 agentReviewCards[index].status = .failed
                 agentReviewCards[index].updatedAt = .now
                 persist()
@@ -2234,7 +2286,7 @@ final class ReviewStore {
         agentPermissionRequest = nil
         if let index = agentReviewCards.firstIndex(where: { $0.id == request.cardID }) {
             agentReviewCards[index].status = .failed
-            agentReviewCards[index].messages.append(.init(role: .agent, body: "요청된 권한이 승인되지 않아 에이전트 검토를 시작하지 않았습니다."))
+            agentReviewCards[index].messages.append(.init(role: .agent, body: "요청된 권한이 승인되지 않아 에이전트 검토를 시작하지 않았습니다.", isFailure: true))
             agentReviewCards[index].updatedAt = .now
             persist()
         }
@@ -2507,6 +2559,7 @@ final class ReviewStore {
     }
     private func persist() {
         var state = PersistedState(repositories: repositories, processedCommentIDs: processedCommentIDs, knownPullRequestIDs: knownPullRequestIDs, unreadPullRequestIDs: unreadPullRequestIDs, unreadCommentIDs: unreadCommentIDs, hasEstablishedNotificationBaseline: hasEstablishedNotificationBaseline, approvedPullRequestIDs: approvedPullRequestIDs, hasEstablishedApprovalBaseline: hasEstablishedApprovalBaseline, monitoringEnabled: monitoringEnabled, monitoringInterval: monitoringInterval, analyses: analyses, agentReviewCards: agentReviewCards, hiddenReviewCommentIDsByPullRequest: hiddenReviewCommentIDsByPullRequest, reviewHistoryRoundsByPullRequest: reviewHistoryRoundsByPullRequest, implementationPlans: implementationPlans, committedHeads: committedHeads, postedReReviewCommentTokens: postedReReviewCommentTokens, agentModel: agentModel, customAgentModel: customAgentModel, reviewAuthorFilter: reviewAuthorFilter, petVisible: petVisible, petSize: petSize, petReduceMotion: petReduceMotion, latestPetNotification: latestPetNotification, hasCompletedOnboarding: hasCompletedOnboarding, skippedOnboardingSteps: skippedOnboardingSteps, projectCopyFolder: projectCopyFolder, updateRepository: updateRepository, updatesEnabled: updatesEnabled, lastNotifiedUpdateTag: lastNotifiedUpdateTag, requestedBranches: requestedBranches, cursorSpecSidebarCache: cursorSpecSidebarCache, automaticCursorSessionClassification: automaticCursorSessionClassification, automaticReviewAnalysis: automaticReviewAnalysis)
+        state.appPostedCommentIDs = appPostedCommentIDs
         state.agentProvider = agentProvider
         state.codexModel = codexModel
         state.claudeModel = claudeModel

@@ -35,7 +35,7 @@ struct UnitTestVerifier: Sendable {
     /// (temp folder, source file, test files) → outcome. Replaceable so tests need no .NET SDK.
     typealias Validator = @Sendable (String, String, [String]) throws -> ValidationOutcome
 
-    private let runner = ProcessRunner()
+    private let runner = ProcessRunner(defaultTimeout: 600)
     private let validator: Validator
 
     init(validator: @escaping Validator = UnitTestVerifier.dotnetValidator) {

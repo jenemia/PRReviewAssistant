@@ -100,6 +100,78 @@ struct CursorReviewWorkflowTests {
         }
     }
 
+    private func reviewSection(_ workflow: CursorReviewWorkflow, _ section: String, shared: String) async throws -> String {
+        try await workflow.run(preset: .comments, directory: "/repo", headReference: "HEAD", expectedSHA: "head-sha", context: section, researchContext: shared, outputInstructions: "format", trustWorkspace: false, model: "m")
+    }
+
+    @Test("같은 PR의 섹션들은 구조 조사를 한 번만 실행한다")
+    func sectionsShareResearch() async throws {
+        let directory = try rolesDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let commands = Commands()
+        let workflow = CursorReviewWorkflow(limiter: AgentCallLimiter(limit: 4), researchCache: ReviewResearchCache(), agentsDirectory: directory, runCommand: commands.run)
+
+        async let first = reviewSection(workflow, "SECTION-A", shared: "ALL-SECTIONS")
+        async let second = reviewSection(workflow, "SECTION-B", shared: "ALL-SECTIONS")
+        _ = try await (first, second)
+
+        let prompts = commands.calls.filter { $0.first == "cursor" }.compactMap(\.last)
+        let research = prompts.filter { $0.contains("담당 역할: structure-agent") }
+        #expect(research.count == 1)
+        #expect(research[0].contains("ALL-SECTIONS"))
+        #expect(prompts.filter { $0.contains("담당 역할: code-reviewer") }.count == 2)
+        #expect(prompts.count == 5)
+        #expect(prompts.contains { $0.contains("담당 역할: code-reviewer") && $0.contains("SECTION-B") && $0.contains("evidence-from-structure-agent") })
+    }
+
+    @Test("실패한 구조 조사는 재사용하지 않는다")
+    func failedResearchIsNotCached() async throws {
+        let directory = try rolesDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let commands = Commands()
+        let workflow = CursorReviewWorkflow(limiter: AgentCallLimiter(limit: 4), researchCache: ReviewResearchCache(), agentsDirectory: directory, runCommand: commands.run)
+
+        commands.failRole = "structure-agent"
+        await #expect(throws: (any Error).self) { _ = try await reviewSection(workflow, "SECTION-A", shared: "ALL") }
+        commands.failRole = nil
+        _ = try await reviewSection(workflow, "SECTION-A", shared: "ALL")
+
+        let research = commands.calls.compactMap(\.last).filter { $0.contains("담당 역할: structure-agent") }
+        #expect(research.count == 2)
+    }
+
+    @Test("동시 모델 호출 수를 제한한다")
+    func limitsConcurrentModelCalls() async throws {
+        let directory = try rolesDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let commands = Commands()
+        final class Counter: @unchecked Sendable {
+            private let lock = NSLock()
+            private var running = 0
+            private(set) var peak = 0
+            func enter() { lock.withLock { running += 1; peak = max(peak, running) } }
+            func leave() { lock.withLock { running -= 1 } }
+        }
+        let counter = Counter()
+        let workflow = CursorReviewWorkflow(limiter: AgentCallLimiter(limit: 2), researchCache: ReviewResearchCache(), agentsDirectory: directory) { executable, arguments, path, timeout in
+            guard executable == "cursor" else { return try commands.run(executable, arguments, path, timeout) }
+            counter.enter()
+            defer { counter.leave() }
+            Thread.sleep(forTimeInterval: 0.03)
+            return try commands.run(executable, arguments, path, timeout)
+        }
+
+        try await withThrowingTaskGroup(of: String.self) { group in
+            for index in 0..<6 {
+                group.addTask { try await reviewSection(workflow, "SECTION-\(index)", shared: "ALL") }
+            }
+            try await group.waitForAll()
+        }
+
+        #expect(counter.peak <= 2)
+        #expect(commands.calls.filter { $0.first == "cursor" }.count == 13)
+    }
+
     @Test("원격 main 병합분은 feature diff에서 제외한다")
     func mergedMainIsExcludedFromBranchDiff() async throws {
         let roles = try rolesDirectory()

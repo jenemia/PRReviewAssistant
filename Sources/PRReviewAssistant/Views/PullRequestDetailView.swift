@@ -1212,7 +1212,7 @@ private struct WorkReviewCardThumbnail: View {
     let card: AgentReviewCard
 
     private var summary: String {
-        let text = card.messages.last(where: { $0.role == .agent })?.body
+        let text = card.latestAgentJudgment
             ?? card.sectionBody
             ?? card.commentBody
         return text

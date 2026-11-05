@@ -1,7 +1,8 @@
 import Foundation
 
 struct WorkspaceManager: Sendable {
-    private let runner = ProcessRunner()
+    /// Generous because fetch and push on a large repository can be slow.
+    private let runner = ProcessRunner(defaultTimeout: 600)
 
     /// Reads the origin branches without switching the repository's working
     /// tree.  PR requests must use GitHub-visible branches, so the picker is

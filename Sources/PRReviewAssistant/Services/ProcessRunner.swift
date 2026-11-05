@@ -45,7 +45,18 @@ enum CommandError: LocalizedError {
 }
 
 final class ProcessRunner: @unchecked Sendable {
+    /// A child can exit before reading its stdin. Without this, writing the rest
+    /// of the input delivers SIGPIPE and terminates the whole app.
+    private static let ignoreBrokenPipeSignal: Void = { _ = signal(SIGPIPE, SIG_IGN) }()
+
+    private let defaultTimeout: TimeInterval?
+
+    init(defaultTimeout: TimeInterval? = nil) {
+        self.defaultTimeout = defaultTimeout
+    }
+
     func run(_ executable: String, arguments: [String], workingDirectory: String? = nil, input: String? = nil, timeout: TimeInterval? = nil) throws -> CommandResult {
+        let timeout = timeout ?? defaultTimeout
         let process = Process()
         let outputPipe = Pipe()
         let errorPipe = Pipe()
@@ -65,16 +76,18 @@ final class ProcessRunner: @unchecked Sendable {
 
         // Drain both pipes while the child is running. Waiting for a verbose
         // agent before reading its output can fill the pipe buffer forever.
+        // These block rather than compute, and a low priority could leave them
+        // queued long enough to look like a stalled command under load.
         let readers = DispatchGroup()
         let commandOutput = CommandOutput()
         readers.enter()
-        DispatchQueue.global(qos: .utility).async {
+        DispatchQueue.global(qos: .userInitiated).async {
             let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
             commandOutput.setStandardOutput(data)
             readers.leave()
         }
         readers.enter()
-        DispatchQueue.global(qos: .utility).async {
+        DispatchQueue.global(qos: .userInitiated).async {
             let data = errorPipe.fileHandleForReading.readDataToEndOfFile()
             commandOutput.setStandardError(data)
             readers.leave()
@@ -83,22 +96,34 @@ final class ProcessRunner: @unchecked Sendable {
         let termination = DispatchSemaphore(value: 0)
         process.terminationHandler = { _ in termination.signal() }
         if let input {
+            _ = Self.ignoreBrokenPipeSignal
             let inputPipe = Pipe()
             process.standardInput = inputPipe
             try process.run()
-            inputPipe.fileHandleForWriting.write(Data(input.utf8))
-            try? inputPipe.fileHandleForWriting.close()
+            // Write off this thread so a child that never reads stdin cannot
+            // delay the timeout below. A write error only means the child has
+            // already exited; its exit status reports the actual outcome.
+            let writer = inputPipe.fileHandleForWriting
+            DispatchQueue.global(qos: .userInitiated).async {
+                try? writer.write(contentsOf: Data(input.utf8))
+                try? writer.close()
+            }
         } else {
             try process.run()
         }
         if let timeout, termination.wait(timeout: .now() + timeout) == .timedOut {
             if process.isRunning { process.terminate() }
-            _ = termination.wait(timeout: .now() + 5)
-            readers.wait()
+            if termination.wait(timeout: .now() + 5) == .timedOut {
+                kill(process.processIdentifier, SIGKILL)
+                _ = termination.wait(timeout: .now() + 1)
+            }
+            _ = readers.wait(timeout: .now() + 2)
             throw CommandError.timedOut(executable)
         }
         if timeout == nil { termination.wait() }
-        readers.wait()
+        // A background descendant can keep the pipes open after the command
+        // itself has exited; output is only complete once both readers finish.
+        guard readers.wait(timeout: .now() + 5) == .success else { throw CommandError.timedOut(executable) }
         let capturedOutput = commandOutput.snapshot()
         let result = CommandResult(
             output: String(decoding: capturedOutput.output, as: UTF8.self),

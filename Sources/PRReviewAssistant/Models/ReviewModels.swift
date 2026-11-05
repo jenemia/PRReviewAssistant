@@ -517,6 +517,9 @@ struct AgentChatMessage: Identifiable, Codable, Hashable {
     var role: AgentChatRole
     var body: String
     var createdAt = Date()
+    /// Set on app-written status text shown in the agent's bubble, such as a
+    /// failed request. These are never a judgment to build on.
+    var isFailure: Bool?
 }
 
 enum WorkspaceDestination: String, CaseIterable, Codable, Identifiable {
@@ -584,6 +587,11 @@ enum ImplementationWorkStatus: String, Codable {
 }
 
 struct AgentReviewCard: Identifiable, Codable, Hashable {
+    /// The agent's latest actual answer, skipping failure notices.
+    var latestAgentJudgment: String? {
+        messages.last(where: { $0.role == .agent && $0.isFailure != true })?.body
+    }
+
     var id = UUID()
     /// Stable work-unit identifier issued for a PR comment section.
     /// Format: `prid_review_{n}` where `prid` is the stable PR UUID.

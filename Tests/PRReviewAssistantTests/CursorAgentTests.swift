@@ -50,6 +50,60 @@ struct CursorAgentTests {
         #expect(prompt.contains("코드 원문과 코드 블록은 기본적으로 표시하지 마라"))
     }
 
+    @Test("실패 안내는 판단으로 쓰지 않고 리뷰 원문에서 다시 시작한다")
+    func followUpIgnoresFailureNotice() {
+        var card = reviewCard()
+        card.messages = [.init(role: .agent, body: "에이전트 응답을 가져오지 못했습니다.", isFailure: true)]
+
+        let prompt = CursorAgent.followUpPrompt(card: card, question: "다시 봐줘")
+
+        #expect(!prompt.contains("에이전트 응답을 가져오지 못했습니다."))
+        #expect(prompt.contains(card.sectionBody ?? card.commentBody))
+        #expect(card.latestAgentJudgment == nil)
+    }
+
+    @Test("실패 뒤에도 직전의 정상 판단을 유지한다")
+    func followUpKeepsLastRealJudgment() {
+        var card = reviewCard()
+        card.messages = [.init(role: .agent, body: "정상 판단"),
+                         .init(role: .agent, body: "실패 안내", isFailure: true)]
+        let prompt = CursorAgent.followUpPrompt(card: card, question: "다시 봐줘")
+        #expect(prompt.contains("정상 판단"))
+        #expect(!prompt.contains("실패 안내"))
+    }
+
+    @Test("현재 요청을 이전 요청에 중복해 보내지 않는다")
+    func followUpDoesNotRepeatCurrentRequest() {
+        var card = reviewCard()
+        card.messages = [.init(role: .user, body: "이전 요청"), .init(role: .user, body: "현재 요청")]
+        let prompt = CursorAgent.followUpPrompt(card: card, question: "현재 요청")
+        #expect(prompt.contains("이전 요청"))
+        #expect(prompt.components(separatedBy: "현재 요청\n").count == 2 || prompt.components(separatedBy: "\n현재 요청").count == 2)
+    }
+
+    @Test("isFailure가 없는 이전 저장 메시지도 읽는다")
+    func decodesMessageWithoutFailureFlag() throws {
+        let original = AgentChatMessage(role: .agent, body: "기존 메시지")
+        let data = try JSONEncoder().encode(original)
+        #expect(!String(decoding: data, as: UTF8.self).contains("isFailure"))
+        #expect(try JSONDecoder().decode(AgentChatMessage.self, from: data).isFailure == nil)
+    }
+
+    @Test("빈 응답은 완료로 처리하지 않고 stderr 안내를 보존한다")
+    func emptyTextResponseIsNotSuccess() throws {
+        let ok = try CursorAgent.validatedTextResult(.init(output: "답변", error: "warning", status: 0))
+        #expect(ok.output == "답변")
+        #expect(throws: CommandError.self) {
+            _ = try CursorAgent.validatedTextResult(.init(output: " \n", error: "", status: 0))
+        }
+        do {
+            _ = try CursorAgent.validatedTextResult(.init(output: "", error: "Workspace Trust Required", status: 0))
+            Issue.record("오류가 발생해야 합니다")
+        } catch {
+            #expect(error.localizedDescription == "Workspace Trust Required")
+        }
+    }
+
     @Test("작업 요청은 최신 판단과 사용자 제한을 최종 구현 프롬프트까지 전달한다")
     @MainActor
     func workRequestPreservesUserConstraints() {
