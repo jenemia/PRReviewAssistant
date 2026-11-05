@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Converts a raw internal code-location URL into readable Markdown while
@@ -95,12 +96,25 @@ enum ReviewResponseReferenceFormatter {
 /// as native SwiftUI views so headings, lists, quotes, and code stay readable.
 struct MarkdownContentView: View {
     private let blocks: [MarkdownBlock]
+    private let nativeSelection: Bool
 
-    init(_ markdown: String) {
-        blocks = MarkdownBlock.parse(markdown)
+    init(_ markdown: String, nativeSelection: Bool = false, plainText: Bool = false) {
+        self.nativeSelection = nativeSelection
+        blocks = plainText ? [MarkdownBlock(kind: .paragraph(markdown))] : MarkdownBlock.parse(markdown)
+        self.plainText = plainText
     }
 
+    private let plainText: Bool
+
     var body: some View {
+        if nativeSelection {
+            SelectableReviewText(content: selectableContent())
+        } else {
+            formattedBlocks
+        }
+    }
+
+    private var formattedBlocks: some View {
         VStack(alignment: .leading, spacing: 12) {
             ForEach(blocks) { block in
                 switch block.kind {
@@ -151,6 +165,57 @@ struct MarkdownContentView: View {
         .textSelection(.enabled)
     }
 
+    private func selectableContent() -> NSAttributedString {
+        let result = NSMutableAttributedString()
+        let bodyFont = NSFont.systemFont(ofSize: NSFont.systemFontSize)
+        for block in blocks {
+            if result.length > 0 { result.append(NSAttributedString(string: "\n\n")) }
+            let text: String
+            let font: NSFont
+            let inline: Bool
+            switch block.kind {
+            case .heading(let level, let title):
+                text = title
+                font = .boldSystemFont(ofSize: bodyFont.pointSize + (level <= 2 ? 3 : 1))
+                inline = true
+            case .paragraph(let body):
+                text = body
+                font = bodyFont
+                inline = !plainText
+            case .list(let items):
+                text = items.map { "• \($0)" }.joined(separator: "\n")
+                font = bodyFont
+                inline = true
+            case .quote(let body):
+                text = body
+                font = bodyFont
+                inline = true
+            case .code(let code):
+                text = code
+                font = .monospacedSystemFont(ofSize: bodyFont.pointSize, weight: .regular)
+                inline = false
+            }
+
+            let value = inline
+                ? ((try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text))
+                : AttributedString(text)
+            let attributed = NSMutableAttributedString(attributedString: NSAttributedString(value))
+            var offset = 0
+            for run in value.runs {
+                let length = String(value[run.range].characters).utf16.count
+                let intent = run.inlinePresentationIntent
+                var runFont = font
+                if intent?.contains(.code) == true { runFont = .monospacedSystemFont(ofSize: font.pointSize, weight: .regular) }
+                if intent?.contains(.stronglyEmphasized) == true { runFont = NSFontManager.shared.convert(runFont, toHaveTrait: .boldFontMask) }
+                if intent?.contains(.emphasized) == true { runFont = NSFontManager.shared.convert(runFont, toHaveTrait: .italicFontMask) }
+                attributed.addAttributes([.font: runFont, .foregroundColor: NSColor.labelColor], range: NSRange(location: offset, length: length))
+                offset += length
+            }
+            result.append(attributed)
+        }
+        return result
+    }
+
     private func headingFont(_ level: Int) -> Font {
         switch level {
         case 1: .title2.bold()
@@ -165,6 +230,52 @@ struct MarkdownContentView: View {
 
     private func indexedIndent(_ item: String) -> Int {
         item.prefix { $0 == " " }.count > 1 ? 16 : 0
+    }
+}
+
+/// Uses the native macOS selection and copy menu across Markdown blocks.
+private struct SelectableReviewText: NSViewRepresentable {
+    let content: NSAttributedString
+    @Environment(\.openURL) private var openURL
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var openURL: OpenURLAction
+
+        init(openURL: OpenURLAction) { self.openURL = openURL }
+
+        func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+            guard let url = link as? URL else { return false }
+            openURL(url)
+            return true
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(openURL: openURL) }
+
+    func makeNSView(context: Context) -> NSTextView {
+        let view = NSTextView(frame: .zero)
+        view.isEditable = false
+        view.isSelectable = true
+        view.drawsBackground = false
+        view.textContainerInset = .zero
+        view.textContainer?.lineFragmentPadding = 0
+        view.textContainer?.widthTracksTextView = false
+        view.textContainer?.heightTracksTextView = false
+        view.delegate = context.coordinator
+        return view
+    }
+
+    func updateNSView(_ view: NSTextView, context: Context) {
+        context.coordinator.openURL = openURL
+        if view.attributedString() != content { view.textStorage?.setAttributedString(content) }
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView view: NSTextView, context: Context) -> CGSize? {
+        guard let width = proposal.width, width > 0,
+              let container = view.textContainer, let layout = view.layoutManager else { return nil }
+        container.containerSize = CGSize(width: width, height: CGFloat.greatestFiniteMagnitude)
+        layout.ensureLayout(for: container)
+        return CGSize(width: width, height: ceil(layout.usedRect(for: container).maxY))
     }
 }
 

@@ -250,6 +250,7 @@ final class ReviewStore {
         automaticCursorSessionClassification = state.automaticCursorSessionClassification
         automaticReviewAnalysis = state.automaticReviewAnalysis
         recoverInterruptedWork()
+        if splitSavedBranchReviews() { persist() }
         if startsBackgroundTasks { Task { await startup() } }
     }
 
@@ -494,6 +495,7 @@ final class ReviewStore {
     private func runBranchMessage(cardID: UUID, branch: RepositoryBranch, message: String, recordsUserMessage: Bool) async {
         guard let repository = repositories.first(where: { $0.id == branch.repositoryID }),
               let index = branchReviewCards[branch.id]?.firstIndex(where: { $0.id == cardID }),
+              branchReviewCards[branch.id]?[index].isReference == false,
               !branchCardBusy.contains(cardID) else { return }
         branchCardBusy.insert(cardID)
         branchCardErrors[cardID] = nil
@@ -561,7 +563,7 @@ final class ReviewStore {
     func implementBranchCard(_ card: BranchReviewCard, branch: RepositoryBranch, request: String) async {
         guard branchCardReviewed.contains(card.id), !branchCardBusy.contains(card.id),
               !implementingBranchRepositoryIDs.contains(branch.repositoryID),
-              branchReviewCards[branch.id]?.contains(where: { $0.id == card.id && $0.reviewedSHA == card.reviewedSHA }) == true,
+              branchReviewCards[branch.id]?.contains(where: { $0.id == card.id && $0.reviewedSHA == card.reviewedSHA && !$0.isReference }) == true,
               let repository = repositories.first(where: { $0.id == branch.repositoryID }),
               !request.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         implementingBranchRepositoryIDs.insert(branch.repositoryID)
@@ -752,7 +754,7 @@ final class ReviewStore {
     func makeBranchQuiz(for branch: RepositoryBranch) async -> [BranchQuizQuestion]? {
         guard let repository = repositories.first(where: { $0.id == branch.repositoryID }),
               !isMakingBranchQuiz else { return branchQuizzes[branch.id] }
-        let cards = branchCards(for: branch)
+        let cards = branchCards(for: branch).filter { $0.isArchivedAggregate != true }
         guard !cards.isEmpty else {
             statusMessage = "퀴즈를 만들기 전에 브랜치 리뷰를 실행하세요."
             return nil
@@ -831,19 +833,105 @@ final class ReviewStore {
         }
     }
 
-    private static func makeBranchReviewCards(from output: String, reviewedSHA: String) -> [BranchReviewCard] {
-        let mapping: [(String, BranchReviewCategory)] = [("차단", .blocker), ("확인 필요", .concern), ("개선", .improvement), ("통과", .passed)]
-        return mapping.map { title, category in
-            let pattern = "(?s)##\\s*\(NSRegularExpression.escapedPattern(for: title))\\s*(.*?)(?=\\n##\\s|\\z)"
-            let range = NSRange(output.startIndex..., in: output)
-            let content: String
-            if let expression = try? NSRegularExpression(pattern: pattern), let match = expression.firstMatch(in: output, range: range), let bodyRange = Range(match.range(at: 1), in: output) {
-                content = String(output[bodyRange]).trimmingCharacters(in: .whitespacesAndNewlines)
-            } else { content = "특이사항 없음" }
-            let firstHeading = content.split(separator: "\n").first(where: { $0.hasPrefix("###") })?.replacingOccurrences(of: "#", with: "").trimmingCharacters(in: .whitespaces) ?? title
-            return BranchReviewCard(category: category, title: firstHeading, summary: String(content.replacingOccurrences(of: "\n", with: " ").prefix(130)), details: content, reviewedSHA: reviewedSHA)
+    static func makeBranchReviewCards(from output: String, reviewedSHA: String) -> [BranchReviewCard] {
+        var groups: [BranchReviewCategory: [String]] = [:]
+        var category: BranchReviewCategory?
+        for (line, heading) in markdownReviewLines(output) {
+            if let heading, heading.level == 2 {
+                category = BranchReviewCategory(rawValue: heading.title)
+                if let category { groups[category, default: []].append("") }
+            } else if let category {
+                groups[category, default: []].append(line)
+            }
+        }
+        guard !groups.isEmpty else {
+            let content = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            return [makeBranchReviewCard(category: .concern, title: "리뷰 결과", details: content, reviewedSHA: reviewedSHA)]
+        }
+        return BranchReviewCategory.allCases.flatMap { category in
+            let details = groups[category]?.joined(separator: "\n") ?? BranchReviewCard.noFindings
+            return branchReviewItems(category: category, details: details, reviewedSHA: reviewedSHA)
         }
     }
+
+    private static func branchReviewItems(category: BranchReviewCategory, details: String, reviewedSHA: String) -> [BranchReviewCard] {
+        var cards: [BranchReviewCard] = []
+        var title = category.rawValue
+        var lines: [String] = []
+
+        func appendItem() {
+            let body = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !body.isEmpty else { return }
+            cards.append(makeBranchReviewCard(category: category, title: title, details: body, reviewedSHA: reviewedSHA))
+        }
+
+        for (line, heading) in markdownReviewLines(details) {
+            if let heading, heading.level == 3 {
+                appendItem()
+                title = heading.title
+                // Keep the heading so heading-only findings remain visible.
+                lines = [line]
+            } else {
+                lines.append(line)
+            }
+        }
+        appendItem()
+        return cards.isEmpty
+            ? [makeBranchReviewCard(category: category, title: category.rawValue, details: BranchReviewCard.noFindings, reviewedSHA: reviewedSHA)]
+            : cards
+    }
+
+    private static func markdownReviewLines(_ text: String) -> [(String, (level: Int, title: String)?)] {
+        var fence: (marker: Character, count: Int)?
+        return text.components(separatedBy: .newlines).map { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if let marker = trimmed.first, marker == "`" || marker == "~" {
+                let count = trimmed.prefix { $0 == marker }.count
+                if let active = fence {
+                    if marker == active.marker, count >= active.count, trimmed.count == count { fence = nil }
+                    return (line, nil)
+                }
+                if count >= 3 {
+                    fence = (marker, count)
+                    return (line, nil)
+                }
+            }
+            guard fence == nil, !line.hasPrefix("    "), !line.hasPrefix("\t") else { return (line, nil) }
+            let level = trimmed.prefix { $0 == "#" }.count
+            let suffix = trimmed.dropFirst(level)
+            guard (level == 2 || level == 3), suffix.first?.isWhitespace == true else { return (line, nil) }
+            let title = suffix.trimmingCharacters(in: .whitespaces)
+            return title.isEmpty ? (line, nil) : (line, (level, title))
+        }
+    }
+
+    private static func makeBranchReviewCard(category: BranchReviewCategory, title: String, details: String, reviewedSHA: String) -> BranchReviewCard {
+        let summary = details.replacingOccurrences(of: "\n", with: " ")
+        return BranchReviewCard(category: category, title: title, summary: String(summary.prefix(130)), details: details, reviewedSHA: reviewedSHA)
+    }
+
+    private func splitSavedBranchReviews() -> Bool {
+        var changed = false
+        branchReviewCards = branchReviewCards.mapValues { cards in
+            cards.flatMap { card -> [BranchReviewCard] in
+                guard card.isArchivedAggregate != true else { return [card] }
+                let items = Self.branchReviewItems(category: card.category, details: card.details, reviewedSHA: card.reviewedSHA)
+                guard items.count > 1 else { return [card] }
+                changed = true
+                guard !card.messages.isEmpty || branchCardReviewed.contains(card.id) || branchImplementationResults[card.id] != nil else {
+                    return items
+                }
+                // An older conversation covered the whole category. Keep it separate
+                // so its approval and implementation history cannot transfer to a finding.
+                var history = card
+                history.title = "이전 분류 전체 검토 기록"
+                history.isArchivedAggregate = true
+                return items + [history]
+            }
+        }
+        return changed
+    }
+
     func canCommit(for card: AgentReviewCard, pullRequest: PullRequest) -> Bool {
         guard let plan = implementationPlan(for: card, pullRequest: pullRequest) else { return false }
         return plan.status == .completed

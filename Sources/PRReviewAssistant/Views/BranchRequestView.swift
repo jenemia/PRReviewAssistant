@@ -157,7 +157,7 @@ struct BranchRequestDetailView: View {
         if result.outcome == .failed { return "UnitTest 검증이 실패했습니다. \(result.summary)" }
         return "UnitTest 검증 이후 브랜치에 새 커밋이 있어 결과가 현재 코드와 맞지 않습니다."
     }
-    private var isClear: Bool { !cards.isEmpty && cards.allSatisfy { $0.details.localizedCaseInsensitiveContains("특이사항 없음") } }
+    private var isClear: Bool { !cards.isEmpty && cards.allSatisfy { $0.isReference || $0.category == .passed } }
 
     var body: some View {
         Group {
@@ -237,22 +237,20 @@ struct BranchRequestDetailView: View {
                                 Button("취소", action: store.cancelBranchReview)
                             }
                             Spacer()
-                            if !cards.isEmpty { Text("분류 카드 \(cards.count)개").font(.caption).foregroundStyle(.secondary) }
+                            if !cards.isEmpty { Text("리뷰 항목 \(cards.filter { !$0.isReference }.count)개").font(.caption).foregroundStyle(.secondary) }
                         }
                         if let message = store.branchReviewMessages[branch.id] {
                             Text(message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                         }
                         if !cards.isEmpty {
-                            ScrollView(.horizontal) {
-                                HStack(alignment: .top, spacing: 10) {
-                                    ForEach(cards) { card in
-                                        Button { selectedCardID = card.id } label: { BranchReviewCardView(card: card) }
-                                            .buttonStyle(.plain)
-                                    }
-                                }.padding(.vertical, 2)
+                            ForEach(BranchReviewCategory.allCases, id: \.self) { category in
+                                let items = cards.filter { $0.category == category }
+                                if !items.isEmpty {
+                                    BranchReviewCategoryView(category: category, items: items, selectedCardID: $selectedCardID)
+                                }
                             }
                         } else {
-                            Text("리뷰를 시작하면 분류별 카드를 여기에서 확인하고, 카드를 눌러 에이전트와 대화할 수 있습니다.")
+                            Text("리뷰를 시작하면 위험도별 항목이 표시됩니다. 항목을 선택해 개별 검토를 시작할 수 있습니다.")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }
@@ -370,16 +368,39 @@ private struct UnitTestBadge: View {
     }
 }
 
-private struct BranchReviewCardView: View {
-    let card: BranchReviewCard
+private struct BranchReviewCategoryView: View {
+    let category: BranchReviewCategory
+    let items: [BranchReviewCard]
+    @Binding var selectedCardID: BranchReviewCard.ID?
+    @State private var isExpanded = true
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label(card.category.rawValue, systemImage: card.category.symbol).font(.caption.weight(.semibold)).foregroundStyle(card.category.tint)
-            Text(card.title).font(.subheadline.weight(.semibold)).lineLimit(2)
-            Text(card.summary.isEmpty ? "특이사항 없음" : card.summary).font(.caption).foregroundStyle(.secondary).lineLimit(4)
-            Text("에이전트와 검토하기").font(.caption.weight(.medium)).foregroundStyle(BrandColor.prPurple)
+        DisclosureGroup(isExpanded: $isExpanded) {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(items) { card in
+                    if card.details == BranchReviewCard.noFindings {
+                        Text(card.details).font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        Button { selectedCardID = card.id } label: {
+                            HStack {
+                                Text(card.title).frame(maxWidth: .infinity, alignment: .leading)
+                                Image(systemName: "chevron.right").foregroundStyle(.secondary)
+                            }
+                            .padding(8)
+                            .background(selectedCardID == card.id ? BrandColor.prPurple.opacity(0.15) : .clear, in: RoundedRectangle(cornerRadius: 6))
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .padding(.top, 4)
+        } label: {
+            Label("\(category.rawValue) · \(items.filter { !$0.isReference }.count)개", systemImage: category.symbol)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(category.tint)
         }
-        .padding(12).frame(width: 200, height: 160, alignment: .topLeading)
+        .padding(10)
         .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
     }
 }
@@ -397,37 +418,39 @@ private struct BranchAgentSidePanel: View {
             HStack { VStack(alignment: .leading) { Text("에이전트 검토").font(.headline); Text(card.title).font(.caption).foregroundStyle(.secondary) }; Spacer(); Button("닫기", systemImage: "xmark", action: close).buttonStyle(.borderless) }.padding(16)
             Divider()
             ScrollView { LazyVStack(alignment: .leading, spacing: 12) {
-                GroupBox("\(card.category.rawValue) · 검토 내용") { MarkdownContentView(card.details).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
+                GroupBox("\(card.category.rawValue) · 검토 내용") { MarkdownContentView(card.details, nativeSelection: true).frame(maxWidth: .infinity, alignment: .leading) }
                 ForEach(card.messages) { message in BranchChatBubble(message: message) }
                 if let error = store.branchCardErrors[card.id] { Text(error).foregroundStyle(.red).textSelection(.enabled) }
                 if let result = store.branchImplementationResults[card.id] {
-                    GroupBox("구현 결과") { MarkdownContentView(result).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
+                    GroupBox("구현 결과") { MarkdownContentView(result, nativeSelection: true).frame(maxWidth: .infinity, alignment: .leading) }
                 }
             }.padding(16) }
             Divider()
-            HStack {
-                if store.branchCardBusy.contains(card.id) {
-                    ProgressView().controlSize(.small)
-                    Text(store.cardReviewProgress[card.id] ?? "에이전트 작업 중…").font(.caption)
-                    if store.canCancelBranchMessage(card.id) {
-                        Button("취소") { store.cancelBranchMessage(card.id) }
+            if !card.isReference {
+                HStack {
+                    if store.branchCardBusy.contains(card.id) {
+                        ProgressView().controlSize(.small)
+                        Text(store.cardReviewProgress[card.id] ?? "에이전트 작업 중…").font(.caption)
+                        if store.canCancelBranchMessage(card.id) {
+                            Button("취소") { store.cancelBranchMessage(card.id) }
+                        }
                     }
-                }
-                if !store.branchCardReviewed.contains(card.id) {
-                    Button("에이전트 검토 시작") { Task { await store.sendBranchMessage(cardID: card.id, branch: branch, message: "이 카드의 지적과 수정 방향을 검토하고 대응 계획을 알려주세요.") } }
-                        .disabled(store.branchCardBusy.contains(card.id))
-                }
-                Spacer()
-                Button("구현 요청") {
-                    implementationRequest = ReviewStore.branchImplementationRequest(card: card)
-                    showingImplementation = true
-                }
-                .disabled(!store.branchCardReviewed.contains(card.id) || store.branchCardBusy.contains(card.id) || store.implementingBranchRepositoryIDs.contains(branch.repositoryID))
-            }.padding(.horizontal, 12).padding(.top, 10)
-            HStack(alignment: .bottom) {
-                TextField("추가 질문을 입력하세요", text: $draft, axis: .vertical).lineLimit(1...4).onSubmit(send)
-                Button(action: send) { Image(systemName: "arrow.up.circle.fill").font(.title2) }.buttonStyle(.plain).disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.branchCardBusy.contains(card.id))
-            }.padding(12)
+                    if !store.branchCardReviewed.contains(card.id) {
+                        Button("에이전트 검토 시작") { Task { await store.sendBranchMessage(cardID: card.id, branch: branch, message: "이 카드의 지적과 수정 방향을 검토하고 대응 계획을 알려주세요.") } }
+                            .disabled(store.branchCardBusy.contains(card.id))
+                    }
+                    Spacer()
+                    Button("구현 요청") {
+                        implementationRequest = ReviewStore.branchImplementationRequest(card: card)
+                        showingImplementation = true
+                    }
+                    .disabled(!store.branchCardReviewed.contains(card.id) || store.branchCardBusy.contains(card.id) || store.implementingBranchRepositoryIDs.contains(branch.repositoryID))
+                }.padding(.horizontal, 12).padding(.top, 10)
+                HStack(alignment: .bottom) {
+                    TextField("추가 질문을 입력하세요", text: $draft, axis: .vertical).lineLimit(1...4).onSubmit(send)
+                    Button(action: send) { Image(systemName: "arrow.up.circle.fill").font(.title2) }.buttonStyle(.plain).disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.branchCardBusy.contains(card.id))
+                }.padding(12)
+            }
         }.background(.bar)
         .sheet(isPresented: $showingImplementation) {
             VStack(alignment: .leading, spacing: 12) {
@@ -450,7 +473,7 @@ private struct BranchChatBubble: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(message.role == .user ? "나" : "에이전트").font(.caption.weight(.medium)).foregroundStyle(.secondary)
-            if message.role == .agent { MarkdownContentView(message.body) } else { Text(message.body) }
+            MarkdownContentView(message.body, nativeSelection: true, plainText: message.role == .user)
         }.padding(10).textSelection(.enabled).background(message.role == .user ? AnyShapeStyle(BrandColor.prPurple.opacity(0.16)) : AnyShapeStyle(.quaternary), in: RoundedRectangle(cornerRadius: 10)).frame(maxWidth: .infinity, alignment: .leading)
     }
 }

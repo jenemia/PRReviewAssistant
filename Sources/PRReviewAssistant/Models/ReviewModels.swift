@@ -248,12 +248,19 @@ struct CursorReviewSession: Codable, Hashable, Sendable {
 }
 
 struct BranchReviewCard: Identifiable, Hashable, Codable {
+    var isReference: Bool {
+        isArchivedAggregate == true || title == "검토 범위와 한계" || details == Self.noFindings
+    }
+
+    static let noFindings = "특이사항 없음"
+
     var id = UUID()
     var category: BranchReviewCategory
     var title: String
     var summary: String
     var details: String
     var reviewedSHA: String = ""
+    var isArchivedAggregate: Bool?
     var cursorSession: CursorReviewSession?
     var messages: [AgentChatMessage] = []
     var updatedAt = Date()
