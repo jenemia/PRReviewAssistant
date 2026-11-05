@@ -241,6 +241,7 @@ struct BranchReviewCard: Identifiable, Hashable, Codable {
     var title: String
     var summary: String
     var details: String
+    var reviewedSHA: String = ""
     var messages: [AgentChatMessage] = []
     var updatedAt = Date()
 }
@@ -267,6 +268,12 @@ struct BranchQuizGeneration: Decodable {
     let questions: [BranchQuizQuestion]
 }
 
+struct ReviewRequestEvent: Identifiable, Hashable, Sendable {
+    let id: Int
+    let reviewer: String
+    let createdAt: Date
+}
+
 struct ReviewComment: Identifiable, Hashable, Codable {
     var id: String
     var author: String
@@ -277,6 +284,8 @@ struct ReviewComment: Identifiable, Hashable, Codable {
     var kind: ReviewCommentKind
     var reviewState: ReviewState?
     var parentID: String?
+    var reviewAuthor: String? = nil
+    var reviewSubmittedAt: Date? = nil
     var isResolved = false
     var analysisStatus: AnalysisStatus = .needsAnalysis
 

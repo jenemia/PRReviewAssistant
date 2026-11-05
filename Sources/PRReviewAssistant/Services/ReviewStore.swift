@@ -42,6 +42,7 @@ final class ReviewStore {
             case message(cardID: BranchReviewCard.ID, message: String)
             case quiz
             case pullRequestProposal
+            case unitTest
         }
 
         let id = UUID()
@@ -82,6 +83,7 @@ final class ReviewStore {
     var showsNotificationPermissionGuide = false
     var githubIdentity: GitHubIdentity?
     var comments: [String: [ReviewComment]] = [:]
+    var reviewRequests: [String: [ReviewRequestEvent]] = [:]
     var analyses: [String: AgentAnalysis] = [:]
     var worktreePaths: [String: String] = [:]
     var diffStats: [String: String] = [:]
@@ -90,11 +92,12 @@ final class ReviewStore {
     var isCheckingCursorConnection = false
     var agentReviewCards: [AgentReviewCard] = []
     private var hiddenReviewCommentIDsByPullRequest: [String: Set<String>] = [:]
+    private var reviewHistoryRoundsByPullRequest: [String: [Set<String>]] = [:]
     var implementationPlans: [String: ImplementationPlan] = [:]
     var agentPermissionRequest: AgentPermissionRequest?
     var branchAgentPermissionRequest: BranchAgentPermissionRequest?
     var workspaceSwitchRequest: WorkspaceSwitchRequest?
-    var agentModel = "auto" { didSet { persist() } }
+    var agentModel = "composer-2.5" { didSet { persist() } }
     var customAgentModel = "" { didSet { persist() } }
     var reviewAuthorFilter = "" { didSet { persist(); applyAuthorFilter() } }
     var monitoringEnabled = true { didSet { persist(); restartMonitoring() } }
@@ -133,6 +136,13 @@ final class ReviewStore {
     var requestedBranches: [RepositoryBranch] = []
     var selectedBranchID: String?
     var branchReviewCards: [String: [BranchReviewCard]] = [:]
+    var branchReviewMessages: [String: String] = [:]
+    var branchCardBusy: Set<UUID> = []
+    var branchCardErrors: [UUID: String] = [:]
+    var branchCardReviewed: Set<UUID> = []
+    var branchImplementationResults: [UUID: String] = [:]
+    private var branchImplementationInProgress: Set<UUID> = []
+    var implementingBranchRepositoryIDs: Set<UUID> = []
     var isLoadingBranches = false
     var isReviewingBranch = false
     var branchQuizzes: [String: [BranchQuizQuestion]] = [:]
@@ -142,17 +152,25 @@ final class ReviewStore {
     var branchPullRequestProposals: [String: PullRequestProposal] = [:]
     var branchPullRequestProposalErrors: [String: String] = [:]
     var preparingPullRequestProposalBranchIDs: Set<String> = []
+    var branchUnitTestResults: [String: UnitTestVerification] = [:]
+    var branchUnitTestMessages: [String: String] = [:]
+    var branchUnitTestErrors: [String: String] = [:]
+    var verifyingUnitTestBranchIDs: Set<String> = []
 
-    private let persistence = AppPersistence()
+    private let persistence: AppPersistence
     private let github = GitHubClient()
     private let workspaces = WorkspaceManager()
     private let localPractice = LocalPracticeRepository()
-    private let cursor = CursorAgent()
+    private var selectedAgent: CursorAgent { CursorAgent(provider: agentProvider) }
+    var agentProvider: AgentProvider = .cursor { didSet { persist() } }
+    var codexModel = "" { didSet { persist() } }
+    var claudeModel = "" { didSet { persist() } }
     private let pullRequestProposalVerifier = PullRequestProposalVerifier()
+    private let unitTestVerifier = UnitTestVerifier()
     private let cursorHistory = CursorSessionHistoryService()
     private let cursorSessionSpecStore = CursorSessionSpecStore()
     private let workspaceSpecCatalog = WorkspaceSpecCatalog()
-    private let notifications = NotificationService()
+    @ObservationIgnored private lazy var notifications = NotificationService()
     private var processedCommentIDs: Set<String> = []
     private var trustedAgentReviewIDs: Set<AgentReviewCard.ID> = []
     private var trustedBranchReviewIDs: Set<RepositoryBranch.ID> = []
@@ -170,7 +188,8 @@ final class ReviewStore {
     private var updateCheckTask: Task<Void, Never>?
     private var lastNotifiedUpdateTag = ""
 
-    init() {
+    init(persistence: AppPersistence = AppPersistence(), startsBackgroundTasks: Bool = true) {
+        self.persistence = persistence
         let state = persistence.load()
         repositories = state.repositories
         processedCommentIDs = state.processedCommentIDs
@@ -185,6 +204,7 @@ final class ReviewStore {
         analyses = state.analyses
         agentReviewCards = state.agentReviewCards
         hiddenReviewCommentIDsByPullRequest = state.hiddenReviewCommentIDsByPullRequest
+        reviewHistoryRoundsByPullRequest = state.reviewHistoryRoundsByPullRequest
         implementationPlans = state.implementationPlans
         migrateImplementationPlansToWorkCards()
         committedHeads = state.committedHeads
@@ -194,6 +214,9 @@ final class ReviewStore {
                 worktreePaths[key] = repository.localPath
             }
         }
+        agentProvider = state.agentProvider
+        codexModel = state.codexModel
+        claudeModel = state.claudeModel
         agentModel = state.agentModel
         customAgentModel = state.customAgentModel
         reviewAuthorFilter = state.reviewAuthorFilter
@@ -207,11 +230,16 @@ final class ReviewStore {
         updatesEnabled = state.updatesEnabled
         lastNotifiedUpdateTag = state.lastNotifiedUpdateTag
         requestedBranches = state.requestedBranches
+        branchReviewCards = state.branchReviewCards
+        branchCardReviewed = state.branchCardReviewed
+        branchImplementationResults = state.branchImplementationResults
+        branchUnitTestResults = state.branchUnitTestResults
+        branchImplementationInProgress = state.branchImplementationInProgress
         cursorSpecSidebarCache = state.cursorSpecSidebarCache
         automaticCursorSessionClassification = state.automaticCursorSessionClassification
         automaticReviewAnalysis = state.automaticReviewAnalysis
         recoverInterruptedWork()
-        Task { await startup() }
+        if startsBackgroundTasks { Task { await startup() } }
     }
 
     var selectedPullRequest: PullRequest? { pullRequests.first { $0.id == selectedID } }
@@ -321,20 +349,26 @@ final class ReviewStore {
         defer { isLoadingBranches = false }
         let registeredRepositories = repositories
         let manager = workspaces
-        let result: ([RepositoryBranch], [String])
-        do {
-            result = try await background { () -> ([RepositoryBranch], [String]) in
-                var loaded: [RepositoryBranch] = []
-                var failures: [String] = []
-                for repository in registeredRepositories {
-                    do { loaded += try manager.branches(in: repository) }
-                    catch { failures.append("\(repository.fullName) 브랜치를 불러오지 못했습니다: \(error.localizedDescription)") }
+        func load(fetch: Bool) async -> ([RepositoryBranch], [String]) {
+            do {
+                return try await background { () -> ([RepositoryBranch], [String]) in
+                    var loaded: [RepositoryBranch] = []
+                    var failures: [String] = []
+                    for repository in registeredRepositories {
+                        do { loaded += try manager.branches(in: repository, fetch: fetch) }
+                        catch { failures.append("\(repository.fullName) 브랜치를 불러오지 못했습니다: \(error.localizedDescription)") }
+                    }
+                    return (loaded, failures)
                 }
-                return (loaded, failures)
+            } catch {
+                return ([], ["브랜치 목록을 불러오지 못했습니다: \(error.localizedDescription)"])
             }
-        } catch {
-            result = ([], ["브랜치 목록을 불러오지 못했습니다: \(error.localizedDescription)"])
         }
+        // Show the already-fetched origin refs immediately; a slow fetch must
+        // not keep the picker empty.
+        let cached = await load(fetch: false)
+        if !cached.0.isEmpty { repositoryBranches = cached.0 }
+        let result = await load(fetch: true)
         repositoryBranches = result.0
         if let failure = result.1.first { statusMessage = failure }
         // Preserve user-added branches, but refresh their metadata whenever
@@ -361,6 +395,10 @@ final class ReviewStore {
 
     func removeRequestedBranch(_ branch: RepositoryBranch) {
         requestedBranches.removeAll { $0.id == branch.id }
+        clearBranchCards(for: branch.id)
+        branchUnitTestResults[branch.id] = nil
+        branchUnitTestMessages[branch.id] = nil
+        branchUnitTestErrors[branch.id] = nil
         if selectedBranchID == branch.id { selectedBranchID = requestedBranches.first?.id }
         persist()
     }
@@ -368,19 +406,30 @@ final class ReviewStore {
     func branchCards(for branch: RepositoryBranch) -> [BranchReviewCard] { branchReviewCards[branch.id] ?? [] }
 
     func reviewSelectedBranch() async {
-        guard let branch = selectedBranch,
-              let repository = repositories.first(where: { $0.id == branch.repositoryID }),
-              !isReviewingBranch else { return }
+        guard let branch = selectedBranch, !isReviewingBranch,
+              !implementingBranchRepositoryIDs.contains(branch.repositoryID),
+              !branchCards(for: branch).contains(where: { branchCardBusy.contains($0.id) }) else { return }
+        guard let repository = repositories.first(where: { $0.id == branch.repositoryID }) else {
+            branchReviewMessages[branch.id] = "저장소를 찾을 수 없습니다. 저장소를 다시 등록하세요."
+            return
+        }
         isReviewingBranch = true
+        branchReviewMessages[branch.id] = "스펙과 구조를 조사한 뒤 구현과 유지보수를 검토하고 결과를 통합합니다."
         defer { isReviewingBranch = false }
         do {
             let model = effectiveAgentModel
             let isTrusted = trustedBranchReviewIDs.contains(branch.id)
-            let output = try await cursor.reviewBranch(repositoryPath: repository.localPath, branch: branch, baseBranch: repository.defaultBranch, trustWorkspace: isTrusted, model: model)
-            branchReviewCards[branch.id] = Self.makeBranchReviewCards(from: output)
+            let baseReference = branchBaseReference(for: branch, repository: repository)
+            let output = try await selectedAgent.reviewBranch(repositoryPath: repository.localPath, branch: branch, baseBranch: baseReference, trustWorkspace: isTrusted, model: model)
+            guard requestedBranches.contains(where: { $0.id == branch.id }) else { return }
+            clearBranchCards(for: branch.id)
+            branchReviewCards[branch.id] = Self.makeBranchReviewCards(from: output, reviewedSHA: branch.sha)
+            persist()
             statusMessage = "\(branch.name) 브랜치 리뷰를 분류했습니다."
+            branchReviewMessages[branch.id] = statusMessage
         } catch {
-            if let kind = permissionKind(for: error.localizedDescription) {
+            branchReviewMessages[branch.id] = "브랜치 리뷰 실패: \(error.localizedDescription)"
+            if let kind = permissionKind(for: error) {
                 branchAgentPermissionRequest = .init(kind: kind, branch: branch, action: .review, detail: error.localizedDescription)
                 return
             }
@@ -390,24 +439,91 @@ final class ReviewStore {
 
     func sendBranchMessage(cardID: BranchReviewCard.ID, branch: RepositoryBranch, message: String, recordsUserMessage: Bool = true) async {
         guard let repository = repositories.first(where: { $0.id == branch.repositoryID }),
-              let index = branchReviewCards[branch.id]?.firstIndex(where: { $0.id == cardID }) else { return }
+              let index = branchReviewCards[branch.id]?.firstIndex(where: { $0.id == cardID }),
+              !branchCardBusy.contains(cardID) else { return }
+        branchCardBusy.insert(cardID)
+        branchCardErrors[cardID] = nil
+        branchCardReviewed.remove(cardID)
+        defer { branchCardBusy.remove(cardID) }
         if recordsUserMessage { branchReviewCards[branch.id]?[index].messages.append(.init(role: .user, body: message)) }
         branchReviewCards[branch.id]?[index].updatedAt = .now
         let card = branchReviewCards[branch.id]![index]
+        persist()
         do {
             let model = effectiveAgentModel
             let isTrusted = trustedBranchReviewIDs.contains(branch.id)
-            let response = try await background { try self.cursor.askAboutBranch(repositoryPath: repository.localPath, branch: branch, card: card, question: message, trustWorkspace: isTrusted, model: model) }
+            let response = try await selectedAgent.askAboutBranch(repositoryPath: repository.localPath, branch: branch, card: card, question: message, trustWorkspace: isTrusted, model: model)
             guard let updated = branchReviewCards[branch.id]?.firstIndex(where: { $0.id == cardID }) else { return }
             branchReviewCards[branch.id]?[updated].messages.append(.init(role: .agent, body: response))
+            branchCardReviewed.insert(cardID)
             branchReviewCards[branch.id]?[updated].updatedAt = .now
+            persist()
         } catch {
-            if let kind = permissionKind(for: error.localizedDescription) {
+            guard branchReviewCards[branch.id]?.contains(where: { $0.id == cardID }) == true else { return }
+            if let kind = permissionKind(for: error) {
                 branchAgentPermissionRequest = .init(kind: kind, branch: branch, action: .message(cardID: cardID, message: message), detail: error.localizedDescription)
                 return
             }
-            guard let updated = branchReviewCards[branch.id]?.firstIndex(where: { $0.id == cardID }) else { return }
-            branchReviewCards[branch.id]?[updated].messages.append(.init(role: .agent, body: "대화 요청에 실패했습니다. \(error.localizedDescription)"))
+            branchCardErrors[cardID] = "대화 요청에 실패했습니다. \(error.localizedDescription)"
+        }
+    }
+
+    static func branchImplementationRequest(card: BranchReviewCard) -> String {
+        let requests = card.messages.filter { $0.role == .user }.map(\.body).joined(separator: "\n\n")
+        let conclusion = card.messages.last(where: { $0.role == .agent })?.body ?? "판단 없음"
+        return """
+        사용자 요청은 이전 에이전트 제안과 원문 리뷰보다 우선하며 나중 요청이 우선한다. 제외·보류 항목은 구현하지 말고 범위가 불명확하면 질문하라.
+
+        ## 사용자 추가 요청 및 제외 범위 (시간순)
+        \(requests.isEmpty ? "추가 요청 없음" : requests)
+
+        ## 최신 판단 및 대응 계획
+        \(conclusion)
+
+        ## 검토 카드 (참고 자료)
+        \(card.title)
+        \(card.details)
+        """
+    }
+
+    func implementBranchCard(_ card: BranchReviewCard, branch: RepositoryBranch, request: String) async {
+        guard branchCardReviewed.contains(card.id), !branchCardBusy.contains(card.id),
+              !implementingBranchRepositoryIDs.contains(branch.repositoryID),
+              branchReviewCards[branch.id]?.contains(where: { $0.id == card.id && $0.reviewedSHA == card.reviewedSHA }) == true,
+              let repository = repositories.first(where: { $0.id == branch.repositoryID }),
+              !request.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        implementingBranchRepositoryIDs.insert(branch.repositoryID)
+        branchCardBusy.insert(card.id)
+        branchImplementationInProgress.insert(card.id)
+        branchCardErrors[card.id] = nil
+        branchImplementationResults[card.id] = "작업 폴더와 검토 커밋을 확인하는 중입니다."
+        persist()
+        defer { implementingBranchRepositoryIDs.remove(branch.repositoryID); branchCardBusy.remove(card.id); branchImplementationInProgress.remove(card.id); persist() }
+        do {
+            let path = repository.localPath
+            let sha = try await background { try self.workspaces.validateBranchReviewWorkspace(at: path, branch: branch, reviewedSHA: card.reviewedSHA) }
+            branchImplementationResults[card.id] = "\(branch.name) 브랜치에서 에이전트가 구현 중입니다."
+            let model = effectiveAgentModel
+            let agent = selectedAgent
+            let result = try await background { try agent.implementBranch(workspacePath: path, branch: branch, reviewedSHA: sha, request: request, model: model) }
+            if branchReviewCards[branch.id]?.contains(where: { $0.id == card.id }) == true {
+                branchImplementationResults[card.id] = result.isEmpty ? "구현 명령이 종료되었습니다. 변경 사항과 검증 결과를 확인하세요." : result
+            }
+        } catch {
+            if branchReviewCards[branch.id]?.contains(where: { $0.id == card.id }) == true {
+                branchCardErrors[card.id] = "구현 실패: \(error.localizedDescription)"
+                branchImplementationResults[card.id] = "구현 실패: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func clearBranchCards(for branchID: String) {
+        let ids = Set((branchReviewCards.removeValue(forKey: branchID) ?? []).map(\.id))
+        branchCardReviewed.subtract(ids)
+        branchImplementationInProgress.subtract(ids)
+        for id in ids {
+            branchCardErrors[id] = nil
+            branchImplementationResults[id] = nil
         }
     }
 
@@ -432,9 +548,10 @@ final class ReviewStore {
         defer { preparingPullRequestProposalBranchIDs.remove(branch.id) }
         do {
             let model = effectiveAgentModel
+            let agent = selectedAgent
             let isTrusted = trustedBranchReviewIDs.contains(branch.id)
             let proposal = try await background {
-                let draft = try self.cursor.preparePullRequest(
+                let draft = try agent.preparePullRequest(
                     repositoryPath: repository.localPath,
                     branch: branch,
                     defaultBranch: repository.defaultBranch,
@@ -449,7 +566,7 @@ final class ReviewStore {
             statusMessage = "\(proposal.skillName) 스킬로 PR 요청 내용을 준비했습니다."
             return proposal
         } catch {
-            if let kind = permissionKind(for: error.localizedDescription) {
+            if let kind = permissionKind(for: error) {
                 branchAgentPermissionRequest = .init(kind: kind, branch: branch, action: .pullRequestProposal, detail: error.localizedDescription)
                 return nil
             }
@@ -501,6 +618,65 @@ final class ReviewStore {
         }
     }
 
+    private func branchBaseReference(for branch: RepositoryBranch, repository: RegisteredRepository) -> String {
+        let base = branchPullRequestProposals[branch.id]?.base ?? repository.defaultBranch
+        return repository.isLocalPractice == true ? base : "refs/remotes/\(repository.remoteName)/\(base)"
+    }
+
+    func isVerifyingUnitTests(for branch: RepositoryBranch) -> Bool {
+        verifyingUnitTestBranchIDs.contains(branch.id)
+    }
+
+    /// PR gate: the stored result must still describe this branch head and must not have failed.
+    func isUnitTestPassed(for branch: RepositoryBranch) -> Bool {
+        branchUnitTestResults[branch.id]?.satisfies(branchSHA: branch.sha) == true
+    }
+
+    /// Generates NUnit tests for the branch's changed C# files, validates them, and
+    /// commits/pushes the passing ones to the origin branch (never touching the work folder).
+    func verifyUnitTests(for branch: RepositoryBranch) async {
+        guard !verifyingUnitTestBranchIDs.contains(branch.id), !isReviewingBranch,
+              !implementingBranchRepositoryIDs.contains(branch.repositoryID) else { return }
+        guard let repository = repositories.first(where: { $0.id == branch.repositoryID }) else {
+            branchUnitTestErrors[branch.id] = "저장소를 찾을 수 없습니다. 저장소를 다시 등록하세요."
+            return
+        }
+        verifyingUnitTestBranchIDs.insert(branch.id)
+        branchUnitTestErrors[branch.id] = nil
+        branchUnitTestMessages[branch.id] = "변경된 C# 파일에서 UnitTest 대상을 찾는 중입니다."
+        defer { verifyingUnitTestBranchIDs.remove(branch.id) }
+        do {
+            let model = effectiveAgentModel
+            let isTrusted = trustedBranchReviewIDs.contains(branch.id)
+            let baseReference = branchBaseReference(for: branch, repository: repository)
+            let cursor = selectedAgent, workspaces = workspaces, verifier = unitTestVerifier
+            let verification = try await background {
+                try verifier.verify(
+                    repository: repository, branch: branch, baseReference: baseReference,
+                    developerName: (try? workspaces.developerName(at: repository.localPath)) ?? "개발자",
+                    generate: { try cursor.generateUnitTest(repositoryPath: repository.localPath, request: $0, trustWorkspace: isTrusted, model: model) },
+                    progress: { message in Task { @MainActor in self.branchUnitTestMessages[branch.id] = message } }
+                )
+            }
+            guard requestedBranches.contains(where: { $0.id == branch.id }) else { return }
+            branchUnitTestResults[branch.id] = verification
+            if verification.pushed, let index = requestedBranches.firstIndex(where: { $0.id == branch.id }) {
+                requestedBranches[index].sha = String(verification.resultSHA.prefix(branch.sha.count))
+            }
+            persist()
+            branchUnitTestMessages[branch.id] = verification.summary
+            statusMessage = "\(branch.name) UnitTest 검증: \(verification.summary)"
+        } catch {
+            if let kind = permissionKind(for: error) {
+                branchAgentPermissionRequest = .init(kind: kind, branch: branch, action: .unitTest, detail: error.localizedDescription)
+                return
+            }
+            branchUnitTestMessages[branch.id] = nil
+            branchUnitTestErrors[branch.id] = "UnitTest 검증 실패: \(error.localizedDescription)"
+            statusMessage = "UnitTest 검증 실패: \(error.localizedDescription)"
+        }
+    }
+
     func makeBranchQuiz(for branch: RepositoryBranch) async -> [BranchQuizQuestion]? {
         guard let repository = repositories.first(where: { $0.id == branch.repositoryID }),
               !isMakingBranchQuiz else { return branchQuizzes[branch.id] }
@@ -513,8 +689,9 @@ final class ReviewStore {
         defer { isMakingBranchQuiz = false }
         do {
             let model = effectiveAgentModel
+            let agent = selectedAgent
             let isTrusted = trustedBranchReviewIDs.contains(branch.id)
-            let generation = try await background { try self.cursor.makeBranchQuiz(repositoryPath: repository.localPath, branch: branch, reviewCards: cards, trustWorkspace: isTrusted, model: model) }
+            let generation = try await background { try agent.makeBranchQuiz(repositoryPath: repository.localPath, branch: branch, reviewCards: cards, trustWorkspace: isTrusted, model: model) }
             branchQuizErrors[branch.id] = nil
             if generation.needsQuiz {
                 branchQuizNotices[branch.id] = nil
@@ -526,7 +703,7 @@ final class ReviewStore {
             statusMessage = "이 브랜치는 퀴즈가 필요하지 않습니다."
             return nil
         } catch {
-            if let kind = permissionKind(for: error.localizedDescription) {
+            if let kind = permissionKind(for: error) {
                 branchAgentPermissionRequest = .init(kind: kind, branch: branch, action: .quiz, detail: error.localizedDescription)
                 return nil
             }
@@ -576,11 +753,13 @@ final class ReviewStore {
                 _ = await makeBranchQuiz(for: request.branch)
             case .pullRequestProposal:
                 _ = await preparePullRequestProposal(for: request.branch, force: true)
+            case .unitTest:
+                await verifyUnitTests(for: request.branch)
             }
         }
     }
 
-    private static func makeBranchReviewCards(from output: String) -> [BranchReviewCard] {
+    private static func makeBranchReviewCards(from output: String, reviewedSHA: String) -> [BranchReviewCard] {
         let mapping: [(String, BranchReviewCategory)] = [("차단", .blocker), ("확인 필요", .concern), ("개선", .improvement), ("통과", .passed)]
         return mapping.map { title, category in
             let pattern = "(?s)##\\s*\(NSRegularExpression.escapedPattern(for: title))\\s*(.*?)(?=\\n##\\s|\\z)"
@@ -590,7 +769,7 @@ final class ReviewStore {
                 content = String(output[bodyRange]).trimmingCharacters(in: .whitespacesAndNewlines)
             } else { content = "특이사항 없음" }
             let firstHeading = content.split(separator: "\n").first(where: { $0.hasPrefix("###") })?.replacingOccurrences(of: "#", with: "").trimmingCharacters(in: .whitespaces) ?? title
-            return BranchReviewCard(category: category, title: firstHeading, summary: String(content.replacingOccurrences(of: "\n", with: " ").prefix(130)), details: content)
+            return BranchReviewCard(category: category, title: firstHeading, summary: String(content.replacingOccurrences(of: "\n", with: " ").prefix(130)), details: content, reviewedSHA: reviewedSHA)
         }
     }
     func canCommit(for card: AgentReviewCard, pullRequest: PullRequest) -> Bool {
@@ -664,7 +843,8 @@ final class ReviewStore {
         defer { isSummarizingCursorSessionID = nil }
         do {
             let model = effectiveAgentModel
-            let summary = try await background { try self.cursor.summarize(session: session, model: model) }
+            let agent = selectedAgent
+            let summary = try await background { try agent.summarize(session: session, model: model) }
             cursorSessionSummaries[session.id] = summary
         } catch {
             cursorHistoryStatus = "세션 요약 실패: \(error.localizedDescription)"
@@ -701,8 +881,9 @@ final class ReviewStore {
             do {
                 let documents = try await background { self.workspaceSpecCatalog.documents(in: session.workspacePath) }
                 let model = effectiveAgentModel
+                let agent = selectedAgent
                 let classification = try await background {
-                    try self.cursor.classifySpec(session: session, documents: documents, model: model)
+                    try agent.classifySpec(session: session, documents: documents, model: model)
                 }
                 let record = CursorSessionSpec(
                     sessionID: session.id,
@@ -795,7 +976,7 @@ final class ReviewStore {
     func checkCursorConnection() async {
         guard !isCheckingCursorConnection else { return }
         isCheckingCursorConnection = true
-        let agent = cursor
+        let agent = CursorAgent()
         cursorConnection = await Task.detached(priority: .userInitiated) { agent.connection() }.value
         isCheckingCursorConnection = false
     }
@@ -810,7 +991,7 @@ final class ReviewStore {
 
     func startCursorLogin() {
         do {
-            try cursor.startLogin()
+            try CursorAgent().startLogin()
             cursorConnection = CursorConnection(state: .needsLogin, detail: "Terminal과 브라우저에서 Cursor 인증을 완료한 뒤 ‘다시 연결하기’를 선택하세요.")
         } catch {
             cursorConnection = CursorConnection(state: .unavailable, detail: error.localizedDescription)
@@ -894,6 +1075,7 @@ final class ReviewStore {
         committedHeads = committedHeads.filter { !$0.key.hasPrefix(repositoryPrefix) }
         postedReReviewCommentTokens = postedReReviewCommentTokens.filter { !$0.hasPrefix(repositoryPrefix) }
         hiddenReviewCommentIDsByPullRequest = hiddenReviewCommentIDsByPullRequest.filter { !$0.key.hasPrefix(repositoryPrefix) }
+        reviewHistoryRoundsByPullRequest = reviewHistoryRoundsByPullRequest.filter { !$0.key.hasPrefix(repositoryPrefix) }
         agentReviewCards.removeAll { $0.repository == repository.fullName }
         selectedID = pullRequests.contains(where: { $0.id == selectedID }) ? selectedID : pullRequests.first?.id
         persist()
@@ -922,6 +1104,7 @@ final class ReviewStore {
                     let isNewPullRequest = !knownPullRequestIDs.contains(prKey)
                     let newComments = try await background { try self.github.comments(repository: repository.fullName, number: pr.number) }
                     comments[worktreeKey(pr)] = newComments
+                    reviewRequests[prKey] = try? await background { try self.github.reviewRequests(repository: repository.fullName, number: pr.number) }
                     var enrichedPR = pr
                     enrichedPR.commentCount = newComments.count
                     if let latestReview = newComments.last(where: { $0.kind == .review }) {
@@ -1006,7 +1189,7 @@ final class ReviewStore {
             let workspaceSHA = try await background { try self.workspaces.verifiedHead(path, expectedSHA: pullRequest.headSHA, expectedBranch: pullRequest.headBranch) }
             setActiveWorkspace(path, for: pullRequest)
             let prComments = comments[worktreeKey(pullRequest)] ?? []
-            let agent = cursor
+            let agent = selectedAgent
             let model = effectiveAgentModel
             let analysisPullRequest = pullRequestWithCurrentWorkspaceSHA(pullRequest, sha: workspaceSHA)
             let result = try await agent.analyze(worktreePath: path, pullRequest: analysisPullRequest, comments: prComments, model: model)
@@ -1213,7 +1396,7 @@ final class ReviewStore {
         let cards = agentCards(for: pullRequest)
         let plans = implementationPlans(for: pullRequest)
         let workspace = workspaces
-        let agent = cursor
+        let agent = selectedAgent
         let model = effectiveAgentModel
         do {
             let commits = try await background {
@@ -1416,6 +1599,22 @@ final class ReviewStore {
             }
     }
 
+    func previousAgentCardRounds(for pullRequest: PullRequest) -> [[AgentReviewCard]] {
+        let key = worktreeKey(pullRequest)
+        return Self.previousAgentCardRounds(for: pullRequest, cards: agentReviewCards, hidden: hiddenReviewCommentIDsByPullRequest[key, default: []], rounds: reviewHistoryRoundsByPullRequest[key, default: []])
+    }
+
+    static func previousAgentCardRounds(for pullRequest: PullRequest, cards: [AgentReviewCard], hidden: Set<String>, rounds: [Set<String>]) -> [[AgentReviewCard]] {
+        let legacy = hidden.subtracting(rounds.reduce(into: Set<String>()) { $0.formUnion($1) })
+        let allRounds = (legacy.isEmpty ? [] : [legacy]) + rounds
+        return allRounds.reversed().compactMap { ids in
+            let cards = cards.filter {
+                $0.repository == pullRequest.repository && $0.pullRequestNumber == pullRequest.number && ids.contains($0.commentID)
+            }.sorted { $0.commentID == $1.commentID ? ($0.sectionID ?? "") < ($1.sectionID ?? "") : $0.commentID < $1.commentID }
+            return cards.isEmpty ? nil : cards
+        }
+    }
+
     func agentCard(id: AgentReviewCard.ID) -> AgentReviewCard? {
         agentReviewCards.first { $0.id == id }
     }
@@ -1430,7 +1629,8 @@ final class ReviewStore {
     private func createAnalysisCards(for pullRequest: PullRequest, comments: [ReviewComment]) -> [AgentReviewCard.ID] {
         var sectionIndex = 0
         var created: [AgentReviewCard.ID] = []
-        let commentIDs = Set(comments.map(\.id))
+        let hiddenIDs = hiddenReviewCommentIDsByPullRequest[worktreeKey(pullRequest), default: []]
+        let commentIDs = Set(comments.filter { !hiddenIDs.contains($0.id) }.map(\.id))
         let validSectionKeys = Set(comments.flatMap { comment in
             comment.sections.map { "\(comment.id)|\($0.id)" }
         })
@@ -1447,8 +1647,16 @@ final class ReviewStore {
                 !validSectionKeys.contains(sectionKey)
         }
         for comment in comments {
+            if hiddenIDs.contains(comment.id) {
+                sectionIndex += comment.sections.count
+                continue
+            }
             for section in comment.sections {
-                let reviewID = "\(pullRequest.id.uuidString.lowercased())_review_\(sectionIndex)"
+                var reviewID = "\(pullRequest.id.uuidString.lowercased())_review_\(sectionIndex)"
+                while agentReviewCards.contains(where: { $0.reviewID == reviewID && ($0.commentID != comment.id || $0.sectionID != section.id) }) {
+                    sectionIndex += 1
+                    reviewID = "\(pullRequest.id.uuidString.lowercased())_review_\(sectionIndex)"
+                }
                 sectionIndex += 1
                 let alreadyExists = agentReviewCards.contains {
                     $0.repository == pullRequest.repository &&
@@ -1479,7 +1687,8 @@ final class ReviewStore {
     /// comments after a sectioning-rule improvement. User-created cards are
     /// preserved because they can include a manual conversation.
     func rebuildAutomaticReviewCards(for pullRequest: PullRequest) {
-        let currentComments = comments(for: pullRequest)
+        let hiddenIDs = hiddenReviewCommentIDsByPullRequest[worktreeKey(pullRequest), default: []]
+        let currentComments = comments(for: pullRequest).filter { !hiddenIDs.contains($0.id) }
         guard !currentComments.isEmpty else {
             statusMessage = "다시 분류할 PR 코멘트가 없습니다. 먼저 새로 고침을 실행하세요."
             return
@@ -1498,9 +1707,10 @@ final class ReviewStore {
         agentReviewCards.removeAll {
             $0.repository == pullRequest.repository &&
             $0.pullRequestNumber == pullRequest.number &&
-            $0.reviewID != nil
+            $0.reviewID != nil &&
+            !hiddenIDs.contains($0.commentID)
         }
-        let rebuiltCount = createAnalysisCards(for: pullRequest, comments: currentComments).count
+        let rebuiltCount = createAnalysisCards(for: pullRequest, comments: comments(for: pullRequest)).count
         persist()
         statusMessage = "개선된 규칙으로 자동 검토카드 \(rebuiltCount)개를 다시 만들었습니다. 분석은 '분석 시작'을 눌러야 진행됩니다."
     }
@@ -1629,7 +1839,7 @@ final class ReviewStore {
             plan.baselineChangedFiles = baselineFiles
             implementationPlans[key] = plan
             persist()
-            let agent = cursor
+            let agent = selectedAgent
             let model = effectiveAgentModel
             let implementationPlan = plan
             let implementationPullRequest = pullRequestWithCurrentWorkspaceSHA(pullRequest, sha: workspaceSHA)
@@ -1677,6 +1887,11 @@ final class ReviewStore {
     /// is restarted, their old in-progress labels cannot be treated as live.
     private func recoverInterruptedWork() {
         var changed = false
+        for id in branchImplementationInProgress {
+            branchImplementationResults[id] = "앱이 다시 시작되어 이전 구현의 완료 여부를 확인할 수 없습니다. 변경 사항과 테스트 결과를 확인한 뒤 다시 진행하세요."
+            changed = true
+        }
+        branchImplementationInProgress.removeAll()
         for index in agentReviewCards.indices where agentReviewCards[index].status == .reviewing {
             agentReviewCards[index].status = .failed
             agentReviewCards[index].updatedAt = .now
@@ -1833,7 +2048,7 @@ final class ReviewStore {
             return fallback
         }
         do {
-            let agent = cursor
+            let agent = selectedAgent
             let model = effectiveAgentModel
             let draft = try await background {
                 try agent.suggestReviewResponse(
@@ -1954,7 +2169,8 @@ final class ReviewStore {
         agentReviewCards[index].updatedAt = .now
         let card = agentReviewCards[index]
         persist()
-        let agent = cursor
+        let agent = selectedAgent
+        let model = effectiveAgentModel
         do {
             let key = worktreeKey(pullRequest)
             let path: String
@@ -1968,7 +2184,6 @@ final class ReviewStore {
                 setActiveWorkspace(path, for: pullRequest)
             }
             let isTrusted = trustedAgentReviewIDs.contains(id)
-            let model = effectiveAgentModel
             let analysisPullRequest = pullRequestWithCurrentWorkspaceSHA(pullRequest, sha: workspaceSHA)
             // Hidden starter messages cover initial review and explicit retries; follow-ups stay in one session.
             let answer = try await agent.ask(repositoryPath: path, pullRequest: analysisPullRequest, card: card, question: question, trustWorkspace: isTrusted, model: model, reviewsComment: hidesUserMessage)
@@ -1979,7 +2194,7 @@ final class ReviewStore {
             persist()
         } catch {
             guard let updatedIndex = agentReviewCards.firstIndex(where: { $0.id == id }) else { return }
-            if let permissionKind = permissionKind(for: error.localizedDescription) {
+            if let permissionKind = permissionKind(for: error) {
                 agentReviewCards[updatedIndex].status = permissionKind == .workspaceTrust ? .workspaceTrustRequired : .permissionRequired
                 agentReviewCards[updatedIndex].updatedAt = .now
                 agentPermissionRequest = AgentPermissionRequest(kind: permissionKind, cardID: id, pullRequest: pullRequest, question: question, hidesUserMessage: hidesUserMessage, detail: error.localizedDescription)
@@ -2025,8 +2240,9 @@ final class ReviewStore {
         }
     }
 
-    private func permissionKind(for message: String) -> AgentPermissionRequest.Kind? {
-        let normalized = message.lowercased()
+    private func permissionKind(for error: Error) -> AgentPermissionRequest.Kind? {
+        guard agentProvider == .cursor, !(error is ExternalAgentError) else { return nil }
+        let normalized = error.localizedDescription.lowercased()
         if normalized.contains("workspace trust") { return .workspaceTrust }
         if normalized.contains("not logged in") || normalized.contains("login required") || normalized.contains("authentication required") { return .cursorLogin }
         if normalized.contains("permission") || normalized.contains("approval required") || normalized.contains("access denied") || normalized.contains("authorization required") { return .other }
@@ -2034,6 +2250,11 @@ final class ReviewStore {
     }
 
     var effectiveAgentModel: String {
+        switch agentProvider {
+        case .codex: return codexModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        case .claude: return claudeModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        case .cursor: break
+        }
         let custom = customAgentModel.trimmingCharacters(in: .whitespacesAndNewlines)
         return custom.isEmpty ? agentModel : custom
     }
@@ -2041,6 +2262,7 @@ final class ReviewStore {
     func worktreePath(for pr: PullRequest) -> String? { worktreePaths[worktreeKey(pr)] }
     func analysis(for pr: PullRequest) -> AgentAnalysis? { analyses[worktreeKey(pr)] }
     func comments(for pr: PullRequest) -> [ReviewComment] { comments[worktreeKey(pr)] ?? [] }
+    func reviewRequests(for pr: PullRequest) -> [ReviewRequestEvent] { reviewRequests[worktreeKey(pr)] ?? [] }
     func diffStat(for pr: PullRequest) -> String? { diffStats[worktreeKey(pr)] }
     func isMerging(_ pullRequest: PullRequest) -> Bool { mergingPullRequestIDs.contains(worktreeKey(pullRequest)) }
     func refresh() { Task { await refresh() } }
@@ -2234,11 +2456,10 @@ final class ReviewStore {
     private func worktreeKey(_ pr: PullRequest) -> String { "\(pr.repository)#\(pr.number)" }
     private func hideCurrentReviewCards(for pullRequest: PullRequest) {
         let key = worktreeKey(pullRequest)
-        let currentCommentIDs = Set(agentReviewCards.compactMap { card in
-            card.repository == pullRequest.repository && card.pullRequestNumber == pullRequest.number ? card.commentID : nil
-        })
+        let currentCommentIDs = Set(agentCards(for: pullRequest).map(\.commentID))
         guard !currentCommentIDs.isEmpty else { return }
         hiddenReviewCommentIDsByPullRequest[key, default: []].formUnion(currentCommentIDs)
+        reviewHistoryRoundsByPullRequest[key, default: []].append(currentCommentIDs)
     }
 
     /// Agent prompts describe the checked-out commit, while remote validation
@@ -2284,6 +2505,17 @@ final class ReviewStore {
         guard parts.count == 2, parts.allSatisfy({ !$0.isEmpty && !$0.contains(" ") }) else { return nil }
         return value
     }
-    private func persist() { persistence.save(.init(repositories: repositories, processedCommentIDs: processedCommentIDs, knownPullRequestIDs: knownPullRequestIDs, unreadPullRequestIDs: unreadPullRequestIDs, unreadCommentIDs: unreadCommentIDs, hasEstablishedNotificationBaseline: hasEstablishedNotificationBaseline, approvedPullRequestIDs: approvedPullRequestIDs, hasEstablishedApprovalBaseline: hasEstablishedApprovalBaseline, monitoringEnabled: monitoringEnabled, monitoringInterval: monitoringInterval, analyses: analyses, agentReviewCards: agentReviewCards, hiddenReviewCommentIDsByPullRequest: hiddenReviewCommentIDsByPullRequest, implementationPlans: implementationPlans, committedHeads: committedHeads, postedReReviewCommentTokens: postedReReviewCommentTokens, agentModel: agentModel, customAgentModel: customAgentModel, reviewAuthorFilter: reviewAuthorFilter, petVisible: petVisible, petSize: petSize, petReduceMotion: petReduceMotion, latestPetNotification: latestPetNotification, hasCompletedOnboarding: hasCompletedOnboarding, skippedOnboardingSteps: skippedOnboardingSteps, projectCopyFolder: projectCopyFolder, updateRepository: updateRepository, updatesEnabled: updatesEnabled, lastNotifiedUpdateTag: lastNotifiedUpdateTag, requestedBranches: requestedBranches, cursorSpecSidebarCache: cursorSpecSidebarCache, automaticCursorSessionClassification: automaticCursorSessionClassification, automaticReviewAnalysis: automaticReviewAnalysis)) }
+    private func persist() {
+        var state = PersistedState(repositories: repositories, processedCommentIDs: processedCommentIDs, knownPullRequestIDs: knownPullRequestIDs, unreadPullRequestIDs: unreadPullRequestIDs, unreadCommentIDs: unreadCommentIDs, hasEstablishedNotificationBaseline: hasEstablishedNotificationBaseline, approvedPullRequestIDs: approvedPullRequestIDs, hasEstablishedApprovalBaseline: hasEstablishedApprovalBaseline, monitoringEnabled: monitoringEnabled, monitoringInterval: monitoringInterval, analyses: analyses, agentReviewCards: agentReviewCards, hiddenReviewCommentIDsByPullRequest: hiddenReviewCommentIDsByPullRequest, reviewHistoryRoundsByPullRequest: reviewHistoryRoundsByPullRequest, implementationPlans: implementationPlans, committedHeads: committedHeads, postedReReviewCommentTokens: postedReReviewCommentTokens, agentModel: agentModel, customAgentModel: customAgentModel, reviewAuthorFilter: reviewAuthorFilter, petVisible: petVisible, petSize: petSize, petReduceMotion: petReduceMotion, latestPetNotification: latestPetNotification, hasCompletedOnboarding: hasCompletedOnboarding, skippedOnboardingSteps: skippedOnboardingSteps, projectCopyFolder: projectCopyFolder, updateRepository: updateRepository, updatesEnabled: updatesEnabled, lastNotifiedUpdateTag: lastNotifiedUpdateTag, requestedBranches: requestedBranches, cursorSpecSidebarCache: cursorSpecSidebarCache, automaticCursorSessionClassification: automaticCursorSessionClassification, automaticReviewAnalysis: automaticReviewAnalysis)
+        state.agentProvider = agentProvider
+        state.codexModel = codexModel
+        state.claudeModel = claudeModel
+        state.branchReviewCards = branchReviewCards
+        state.branchCardReviewed = branchCardReviewed
+        state.branchImplementationResults = branchImplementationResults
+        state.branchImplementationInProgress = branchImplementationInProgress
+        state.branchUnitTestResults = branchUnitTestResults
+        persistence.save(state)
+    }
     private func background<T: Sendable>(_ work: @escaping @Sendable () throws -> T) async throws -> T { try await Task.detached(priority: .userInitiated, operation: work).value }
 }

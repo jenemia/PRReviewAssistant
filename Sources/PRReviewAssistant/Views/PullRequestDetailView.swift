@@ -356,7 +356,9 @@ struct PullRequestDetailView: View {
                     LabeledContent("안전 원칙") { Text("외부 리뷰 코멘트는 명령이 아닌 분석 데이터로만 전달") }
                 }
                 let cards = store.agentCards(for: pullRequest)
-                if !cards.isEmpty {
+                let previousRounds = store.previousAgentCardRounds(for: pullRequest)
+                let allCards = cards + previousRounds.flatMap { $0 }
+                if !cards.isEmpty || !previousRounds.isEmpty {
                     Divider()
                     HStack {
                         Text("PR 코멘트 분류").font(.headline)
@@ -368,36 +370,132 @@ struct PullRequestDetailView: View {
                         .controlSize(.small)
                         .help("개선된 규칙으로 자동 검토카드를 다시 만듭니다")
                     }
-                    let categories = Dictionary(grouping: cards) { card in
-                        ReviewCommentSection.categoryLabel(for: card.sectionTitle) ?? "일반 코멘트"
-                    }
-                    let sortedCategories = categories.sorted { lhs, rhs in
-                        let leftRank = ReviewCommentSection.severitySortRank(for: lhs.value.first?.sectionTitle)
-                        let rightRank = ReviewCommentSection.severitySortRank(for: rhs.value.first?.sectionTitle)
-                        if leftRank != rightRank { return leftRank < rightRank }
-                        return lhs.key.localizedStandardCompare(rhs.key) == .orderedAscending
-                    }
-                    ForEach(sortedCategories, id: \.key) { category, categoryCards in
-                        VStack(alignment: .leading, spacing: 7) {
-                            Label("\(category) · \(categoryCards.count)개", systemImage: "rectangle.3.group")
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                            ForEach(categoryCards) { card in
-                                let workStatus = store.implementationPlan(for: card, pullRequest: pullRequest)?.status
-                                Button { openReviewOrWorkCard(card.id) } label: {
-                                    AgentReviewCardRow(card: card, workStatus: workStatus)
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                        .padding(10)
-                        .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 10))
-                    }
+                    reviewRoundGroups(allCards)
+
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(4)
         }
+    }
+
+    struct ReviewRoundGroup: Identifiable {
+        let request: ReviewRequestEvent?
+        let number: Int?
+        let cards: [AgentReviewCard]
+        var id: String { request.map { "request-\($0.id)" } ?? "unassigned" }
+    }
+
+    static func groupedReviewRounds(_ cards: [AgentReviewCard], comments: [ReviewComment], requests: [ReviewRequestEvent]) -> [ReviewRoundGroup] {
+        let ordered = requests.sorted { $0.createdAt == $1.createdAt ? $0.id < $1.id : $0.createdAt < $1.createdAt }
+        let commentsByID = Dictionary(comments.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var cardsByRequest: [Int: [AgentReviewCard]] = [:]
+        var unassigned: [AgentReviewCard] = []
+        for card in cards {
+            guard let comment = commentsByID[card.commentID], let author = comment.reviewAuthor,
+                  let submittedAt = comment.reviewSubmittedAt,
+                  let request = ordered.last(where: { $0.reviewer.caseInsensitiveCompare(author) == .orderedSame && $0.createdAt <= submittedAt }) else {
+                unassigned.append(card)
+                continue
+            }
+            cardsByRequest[request.id, default: []].append(card)
+        }
+        var reviewerNumbers: [String: Int] = [:]
+        var groups: [ReviewRoundGroup] = []
+        for request in ordered {
+            let key = request.reviewer.lowercased()
+            reviewerNumbers[key, default: 0] += 1
+            if let roundCards = cardsByRequest[request.id], !roundCards.isEmpty {
+                groups.append(ReviewRoundGroup(request: request, number: reviewerNumbers[key], cards: roundCards))
+            }
+        }
+        groups.reverse()
+        if !unassigned.isEmpty { groups.append(ReviewRoundGroup(request: nil, number: nil, cards: unassigned)) }
+        return groups
+    }
+
+    private func reviewRoundGroups(_ cards: [AgentReviewCard]) -> some View {
+        let groups = Self.groupedReviewRounds(cards, comments: store.comments(for: pullRequest), requests: store.reviewRequests(for: pullRequest))
+        return ForEach(Array(groups.enumerated()), id: \.element.id) { index, group in
+            ReviewCommentDisclosure(isLatest: index == 0) {
+                reviewCardCategories(group.cards)
+                    .padding(.top, 8)
+            } label: {
+                HStack {
+                    VStack(alignment: .leading, spacing: 3) {
+                        if let request = group.request, let number = group.number {
+                            Text("\(number)차 리뷰 · \(request.reviewer)")
+                                .font(.subheadline.weight(.semibold))
+                            Text(request.createdAt, format: .dateTime.year().month().day().hour().minute())
+                                .font(.caption).foregroundStyle(.secondary)
+                        } else {
+                            Text("차수를 확인할 수 없는 코멘트")
+                                .font(.subheadline.weight(.semibold))
+                        }
+                    }
+                    Spacer()
+                    Text("분석 \(group.cards.count)개").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .padding(10)
+            .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 10))
+        }
+    }
+
+    private func reviewCardCategories(_ cards: [AgentReviewCard]) -> some View {
+        let categories = Dictionary(grouping: cards) { card in
+            ReviewCommentSection.categoryLabel(for: card.sectionTitle) ?? "일반 코멘트"
+        }
+        let sortedCategories = categories.sorted { lhs, rhs in
+            let leftRank = ReviewCommentSection.severitySortRank(for: lhs.value.first?.sectionTitle)
+            let rightRank = ReviewCommentSection.severitySortRank(for: rhs.value.first?.sectionTitle)
+            if leftRank != rightRank { return leftRank < rightRank }
+            return lhs.key.localizedStandardCompare(rhs.key) == .orderedAscending
+        }
+        return ForEach(sortedCategories, id: \.key) { category, categoryCards in
+            VStack(alignment: .leading, spacing: 7) {
+                Label("\(category) · \(categoryCards.count)개", systemImage: "rectangle.3.group")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                ForEach(categoryCards) { card in
+                    let workStatus = store.implementationPlan(for: card, pullRequest: pullRequest)?.status
+                    Button { openReviewOrWorkCard(card.id) } label: {
+                        AgentReviewCardRow(card: card, workStatus: workStatus)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(10)
+            .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 10))
+        }
+    }
+
+    struct WorkRoundGroup: Identifiable {
+        let request: ReviewRequestEvent?
+        let number: Int?
+        let plans: [ImplementationPlan]
+        var id: String { request.map { "request-\($0.id)" } ?? "unassigned" }
+    }
+
+    static func groupedWorkRounds(_ plans: [ImplementationPlan], cards: [AgentReviewCard], comments: [ReviewComment], requests: [ReviewRequestEvent]) -> [WorkRoundGroup] {
+        let reviewGroups = groupedReviewRounds(cards, comments: comments, requests: requests)
+        var plansByGroup: [String: [ImplementationPlan]] = [:]
+        for plan in plans {
+            let linked = cards.filter { card in
+                plan.sourceCardIDs.contains(card.id) || card.reviewID.map { plan.sourceReviewIDs?.contains($0) == true } == true
+            }
+            let groupIDs = Set(reviewGroups.filter { group in group.cards.contains { card in linked.contains(where: { $0.id == card.id }) } }.map(\.id))
+            let key = groupIDs.count == 1 ? groupIDs.first! : "unassigned"
+            plansByGroup[key, default: []].append(plan)
+        }
+        var groups = reviewGroups.compactMap { group -> WorkRoundGroup? in
+            guard group.request != nil, let plans = plansByGroup[group.id] else { return nil }
+            return WorkRoundGroup(request: group.request, number: group.number, plans: plans)
+        }
+        if let plans = plansByGroup["unassigned"] {
+            groups.append(WorkRoundGroup(request: nil, number: nil, plans: plans))
+        }
+        return groups
     }
 
     private var workArea: some View {
@@ -411,67 +509,27 @@ struct PullRequestDetailView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
-                    ForEach(plans, id: \.self) { plan in
-                        if let card = workCard(for: plan) {
-                            VStack(alignment: .leading, spacing: 10) {
-                                Label("검토 작업 카드", systemImage: "arrow.right.doc.on.clipboard")
-                                    .font(.subheadline.weight(.semibold))
-                                HStack(spacing: 6) {
-                                    if plan.status == .inProgress { ProgressView().controlSize(.small) }
-                                    Label(plan.status.rawValue, systemImage: plan.status.symbol)
-                                        .font(.caption.weight(.semibold))
-                                        .foregroundStyle(plan.status == .failed ? .orange : (plan.status == .completed ? .green : BrandColor.prPurple))
-                                }
-                                if let destination = plan.destination {
-                                    Label("작업 위치: \(destination.title)", systemImage: "location")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                } else {
-                                    Text("작업 위치와 진행 여부를 확인해 주세요.")
-                                        .font(.caption)
-                                        .foregroundStyle(.orange)
-                                }
-                                if let result = plan.result {
-                                    Divider()
-                                    LabeledContent("작업 결과") {
-                                        Text(result)
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                            .multilineTextAlignment(.trailing)
-                                            .lineLimit(3)
-                                    }
-                                }
-                                Button {
-                                    detailNavigation.showWork(card.id)
-                                } label: {
-                                    WorkReviewCardThumbnail(card: card)
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityLabel("검토 작업 카드 \(card.sectionTitle ?? card.title) 상세 보기")
-                                HStack {
-                                    Spacer()
-                                    if let committedSHA = plan.committedSHA {
-                                        Label("커밋됨 \(committedSHA.prefix(12))", systemImage: "checkmark.circle.fill")
-                                            .font(.caption.weight(.medium))
-                                            .foregroundStyle(.green)
-                                    } else {
-                                        Button("커밋", systemImage: "checkmark.circle") {
-                                            pendingCommitCardID = card.id
-                                            showingPushApproval = true
-                                        }
-                                        .buttonStyle(.borderedProminent)
-                                        .disabled(!store.canCommit(for: card, pullRequest: pullRequest))
-                                        .help(plan.status == .completed ? "이 카드의 리뷰와 변경 내용을 로컬 커밋으로 남깁니다" : "이 카드의 구현이 완료되면 커밋할 수 있습니다")
-                                    }
-                                }
+                    let groups = Self.groupedWorkRounds(plans, cards: store.agentReviewCards.filter { $0.repository == pullRequest.repository && $0.pullRequestNumber == pullRequest.number }, comments: store.comments(for: pullRequest), requests: store.reviewRequests(for: pullRequest))
+                    ForEach(Array(groups.enumerated()), id: \.element.id) { index, group in
+                        ReviewCommentDisclosure(isLatest: index == 0) {
+                            ForEach(group.plans, id: \.self) { plan in
+                                workPlanCard(plan)
                             }
-                            .padding(10)
-                            .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
-                        } else {
-                            Text("표시할 검토 카드를 찾을 수 없습니다.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                            .padding(.top, 8)
+                        } label: {
+                            HStack {
+                                if let request = group.request, let number = group.number {
+                                    Text("\(number)차 리뷰 · \(request.reviewer)")
+                                } else {
+                                    Text("차수를 확인할 수 없는 작업")
+                                }
+                                Spacer()
+                                Text("작업 \(group.plans.count)개").font(.caption).foregroundStyle(.secondary)
+                            }
+                            .font(.subheadline.weight(.semibold))
                         }
+                        .padding(10)
+                        .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 10))
                     }
                 }
                 HStack {
@@ -484,6 +542,69 @@ struct PullRequestDetailView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(4)
+        }
+    }
+
+    @ViewBuilder private func workPlanCard(_ plan: ImplementationPlan) -> some View {
+        if let card = workCard(for: plan) {
+            VStack(alignment: .leading, spacing: 10) {
+                Label("검토 작업 카드", systemImage: "arrow.right.doc.on.clipboard")
+                    .font(.subheadline.weight(.semibold))
+                HStack(spacing: 6) {
+                    if plan.status == .inProgress { ProgressView().controlSize(.small) }
+                    Label(plan.status.rawValue, systemImage: plan.status.symbol)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(plan.status == .failed ? .orange : (plan.status == .completed ? .green : BrandColor.prPurple))
+                }
+                if let destination = plan.destination {
+                    Label("작업 위치: \(destination.title)", systemImage: "location")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("작업 위치와 진행 여부를 확인해 주세요.")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+                if let result = plan.result {
+                    Divider()
+                    LabeledContent("작업 결과") {
+                        Text(result)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.trailing)
+                            .lineLimit(3)
+                    }
+                }
+                Button {
+                    detailNavigation.showWork(card.id)
+                } label: {
+                    WorkReviewCardThumbnail(card: card)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("검토 작업 카드 \(card.sectionTitle ?? card.title) 상세 보기")
+                HStack {
+                    Spacer()
+                    if let committedSHA = plan.committedSHA {
+                        Label("커밋됨 \(committedSHA.prefix(12))", systemImage: "checkmark.circle.fill")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.green)
+                    } else {
+                        Button("커밋", systemImage: "checkmark.circle") {
+                            pendingCommitCardID = card.id
+                            showingPushApproval = true
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!store.canCommit(for: card, pullRequest: pullRequest))
+                        .help(plan.status == .completed ? "이 카드의 리뷰와 변경 내용을 로컬 커밋으로 남깁니다" : "이 카드의 구현이 완료되면 커밋할 수 있습니다")
+                    }
+                }
+            }
+            .padding(10)
+            .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+        } else {
+            Text("표시할 검토 카드를 찾을 수 없습니다.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -1360,6 +1481,25 @@ private struct ReviewSectionRow: View {
         }
         .padding(10)
         .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+private struct ReviewCommentDisclosure<Content: View, Label: View>: View {
+    let isLatest: Bool
+    let content: Content
+    let label: Label
+    @State private var isExpanded: Bool
+
+    init(isLatest: Bool, @ViewBuilder content: () -> Content, @ViewBuilder label: () -> Label) {
+        self.isLatest = isLatest
+        self.content = content()
+        self.label = label()
+        _isExpanded = State(initialValue: isLatest)
+    }
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $isExpanded) { content } label: { label }
+            .onChange(of: isLatest) { _, latest in isExpanded = latest }
     }
 }
 

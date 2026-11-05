@@ -127,8 +127,11 @@ struct SettingsView: View {
 
             AgentSettingsView(store: store)
                 .tabItem { Label("LLM Agent", systemImage: "sparkles") }
+
+            SkillSettingsView()
+                .tabItem { Label("스킬", systemImage: "doc.text") }
         }
-        .frame(width: 540, height: 420)
+        .frame(width: 640, height: 460)
     }
 
 }
@@ -137,6 +140,24 @@ private struct AgentSettingsView: View {
     @Bindable var store: ReviewStore
 
     var body: some View {
+        VStack(spacing: 0) {
+            Picker("에이전트", selection: $store.agentProvider) {
+                ForEach(AgentProvider.allCases, id: \.self) { provider in
+                    Text(provider.title).tag(provider)
+                }
+            }
+            .padding()
+
+            if store.agentProvider == .cursor {
+                cursorSettings
+            } else {
+                ExternalAgentSettings(store: store, provider: store.agentProvider)
+                    .id(store.agentProvider)
+            }
+        }
+    }
+
+    private var cursorSettings: some View {
         Form {
             Section("Cursor CLI") {
                 HStack(spacing: 10) {
@@ -187,12 +208,15 @@ private struct AgentSettingsView: View {
 
             Section("모델") {
                 Picker("Cursor 모델", selection: $store.agentModel) {
+                    Text("Composer 2.5").tag("composer-2.5")
                     Text("Auto (Cursor 기본 선택)").tag("auto")
                     Text("GPT-5.3 Codex").tag("gpt-5.3-codex")
                     Text("GPT-5.3 Codex High").tag("gpt-5.3-codex-high")
                     Text("GPT-5.6 Sol High").tag("gpt-5.6-sol-high")
                     Text("Claude Sonnet 5 High").tag("claude-sonnet-5-high")
                     Text("Claude Opus 5 Thinking High").tag("claude-opus-5-thinking-high")
+                    Text("Claude Opus 5.5 High").tag("claude-opus-5-5-high")
+                    Text("Claude Sonnet 5.5 High").tag("claude-sonnet-5-5-high")
                 }
                 TextField("사용자 지정 모델 ID (선택)", text: $store.customAgentModel)
                     .font(.system(.body, design: .monospaced))
@@ -241,4 +265,72 @@ private struct AgentSettingsView: View {
         }
     }
 
+}
+
+private struct ExternalAgentSettings: View {
+    @Bindable var store: ReviewStore
+    let provider: AgentProvider
+    @State private var connection = CursorConnection(state: .unknown, detail: "CLI 연결 확인 중")
+    @State private var checking = false
+
+    var body: some View {
+        Form {
+            Section("\(provider.title) CLI") {
+                Text(connection.detail)
+                Button("연결 상태 다시 확인", systemImage: "arrow.clockwise") {
+                    Task { await refreshConnection() }
+                }
+                .disabled(checking)
+                Button("Terminal에서 로그인", systemImage: "person.badge.key") {
+                    do {
+                        let command = ([provider.rawValue] + provider.loginArguments).joined(separator: " ")
+                        try ProcessRunner().launchInTerminal(command: command)
+                        connection = .init(state: .needsLogin, detail: "로그인을 마친 뒤 연결 상태를 다시 확인하세요.")
+                    } catch {
+                        connection = .init(state: .failed, detail: error.localizedDescription)
+                    }
+                }
+                .disabled(checking || connection.state == .unavailable)
+            }
+            Section("모델") {
+                if provider == .codex {
+                    Picker("Codex 모델", selection: $store.codexModel) {
+                        Text("CLI 기본값").tag("")
+                        Text("GPT-6.1 Terra").tag("gpt-6.1-terra")
+                        Text("GPT-6.1 Sol").tag("gpt-6.1-sol")
+                        Text("GPT-6 Sol").tag("gpt-6-sol")
+                        if !["", "gpt-6.1-terra", "gpt-6.1-sol", "gpt-6-sol"].contains(store.codexModel) {
+                            Text(store.codexModel).tag(store.codexModel)
+                        }
+                    }
+                    TextField("모델 ID", text: $store.codexModel)
+                } else {
+                    Picker("Claude Code 모델", selection: $store.claudeModel) {
+                        Text("CLI 기본값").tag("")
+                        Text("Claude Opus 5.5").tag("claude-opus-5-5")
+                        Text("Claude Sonnet 5.5").tag("claude-sonnet-5-5")
+                        if !["", "claude-opus-5-5", "claude-sonnet-5-5"].contains(store.claudeModel) {
+                            Text(store.claudeModel).tag(store.claudeModel)
+                        }
+                    }
+                    TextField("모델 ID", text: $store.claudeModel)
+                    if store.claudeModel == "claude-opus-5-5" {
+                        Text("Opus 5.5를 사용하려면 Claude Code 2.1.280 이상이 필요합니다.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
+        .task { await refreshConnection() }
+    }
+
+    private func refreshConnection() async {
+        guard !checking else { return }
+        checking = true
+        let provider = provider
+        connection = await Task.detached(priority: .userInitiated) { provider.connection() }.value
+        checking = false
+    }
 }

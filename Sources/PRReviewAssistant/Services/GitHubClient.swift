@@ -86,18 +86,28 @@ struct GitHubClient: Sendable {
         let issueComments: [GitHubIssueComment] = try paged("repos/\(repository)/issues/\(number)/comments")
         let lineComments: [GitHubReviewComment] = try paged("repos/\(repository)/pulls/\(number)/comments")
 
+        let reviewsByID = Dictionary(reviews.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let reviewItems = reviews.compactMap { review -> ReviewComment? in
             guard !review.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-            return ReviewComment(id: "review-\(review.id)", author: review.user.login, body: review.body, path: nil, line: nil, createdAt: review.submittedAt ?? review.createdAt ?? .distantPast, kind: .review, reviewState: ReviewState(githubValue: review.state), parentID: nil)
+            return ReviewComment(id: "review-\(review.id)", author: review.user.login, body: review.body, path: nil, line: nil, createdAt: review.submittedAt ?? review.createdAt ?? .distantPast, kind: .review, reviewState: ReviewState(githubValue: review.state), parentID: nil, reviewAuthor: review.user.login, reviewSubmittedAt: review.submittedAt)
         }
         let generalItems = issueComments.map {
             ReviewComment(id: "issue-\($0.id)", author: $0.user.login, body: $0.body, path: nil, line: nil, createdAt: $0.createdAt, kind: .general, reviewState: nil, parentID: nil)
         }
         let lineItems = lineComments.map { comment in
             let parentID = comment.inReplyToID.map { "line-\($0)" }
-            return ReviewComment(id: "line-\(comment.id)", author: comment.user.login, body: comment.body, path: comment.path, line: comment.line, createdAt: comment.createdAt, kind: parentID == nil ? .line : .reply, reviewState: nil, parentID: parentID)
+            let review = comment.pullRequestReviewId.flatMap { reviewsByID[$0] }
+            return ReviewComment(id: "line-\(comment.id)", author: comment.user.login, body: comment.body, path: comment.path, line: comment.line, createdAt: comment.createdAt, kind: parentID == nil ? .line : .reply, reviewState: nil, parentID: parentID, reviewAuthor: review?.user.login, reviewSubmittedAt: review?.submittedAt)
         }
         return (reviewItems + generalItems + lineItems).sorted { $0.createdAt < $1.createdAt }
+    }
+
+    func reviewRequests(repository: String, number: Int) throws -> [ReviewRequestEvent] {
+        let events: [GitHubIssueEvent] = try paged("repos/\(repository)/issues/\(number)/events")
+        return events.compactMap { event in
+            guard event.event == "review_requested", let reviewer = event.requestedReviewer?.login, let date = event.createdAt else { return nil }
+            return ReviewRequestEvent(id: event.id, reviewer: reviewer, createdAt: date)
+        }.sorted { $0.createdAt == $1.createdAt ? $0.id < $1.id : $0.createdAt < $1.createdAt }
     }
 
     func requestReview(repository: String, number: Int, reviewers: [String]) throws {
@@ -251,7 +261,8 @@ private struct GitHubReviewDecision: Codable {
 }
 private struct GitHubReview: Codable { let id: Int; let body: String; let state: String; let submittedAt: Date?; let createdAt: Date?; let user: GitHubAuthor }
 private struct GitHubIssueComment: Codable { let id: Int; let body: String; let createdAt: Date; let user: GitHubAuthor }
-private struct GitHubReviewComment: Codable { let id: Int; let body: String; let path: String?; let line: Int?; let createdAt: Date; let user: GitHubAuthor; let inReplyToID: Int? }
+private struct GitHubIssueEvent: Decodable { let id: Int; let event: String; let createdAt: Date?; let requestedReviewer: GitHubAuthor? }
+private struct GitHubReviewComment: Codable { let pullRequestReviewId: Int?; let id: Int; let body: String; let path: String?; let line: Int?; let createdAt: Date; let user: GitHubAuthor; let inReplyToID: Int? }
 
 private extension ReviewState {
     init(githubValue: String) {

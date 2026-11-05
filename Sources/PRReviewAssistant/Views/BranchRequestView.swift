@@ -108,7 +108,7 @@ struct BranchPickerSheet: View {
                 .buttonStyle(.plain)
             }
             .overlay {
-                if store.isLoadingBranches {
+                if store.isLoadingBranches && candidates.isEmpty {
                     ProgressView("origin 브랜치 불러오는 중")
                 } else if candidates.isEmpty {
                     ContentUnavailableView(
@@ -116,6 +116,10 @@ struct BranchPickerSheet: View {
                         systemImage: query.isEmpty ? "point.3.connected.trianglepath.dotted" : "magnifyingglass"
                     )
                 }
+            }
+
+            if store.repositoryBranches.isEmpty, !store.isLoadingBranches, store.statusMessage.contains("불러오지 못했습니다") {
+                Text(store.statusMessage).font(.caption).foregroundStyle(.red).textSelection(.enabled)
             }
 
             HStack {
@@ -141,8 +145,18 @@ struct BranchRequestDetailView: View {
     @State private var selectedCardID: BranchReviewCard.ID?
     @State private var showingRequestSheet = false
     @State private var showingQuizSheet = false
+    @State private var showingUnitTestConfirmation = false
+    @State private var showingUnitTestWarning = false
 
     private var cards: [BranchReviewCard] { store.branchCards(for: branch) }
+    private var unitTestResult: UnitTestVerification? { store.branchUnitTestResults[branch.id] }
+    private var isVerifyingUnitTests: Bool { store.isVerifyingUnitTests(for: branch) }
+
+    private var unitTestWarningMessage: String {
+        guard let result = unitTestResult else { return "UnitTest 검증을 아직 실행하지 않았습니다." }
+        if result.outcome == .failed { return "UnitTest 검증이 실패했습니다. \(result.summary)" }
+        return "UnitTest 검증 이후 브랜치에 새 커밋이 있어 결과가 현재 코드와 맞지 않습니다."
+    }
     private var isClear: Bool { !cards.isEmpty && cards.allSatisfy { $0.details.localizedCaseInsensitiveContains("특이사항 없음") } }
 
     var body: some View {
@@ -164,6 +178,18 @@ struct BranchRequestDetailView: View {
         }
         .sheet(isPresented: $showingQuizSheet) {
             BranchQuizSheet(branch: branch, store: store)
+        }
+        .alert("UnitTest 생성·검증을 시작할까요?", isPresented: $showingUnitTestConfirmation) {
+            Button("취소", role: .cancel) {}
+            Button("시작") { Task { await store.verifyUnitTests(for: branch) } }
+        } message: {
+            Text("통과한 테스트 파일은 새 커밋으로 origin의 \(branch.name) 브랜치에 푸시됩니다. 푸시 후에는 현재 리뷰 결과가 이전 커밋 기준이 되므로 필요하면 다시 리뷰하세요.")
+        }
+        .alert("UnitTest 검증이 통과되지 않았습니다", isPresented: $showingUnitTestWarning) {
+            Button("취소", role: .cancel) {}
+            Button("그래도 PR 요청", role: .destructive) { showingRequestSheet = true }
+        } message: {
+            Text("\(unitTestWarningMessage)\n그래도 PR을 요청할까요?")
         }
         .alert(store.branchAgentPermissionRequest?.title ?? "에이전트 권한 요청", isPresented: Binding(
             get: { store.branchAgentPermissionRequest?.branch.id == branch.id },
@@ -206,9 +232,12 @@ struct BranchRequestDetailView: View {
                             Button(store.isReviewingBranch ? "리뷰 중…" : "리뷰 시작", systemImage: "sparkles") {
                                 Task { await store.reviewSelectedBranch() }
                             }
-                            .buttonStyle(.borderedProminent).disabled(store.isReviewingBranch)
+                            .buttonStyle(.borderedProminent).disabled(store.isReviewingBranch || store.implementingBranchRepositoryIDs.contains(branch.repositoryID) || cards.contains(where: { store.branchCardBusy.contains($0.id) }))
                             Spacer()
                             if !cards.isEmpty { Text("분류 카드 \(cards.count)개").font(.caption).foregroundStyle(.secondary) }
+                        }
+                        if let message = store.branchReviewMessages[branch.id] {
+                            Text(message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                         }
                         if !cards.isEmpty {
                             ScrollView(.horizontal) {
@@ -235,6 +264,47 @@ struct BranchRequestDetailView: View {
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(4)
                 }
 
+                GroupBox("UnitTest 검증") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("코드 리뷰 다음 단계입니다. 변경된 C# 파일 중 테스트가 없는 순수 로직의 NUnit 테스트를 Agent가 생성하고 `dotnet test`로 검증합니다. 통과한 테스트만 origin의 \(branch.name) 브랜치에 커밋·푸시하며 작업 폴더는 변경하지 않습니다.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        HStack {
+                            Button(isVerifyingUnitTests ? "검증 중…" : "UnitTest 생성·검증", systemImage: "checkmark.shield") {
+                                showingUnitTestConfirmation = true
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(isVerifyingUnitTests || cards.isEmpty || store.isReviewingBranch || store.implementingBranchRepositoryIDs.contains(branch.repositoryID))
+                            .help(cards.isEmpty ? "먼저 리뷰를 실행하세요." : "UnitTest를 생성하고 검증합니다.")
+                            if isVerifyingUnitTests { ProgressView().controlSize(.small) }
+                            Spacer()
+                            if let result = unitTestResult { UnitTestBadge(result: result, isCurrent: store.isUnitTestPassed(for: branch)) }
+                        }
+                        if let message = store.branchUnitTestMessages[branch.id] {
+                            Text(message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                        }
+                        if let error = store.branchUnitTestErrors[branch.id] {
+                            Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled)
+                        }
+                        if let result = unitTestResult, !result.files.isEmpty {
+                            VStack(alignment: .leading, spacing: 6) {
+                                ForEach(result.files) { file in
+                                    DisclosureGroup {
+                                        Text(file.detail).font(.caption.monospaced()).textSelection(.enabled)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                    } label: {
+                                        HStack(spacing: 6) {
+                                            Image(systemName: file.status == .passed ? "checkmark.circle.fill" : (file.status == .failed ? "xmark.octagon.fill" : "minus.circle"))
+                                                .foregroundStyle(file.status == .passed ? .green : (file.status == .failed ? .red : .secondary))
+                                            Text(file.sourcePath).font(.caption).lineLimit(1).truncationMode(.middle)
+                                            if let test = file.testPath { Text("→ \(test)").font(.caption2).foregroundStyle(.secondary).lineLimit(1) }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }.frame(maxWidth: .infinity, alignment: .leading).padding(4)
+                }
+
                 GroupBox("PR 요청하기") {
                     VStack(alignment: .leading, spacing: 10) {
                         Label(
@@ -252,7 +322,9 @@ struct BranchRequestDetailView: View {
                                 .disabled(cards.isEmpty)
                                 .help("PR의 핵심 기능과 흐름을 확인하는 5문제 퀴즈")
                             Spacer()
-                            Button("PR 요청하기", systemImage: "arrow.up.right.square") { showingRequestSheet = true }.buttonStyle(.borderedProminent)
+                            Button("PR 요청하기", systemImage: "arrow.up.right.square") {
+                                if store.isUnitTestPassed(for: branch) { showingRequestSheet = true } else { showingUnitTestWarning = true }
+                            }.buttonStyle(.borderedProminent)
                         }
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(4)
                 }
@@ -277,6 +349,24 @@ struct BranchRequestDetailView: View {
     }
 }
 
+private struct UnitTestBadge: View {
+    let result: UnitTestVerification
+    let isCurrent: Bool
+
+    private var label: (text: String, symbol: String, tint: Color) {
+        switch result.outcome {
+        case .failed: ("검증 실패", "xmark.octagon.fill", .red)
+        case .passed where isCurrent: ("검증 통과", "checkmark.seal.fill", .green)
+        case .notApplicable where isCurrent: ("대상 없음", "minus.circle.fill", .secondary)
+        default: ("결과가 오래됨", "exclamationmark.triangle.fill", .orange)
+        }
+    }
+
+    var body: some View {
+        Label(label.text, systemImage: label.symbol).font(.caption.weight(.semibold)).foregroundStyle(label.tint)
+    }
+}
+
 private struct BranchReviewCardView: View {
     let card: BranchReviewCard
     var body: some View {
@@ -297,6 +387,8 @@ private struct BranchAgentSidePanel: View {
     @Bindable var store: ReviewStore
     let close: () -> Void
     @State private var draft = ""
+    @State private var showingImplementation = false
+    @State private var implementationRequest = ""
     var body: some View {
         VStack(spacing: 0) {
             HStack { VStack(alignment: .leading) { Text("에이전트 검토").font(.headline); Text(card.title).font(.caption).foregroundStyle(.secondary) }; Spacer(); Button("닫기", systemImage: "xmark", action: close).buttonStyle(.borderless) }.padding(16)
@@ -304,15 +396,44 @@ private struct BranchAgentSidePanel: View {
             ScrollView { LazyVStack(alignment: .leading, spacing: 12) {
                 GroupBox("\(card.category.rawValue) · 검토 내용") { MarkdownContentView(card.details).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
                 ForEach(card.messages) { message in BranchChatBubble(message: message) }
+                if let error = store.branchCardErrors[card.id] { Text(error).foregroundStyle(.red).textSelection(.enabled) }
+                if let result = store.branchImplementationResults[card.id] {
+                    GroupBox("구현 결과") { MarkdownContentView(result).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
+                }
             }.padding(16) }
             Divider()
+            HStack {
+                if store.branchCardBusy.contains(card.id) { ProgressView().controlSize(.small); Text("에이전트 작업 중…").font(.caption) }
+                if !store.branchCardReviewed.contains(card.id) {
+                    Button("에이전트 검토 시작") { Task { await store.sendBranchMessage(cardID: card.id, branch: branch, message: "이 카드의 지적과 수정 방향을 검토하고 대응 계획을 알려주세요.") } }
+                        .disabled(store.branchCardBusy.contains(card.id))
+                }
+                Spacer()
+                Button("구현 요청") {
+                    implementationRequest = ReviewStore.branchImplementationRequest(card: card)
+                    showingImplementation = true
+                }
+                .disabled(!store.branchCardReviewed.contains(card.id) || store.branchCardBusy.contains(card.id) || store.implementingBranchRepositoryIDs.contains(branch.repositoryID))
+            }.padding(.horizontal, 12).padding(.top, 10)
             HStack(alignment: .bottom) {
                 TextField("추가 질문을 입력하세요", text: $draft, axis: .vertical).lineLimit(1...4).onSubmit(send)
-                Button(action: send) { Image(systemName: "arrow.up.circle.fill").font(.title2) }.buttonStyle(.plain).disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Button(action: send) { Image(systemName: "arrow.up.circle.fill").font(.title2) }.buttonStyle(.plain).disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.branchCardBusy.contains(card.id))
             }.padding(12)
         }.background(.bar)
+        .sheet(isPresented: $showingImplementation) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("구현 요청 확인").font(.title2.bold())
+                Text("등록된 작업 폴더에서 \(branch.name) 브랜치와 검토한 커밋을 확인한 뒤 구현합니다. 커밋과 푸시는 하지 않습니다.").foregroundStyle(.secondary)
+                TextEditor(text: $implementationRequest).font(.body.monospaced()).border(.quaternary)
+                HStack { Spacer(); Button("취소") { showingImplementation = false }; Button("구현 시작") {
+                    let request = implementationRequest
+                    showingImplementation = false
+                    Task { await store.implementBranchCard(card, branch: branch, request: request) }
+                }.buttonStyle(.borderedProminent).disabled(implementationRequest.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
+            }.padding(20).frame(width: 680, height: 600)
+        }
     }
-    private func send() { let message = draft.trimmingCharacters(in: .whitespacesAndNewlines); guard !message.isEmpty else { return }; draft = ""; Task { await store.sendBranchMessage(cardID: card.id, branch: branch, message: message) } }
+    private func send() { let message = draft.trimmingCharacters(in: .whitespacesAndNewlines); guard !message.isEmpty, !store.branchCardBusy.contains(card.id) else { return }; draft = ""; Task { await store.sendBranchMessage(cardID: card.id, branch: branch, message: message) } }
 }
 
 private struct BranchChatBubble: View {

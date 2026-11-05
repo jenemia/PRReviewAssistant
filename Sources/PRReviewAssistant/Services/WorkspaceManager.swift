@@ -7,14 +7,16 @@ struct WorkspaceManager: Sendable {
     /// tree.  PR requests must use GitHub-visible branches, so the picker is
     /// deliberately backed by `refs/remotes/origin` rather than only local
     /// branches that may never have been pushed.
-    func branches(in repository: RegisteredRepository) throws -> [RepositoryBranch] {
+    func branches(in repository: RegisteredRepository, fetch: Bool = true) throws -> [RepositoryBranch] {
         // Keep the autocomplete current, but do not change the checked-out
         // branch or any worktree files.
-        _ = try? runner.run(
-            "git",
-            arguments: ["fetch", repository.remoteName, "--prune"],
-            workingDirectory: repository.localPath
-        )
+        if fetch {
+            _ = try? runner.run(
+                "git",
+                arguments: ["fetch", repository.remoteName, "--prune"],
+                workingDirectory: repository.localPath
+            )
+        }
         let currentBranch = try? runner.run(
             "git",
             arguments: ["symbolic-ref", "--quiet", "--short", "HEAD"],
@@ -94,6 +96,20 @@ struct WorkspaceManager: Sendable {
     /// snapshot can be stale while a user is already working on that branch.
     func verifyHead(_ workspacePath: String, expectedSHA: String, expectedBranch: String) throws {
         _ = try verifiedHead(workspacePath, expectedSHA: expectedSHA, expectedBranch: expectedBranch)
+    }
+
+    /// Branch-card implementation never changes checkout or resets local history.
+    func validateBranchReviewWorkspace(at path: String, branch: RepositoryBranch, reviewedSHA: String) throws -> String {
+        guard !reviewedSHA.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw CommandError.failed(.init(output: "", error: "검토한 커밋을 찾을 수 없습니다. 브랜치를 다시 리뷰하세요.", status: 1))
+        }
+        let head = try verifiedHead(path, expectedSHA: reviewedSHA, expectedBranch: branch.name)
+        let reviewed = try runner.run("git", arguments: ["rev-parse", "--verify", "--end-of-options", "\(reviewedSHA)^{commit}"], workingDirectory: path).output.trimmingCharacters(in: .whitespacesAndNewlines)
+        let remote = try runner.run("git", arguments: ["rev-parse", "--verify", "--end-of-options", "\(branch.reference)^{commit}"], workingDirectory: path).output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard head == reviewed, remote == reviewed else {
+            throw CommandError.failed(.init(output: "", error: "현재 브랜치 또는 원격 추적 브랜치가 검토한 커밋과 다릅니다. 변경 상태를 확인하고 다시 리뷰하세요.", status: 1))
+        }
+        return head
     }
 
     func verifiedHead(_ workspacePath: String, expectedSHA: String, expectedBranch: String) throws -> String {

@@ -100,6 +100,51 @@ struct CursorReviewWorkflowTests {
         }
     }
 
+    @Test("원격 main 병합분은 feature diff에서 제외한다")
+    func mergedMainIsExcludedFromBranchDiff() async throws {
+        let roles = try rolesDirectory()
+        let repo = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: roles)
+            try? FileManager.default.removeItem(at: repo)
+        }
+        let runner = ProcessRunner()
+        func git(_ args: [String]) throws -> String {
+            try runner.run("git", arguments: args, workingDirectory: repo.path).output.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        _ = try git(["init", "-b", "main"])
+        _ = try git(["config", "user.email", "test@example.com"])
+        _ = try git(["config", "user.name", "Test"])
+        try "base".write(to: repo.appendingPathComponent("base"), atomically: true, encoding: .utf8)
+        _ = try git(["add", "."])
+        _ = try git(["commit", "-m", "base"])
+        _ = try git(["checkout", "-b", "feature"])
+        try "feature".write(to: repo.appendingPathComponent("feature"), atomically: true, encoding: .utf8)
+        _ = try git(["add", "."])
+        _ = try git(["commit", "-m", "feature"])
+        _ = try git(["checkout", "main"])
+        try "main".write(to: repo.appendingPathComponent("main-change"), atomically: true, encoding: .utf8)
+        _ = try git(["add", "."])
+        _ = try git(["commit", "-m", "main change"])
+        _ = try git(["update-ref", "refs/remotes/origin/main", "main"])
+        _ = try git(["checkout", "feature"])
+        _ = try git(["merge", "--no-ff", "main", "-m", "merge main"])
+        _ = try git(["branch", "-D", "main"])
+        let head = try git(["rev-parse", "HEAD"])
+        let commands = Commands()
+        let workflow = CursorReviewWorkflow(agentsDirectory: roles) { executable, arguments, directory, timeout in
+            if executable == "git" { return try runner.run(executable, arguments: arguments, workingDirectory: directory, timeout: timeout) }
+            return try commands.run(executable, arguments, directory, timeout)
+        }
+        _ = try await workflow.run(preset: .branch, directory: repo.path, headReference: "feature", expectedSHA: head, baseReference: "refs/remotes/origin/main", context: "branch", outputInstructions: "format", trustWorkspace: true, model: "")
+        let mergeBase = try git(["merge-base", "refs/remotes/origin/main", head])
+        #expect(try git(["diff", "--name-only", "\(mergeBase)..\(head)"]) == "feature")
+        let prompt = try #require(commands.calls.first(where: { $0.first == "cursor" })?.last)
+        #expect(prompt.contains("MERGE_BASE: \(mergeBase)"))
+        #expect(prompt.contains("기준 브랜치에서 머지된 커밋"))
+    }
+
     @Test("코멘트는 구조 조사와 구현 검토만 배정하고 타당성 판단을 전달한다")
     func commentsUseFocusedPreset() async throws {
         let directory = try rolesDirectory()
