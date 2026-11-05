@@ -1,0 +1,251 @@
+import Foundation
+import Testing
+@testable import PRReviewAssistant
+
+@Suite("UnitTest verification")
+struct UnitTestVerifierTests {
+    @Test("테스트 경로와 Unity 의존 코드를 구분한다")
+    func classifiesPaths() {
+        #expect(UnitTestVerifier.isTestPath("Tests/Demo.Tests/ItemPriceTests.cs"))
+        #expect(UnitTestVerifier.isTestPath("Assets/Scripts/ItemPriceTests.cs"))
+        #expect(!UnitTestVerifier.isTestPath("Assets/Scripts/Item/ItemPrice.cs"))
+        #expect(UnitTestVerifier.isUnityDependent("using UnityEngine;\nclass A : MonoBehaviour {}"))
+        #expect(!UnitTestVerifier.isUnityDependent("namespace Demo { public static class Price {} }"))
+    }
+
+    @Test("patch guard가 테스트 경로 밖 파일·덮어쓰기·금지 토큰을 거부한다")
+    func guardsProposal() {
+        let ok = UnitTestProposal.File(path: "Tests/Shop/PriceTests.cs", content: "class PriceTests {}")
+        #expect(UnitTestVerifier.violations(of: [ok], existingPaths: []).isEmpty)
+        #expect(UnitTestVerifier.violations(of: [], existingPaths: []) == ["생성 파일 없음"])
+
+        let production = UnitTestProposal.File(path: "Assets/Scripts/Price.cs", content: "class Price {}")
+        #expect(!UnitTestVerifier.violations(of: [production], existingPaths: []).isEmpty)
+        let escaping = UnitTestProposal.File(path: "Tests/../Assets/PriceTests.cs", content: "")
+        #expect(!UnitTestVerifier.violations(of: [escaping], existingPaths: []).isEmpty)
+        #expect(!UnitTestVerifier.violations(of: [ok], existingPaths: [ok.path]).isEmpty)
+        let unity = UnitTestProposal.File(path: "Tests/PriceTests.cs", content: "using UnityEngine;")
+        #expect(!UnitTestVerifier.violations(of: [unity], existingPaths: []).isEmpty)
+    }
+
+    @Test("기존 테스트 위치를 따라 경로를 제안하고 이미 있는 테스트를 감지한다")
+    func suggestsPathAndDetectsExistingTests() {
+        let tests = ["Tests/Demo.Tests/Item/ItemPriceTests.cs", "Tests/Demo.Tests/Inventory/InventorySlotsTests.cs"]
+        #expect(UnitTestVerifier.suggestedTestPath(for: "Assets/Scripts/Shop/ShopDiscount.cs", testFiles: []) == "Tests/ShopDiscountTests.cs")
+        #expect(UnitTestVerifier.suggestedTestPath(for: "Assets/Scripts/Item/ItemPrice.cs", testFiles: tests).hasSuffix("ItemPriceTests.cs"))
+        #expect(UnitTestVerifier.hasExistingTest(for: "Assets/Scripts/Item/ItemPrice.cs", in: Set(tests)))
+        #expect(!UnitTestVerifier.hasExistingTest(for: "Assets/Scripts/Shop/ShopDiscount.cs", in: Set(tests)))
+    }
+
+    @Test("dotnet 결과 요약과 검증 프로젝트를 만든다")
+    func parsesCountsAndBuildsProject() {
+        let trx = #"<ResultSummary outcome="Completed"><Counters total="4" executed="3" passed="3" error="0" failed="1" timeout="0" notExecuted="1" /></ResultSummary>"#
+        let counts = UnitTestVerifier.testCounts(inTRX: trx)
+        #expect(counts?.failed == 1 && counts?.passed == 3 && counts?.skipped == 1)
+        #expect(UnitTestVerifier.testCounts(inTRX: "error CS0246: type not found") == nil)
+
+        let project = UnitTestVerifier.validationProject(sourceFile: "Source/A&B.cs", testFiles: ["Tests/0_ATests.cs"], framework: "net10.0")
+        #expect(project.contains("<TargetFramework>net10.0</TargetFramework>"))
+        #expect(project.contains("Source/A&amp;B.cs"))
+        #expect(project.contains("NUnit\" Version=\"3.14.0\""))
+    }
+
+    @Test("Agent JSON 제안을 파싱하고 JSON이 없으면 거부한다")
+    func parsesProposal() throws {
+        let proposal = try UnitTestProposal.parse("""
+        ```json
+        {"status":"generated","reason":"ok","files":[{"path":"Tests/ATests.cs","content":"x"}]}
+        ```
+        """)
+        #expect(proposal.status == "generated" && proposal.files.count == 1)
+        #expect(throws: (any Error).self) { try UnitTestProposal.parse("테스트를 만들 수 없습니다.") }
+    }
+
+    @Test("검증 결과는 같은 커밋이고 실패가 아닐 때만 PR 게이트를 통과한다")
+    func gatesOnCommit() {
+        func result(_ outcome: UnitTestVerification.Outcome, sha: String = "abc1234567") -> UnitTestVerification {
+            .init(outcome: outcome, verifiedSHA: sha, resultSHA: sha, pushed: false, summary: "", files: [])
+        }
+        #expect(result(.passed).satisfies(branchSHA: "abc1234"))
+        #expect(result(.notApplicable).satisfies(branchSHA: "abc1234"))
+        #expect(!result(.failed).satisfies(branchSHA: "abc1234"))
+        #expect(!result(.passed).satisfies(branchSHA: "def5678"))
+    }
+
+    @Test("프롬프트에 규칙·소스·이전 오류를 담는다")
+    func buildsPrompt() {
+        let target = UnitTestVerifier.Target(sourcePath: "Assets/Price.cs", source: "class Price {}", diff: "", suggestedTestPath: "Tests/PriceTests.cs", stylePath: nil, styleSample: nil)
+        let prompt = CursorAgent.unitTestPrompt(for: .init(target: target, previousError: "error CS1002"))
+        #expect(prompt.contains("NUnit 3"))
+        #expect(prompt.contains("class Price {}"))
+        #expect(prompt.contains("error CS1002"))
+        #expect(prompt.contains("Tests/PriceTests.cs"))
+    }
+}
+
+@Suite("UnitTest verification workflow")
+struct UnitTestWorkflowTests {
+    private struct Fixture {
+        let root: URL
+        let repository: RegisteredRepository
+        let branch: RepositoryBranch
+        let head: String
+        let runner = ProcessRunner()
+
+        func remoteHead() throws -> String {
+            try runner.run("git", arguments: ["--git-dir", root.appending(path: "remote.git").path, "rev-parse", "feature/x"])
+                .output.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        func remoteFiles() throws -> [String] {
+            try runner.run("git", arguments: ["--git-dir", root.appending(path: "remote.git").path, "ls-tree", "-r", "--name-only", "feature/x"])
+                .output.split(whereSeparator: \.isNewline).map(String.init)
+        }
+
+        func cleanup() { try? FileManager.default.removeItem(at: root) }
+    }
+
+    private func makeFixture() throws -> Fixture {
+        let runner = ProcessRunner()
+        let root = FileManager.default.temporaryDirectory.appending(path: "UnitTestWorkflow-\(UUID().uuidString)", directoryHint: .isDirectory)
+        let remote = root.appending(path: "remote.git"), work = root.appending(path: "work")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        func git(_ arguments: [String], at path: String? = nil) throws {
+            _ = try runner.run("git", arguments: arguments, workingDirectory: path ?? work.path)
+        }
+        _ = try runner.run("git", arguments: ["init", "--bare", remote.path])
+        _ = try runner.run("git", arguments: ["init", "-b", "main", work.path])
+        try git(["config", "user.name", "Tester"]); try git(["config", "user.email", "tester@example.invalid"])
+        func write(_ path: String, _ text: String) throws {
+            let url = work.appending(path: path)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try text.write(to: url, atomically: true, encoding: .utf8)
+        }
+        try write("Tests/Demo.Tests/Item/ItemPriceTests.cs", "class ItemPriceTests {}")
+        try git(["add", "."]); try git(["commit", "-m", "base"])
+        try git(["remote", "add", "origin", remote.path]); try git(["push", "-u", "origin", "main"])
+        try git(["switch", "-c", "feature/x"])
+        try write("Assets/Scripts/Shop/ShopDiscount.cs", "namespace Demo { public static class ShopDiscount { public static int Apply(int p) => p; } }")
+        try write("Assets/Scripts/Shop/ShopView.cs", "using UnityEngine;\nclass ShopView : MonoBehaviour {}")
+        try write("Assets/Scripts/Item/ItemPrice.cs", "namespace Demo { public static class ItemPrice {} }")
+        try git(["add", "."]); try git(["commit", "-m", "feature"]); try git(["push", "-u", "origin", "feature/x"])
+        let head = try runner.run("git", arguments: ["rev-parse", "HEAD"], workingDirectory: work.path).output.trimmingCharacters(in: .whitespacesAndNewlines)
+        let repository = RegisteredRepository(localPath: work.path, fullName: "local/test", defaultBranch: "main", monitoringEnabled: false)
+        let branch = RepositoryBranch(repositoryID: repository.id, repositoryName: "local/test", name: "feature/x", reference: "origin/feature/x", sha: String(head.prefix(7)), subject: "feature", updatedAt: nil, isCurrent: true, isRemote: true)
+        return Fixture(root: root, repository: repository, branch: branch, head: head)
+    }
+
+    private let proposal = UnitTestProposal(status: "generated", files: [
+        .init(path: "Tests/Demo.Tests/Shop/ShopDiscountTests.cs", content: "class ShopDiscountTests {}")
+    ])
+
+    @Test("통과한 테스트만 origin 브랜치에 커밋·푸시하고 작업 폴더는 건드리지 않는다")
+    func pushesPassingTestsWithoutTouchingWorkFolder() throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        let verifier = UnitTestVerifier { _, _, _ in .init(success: true, log: "Passed!") }
+
+        let result = try verifier.verify(
+            repository: fixture.repository, branch: fixture.branch, baseReference: "origin/main", developerName: "테스터",
+            generate: { _ in proposal }, progress: { _ in }
+        )
+
+        #expect(result.outcome == .passed && result.pushed)
+        #expect(result.verifiedSHA == fixture.head && result.resultSHA != fixture.head)
+        #expect(try fixture.remoteHead() == result.resultSHA)
+        #expect(try fixture.remoteFiles().contains("Tests/Demo.Tests/Shop/ShopDiscountTests.cs"))
+        let skipped = result.files.filter { $0.status == .skipped }.map(\.sourcePath).sorted()
+        #expect(skipped == ["Assets/Scripts/Item/ItemPrice.cs", "Assets/Scripts/Shop/ShopView.cs"])
+
+        let runner = ProcessRunner()
+        let path = fixture.repository.localPath
+        #expect(try runner.run("git", arguments: ["rev-parse", "HEAD"], workingDirectory: path).output.trimmingCharacters(in: .whitespacesAndNewlines) == fixture.head)
+        #expect(try runner.run("git", arguments: ["status", "--porcelain"], workingDirectory: path).output.isEmpty)
+        #expect(try runner.run("git", arguments: ["log", "-1", "--format=%s", result.resultSHA], workingDirectory: path).output.hasPrefix("[개발 - 테스터] UnitTest 추가: ShopDiscountTests"))
+    }
+
+    @Test("검증이 계속 실패하면 재시도 후 실패로 기록하고 푸시하지 않는다")
+    func doesNotPushFailingTests() throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        let attempts = Counter()
+        let verifier = UnitTestVerifier { _, _, _ in .init(success: false, log: "error CS0103") }
+
+        let result = try verifier.verify(
+            repository: fixture.repository, branch: fixture.branch, baseReference: "origin/main", developerName: "테스터",
+            generate: { _ in attempts.increment(); return proposal }, progress: { _ in }
+        )
+
+        #expect(result.outcome == .failed && !result.pushed)
+        #expect(attempts.value == UnitTestVerifier.maxAttempts)
+        #expect(try fixture.remoteHead() == fixture.head)
+        #expect(!result.satisfies(branchSHA: fixture.branch.sha))
+    }
+
+    @Test("테스트 경로 밖 파일을 제안하면 즉시 폐기한다")
+    func rejectsProductionPatch() throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        let verifier = UnitTestVerifier { _, _, _ in .init(success: true, log: "") }
+        let production = UnitTestProposal(status: "generated", files: [.init(path: "Assets/Scripts/Shop/ShopDiscount.cs", content: "x")])
+
+        let result = try verifier.verify(
+            repository: fixture.repository, branch: fixture.branch, baseReference: "origin/main", developerName: "테스터",
+            generate: { _ in production }, progress: { _ in }
+        )
+
+        #expect(result.outcome == .failed && !result.pushed)
+        #expect(try fixture.remoteHead() == fixture.head)
+    }
+}
+
+private final class Counter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    var value: Int { lock.lock(); defer { lock.unlock() }; return count }
+    func increment() { lock.lock(); count += 1; lock.unlock() }
+}
+
+@Suite("Skill files")
+struct SkillFileStoreTests {
+    private static let defaults: @Sendable (String) -> URL? = { name in
+        URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/PRReviewAssistant/Resources/UnitTestSkills/\(name).md")
+    }
+
+    private func makeStore() throws -> (SkillFileStore, URL) {
+        let root = FileManager.default.temporaryDirectory.appending(path: "Skills-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: root.appending(path: "agents"), withIntermediateDirectories: true)
+        try "역할".write(to: root.appending(path: "agents/code-reviewer.md"), atomically: true, encoding: .utf8)
+        try "other".write(to: root.appending(path: "agents/pm.md"), atomically: true, encoding: .utf8)
+        return (SkillFileStore(cursorDirectory: root), root)
+    }
+
+    @Test("리뷰 역할 파일과 기본 UnitTest 스킬을 목록에 보여준다")
+    func listsAndInstallsDefaults() throws {
+        let (store, root) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+        #expect(store.list().map(\.name) == ["code-reviewer"])
+
+        #expect(try store.installDefaultUnitTestSkills(defaultFile: Self.defaults) == SkillFileStore.defaultUnitTestSkills.count)
+        #expect(store.list().filter { $0.group == .unitTest }.count == SkillFileStore.defaultUnitTestSkills.count)
+        #expect(try store.installDefaultUnitTestSkills(defaultFile: Self.defaults) == 0)
+    }
+
+    @Test("수정한 내용을 저장하고 빈 내용·목록 밖 파일은 거부하며 재설치해도 덮어쓰지 않는다")
+    func savesSafely() throws {
+        let (store, root) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: root) }
+        _ = try store.installDefaultUnitTestSkills(defaultFile: Self.defaults)
+        let skill = try #require(store.list().first { $0.name == "unittest-csharp-base" })
+
+        try store.write("수정됨", to: skill)
+        #expect(try store.read(skill) == "수정됨")
+        _ = try store.installDefaultUnitTestSkills(defaultFile: Self.defaults)
+        #expect(try store.read(skill) == "수정됨")
+
+        #expect(throws: (any Error).self) { try store.write("  \n", to: skill) }
+        let outside = EditableSkill(name: "pm", url: root.appending(path: "agents/pm.md"), group: .review)
+        #expect(throws: (any Error).self) { try store.write("x", to: outside) }
+    }
+}

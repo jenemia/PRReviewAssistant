@@ -19,6 +19,8 @@ cp "Resources/Info.plist" "$app_dir/Contents/Info.plist"
 # artwork lives with the app target resources.
 cp "Sources/PRReviewAssistant/Resources/AppIcon.icns" "$app_dir/Contents/Resources/AppIcon.icns"
 cp "Sources/PRReviewAssistant/Resources/PetMascotPRWeapons.png" "$app_dir/Contents/Resources/PetMascotPRWeapons.png"
+# Default UnitTest skills that Settings > 스킬 can install into ~/.cursor/skills.
+cp Sources/PRReviewAssistant/Resources/UnitTestSkills/*.md "$app_dir/Contents/Resources/"
 if [[ "$signing_identity" == "-" ]]; then
   codesign --force --sign - --timestamp=none "$app_dir"
 else
