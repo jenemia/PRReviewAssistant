@@ -1,80 +1,152 @@
+import CryptoKit
 import Foundation
 
 /// Caps concurrent model sessions. Each one blocks a thread for minutes, so an
 /// unbounded review burst would also starve the app's other background work.
-final class AgentCallLimiter: @unchecked Sendable {
+actor AgentCallLimiter {
     static let shared = AgentCallLimiter(limit: 4)
 
-    private let lock = NSLock()
     private var available: Int
-    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var waiters: [(UUID, CheckedContinuation<Void, Error>)] = []
 
     init(limit: Int) { available = limit }
 
-    func acquire() async {
-        await withCheckedContinuation { continuation in
-            lock.withLock {
-                if available > 0 {
+    func acquire() async throws {
+        let id = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                if Task.isCancelled {
+                    continuation.resume(throwing: CancellationError())
+                } else if available > 0 {
                     available -= 1
                     continuation.resume()
                 } else {
-                    waiters.append(continuation)
+                    waiters.append((id, continuation))
                 }
             }
+        } onCancel: {
+            Task { await self.cancel(id) }
         }
     }
 
     func release() {
-        lock.withLock {
-            if waiters.isEmpty { available += 1 } else { waiters.removeFirst().resume() }
+        if waiters.isEmpty {
+            available += 1
+        } else {
+            waiters.removeFirst().1.resume()
         }
+    }
+
+    private func cancel(_ id: UUID) {
+        guard let index = waiters.firstIndex(where: { $0.0 == id }) else { return }
+        waiters.remove(at: index).1.resume(throwing: CancellationError())
     }
 }
 
 /// Shares research among review cards of the same PR at the same commit.
-/// Concurrent callers await one run; failed runs are not kept.
-final class ReviewResearchCache: @unchecked Sendable {
+/// The last caller to cancel also stops the shared research.
+actor ReviewResearchCache {
     struct Key: Hashable, Sendable {
         let directory: String
-        let headSHA: String
-        let context: String
+        let contextDigest: SHA256.Digest
+        let provider: AgentProvider
         let trustWorkspace: Bool
         let model: String
+    }
+
+    private struct Pending {
+        let id: UUID
+        let task: Task<Void, Never>
+        var waiters: [UUID: CheckedContinuation<[CursorReviewWorkflow.Report], Error>]
     }
 
     static let shared = ReviewResearchCache()
     private static let maximumEntries = 16
 
-    private let lock = NSLock()
-    private var tasks: [Key: Task<[CursorReviewWorkflow.Report], Error>] = [:]
+    private var pending: [Key: Pending] = [:]
+    private var completed: [Key: [CursorReviewWorkflow.Report]] = [:]
     private var order: [Key] = []
 
     func reports(
         for key: Key, make: @escaping @Sendable () async throws -> [CursorReviewWorkflow.Report]
     ) async throws -> [CursorReviewWorkflow.Report] {
-        let task = lock.withLock {
-            if let existing = tasks[key] { return existing }
-            let created = Task.detached(operation: make)
-            tasks[key] = created
-            order.append(key)
-            if order.count > Self.maximumEntries { tasks[order.removeFirst()] = nil }
-            return created
-        }
-        do {
-            return try await task.value
-        } catch {
-            lock.withLock {
-                if tasks[key] == task {
-                    tasks[key] = nil
-                    order.removeAll { $0 == key }
+        try Task.checkCancellation()
+        if let reports = completed[key] { return reports }
+        let waiterID = UUID()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                if Task.isCancelled {
+                    continuation.resume(throwing: CancellationError())
+                } else if pending[key] != nil {
+                    pending[key]?.waiters[waiterID] = continuation
+                } else {
+                    let id = UUID()
+                    let task = Task {
+                        do {
+                            let reports = try await make()
+                            finish(key, id: id, result: .success(reports))
+                        } catch {
+                            finish(key, id: id, result: .failure(error))
+                        }
+                    }
+                    pending[key] = Pending(id: id, task: task, waiters: [waiterID: continuation])
                 }
             }
-            throw error
+        } onCancel: {
+            Task { await self.cancel(key, waiterID: waiterID) }
         }
+    }
+
+    private func cancel(_ key: Key, waiterID: UUID) {
+        guard let waiter = pending[key]?.waiters.removeValue(forKey: waiterID) else { return }
+        waiter.resume(throwing: CancellationError())
+        if pending[key]?.waiters.isEmpty == true {
+            pending.removeValue(forKey: key)?.task.cancel()
+        }
+    }
+
+    private func finish(_ key: Key, id: UUID, result: Result<[CursorReviewWorkflow.Report], Error>) {
+        guard pending[key]?.id == id, let run = pending.removeValue(forKey: key) else { return }
+        if case .success(let reports) = result {
+            completed[key] = reports
+            order.append(key)
+            if order.count > Self.maximumEntries { completed[order.removeFirst()] = nil }
+        }
+        for waiter in run.waiters.values { waiter.resume(with: result) }
     }
 }
 
-/// The app schedules isolated CLI sessions; role files remain the source of review guidance.
+/// Keeps successful branch role reports until the review completes or the cache evicts them.
+private actor BranchReviewCheckpoints {
+    static let shared = BranchReviewCheckpoints()
+    private struct SavedReport {
+        let prompt: SHA256.Digest
+        let output: String
+    }
+
+    private var entries: [ReviewResearchCache.Key: [String: SavedReport]] = [:]
+    private var order: [ReviewResearchCache.Key] = []
+
+    func report(for role: String, prompt: SHA256.Digest, in key: ReviewResearchCache.Key) -> String? {
+        guard let saved = entries[key]?[role], saved.prompt == prompt else { return nil }
+        return saved.output
+    }
+
+    func save(_ report: String, for role: String, prompt: SHA256.Digest, in key: ReviewResearchCache.Key) {
+        if entries[key] == nil {
+            order.append(key)
+            if order.count > 16 { entries[order.removeFirst()] = nil }
+        }
+        entries[key, default: [:]][role] = SavedReport(prompt: prompt, output: report)
+    }
+
+    func clear(_ key: ReviewResearchCache.Key) {
+        entries[key] = nil
+        order.removeAll { $0 == key }
+    }
+}
+
+/// Schedules isolated CLI sessions with optional local overrides for each role.
 struct CursorReviewWorkflow: Sendable {
     enum Preset: Sendable { case branch, comments }
 
@@ -117,6 +189,7 @@ struct CursorReviewWorkflow: Sendable {
 
     typealias RunCommand = @Sendable (String, [String], String, TimeInterval) throws -> CommandResult
     private let runCommand: RunCommand
+    private let usesProductionRunner: Bool
     private let agentsDirectory: URL
     private let provider: AgentProvider
     private let limiter: AgentCallLimiter
@@ -127,24 +200,26 @@ struct CursorReviewWorkflow: Sendable {
         limiter: AgentCallLimiter = .shared,
         researchCache: ReviewResearchCache = .shared,
         agentsDirectory: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cursor/agents"),
-        runCommand: @escaping RunCommand = { executable, arguments, directory, timeout in
-            try ProcessRunner().run(executable, arguments: arguments, workingDirectory: directory, timeout: timeout)
-        }
+        runCommand: RunCommand? = nil
     ) {
         self.provider = provider
         self.limiter = limiter
         self.researchCache = researchCache
         self.agentsDirectory = agentsDirectory
-        self.runCommand = runCommand
+        usesProductionRunner = runCommand == nil
+        self.runCommand = runCommand ?? { executable, arguments, directory, timeout in
+            try ProcessRunner().run(executable, arguments: arguments, workingDirectory: directory, timeout: timeout)
+        }
     }
 
     func run(
         preset: Preset, directory: String, headReference: String, expectedSHA: String,
         baseReference: String? = nil, context: String, researchContext: String? = nil, outputInstructions: String,
-        trustWorkspace: Bool, model: String
+        trustWorkspace: Bool, model: String, progress: (@Sendable (String) -> Void)? = nil
     ) async throws -> String {
+        progress?("검토할 커밋 확인 중")
         // Resolve Git and load all roles before spending any model calls.
-        let snapshot = try await Task.detached {
+        let snapshot = try await runCancellable {
             let head = try resolve(headReference, directory: directory)
             guard head == (try resolve(expectedSHA, directory: directory)) else {
                 throw failure("리뷰 대상 SHA가 변경되었습니다. 목록을 새로 고친 뒤 다시 검토하세요.")
@@ -154,7 +229,7 @@ struct CursorReviewWorkflow: Sendable {
                 try runCommand("git", ["merge-base", $0, head], directory, 30).output.trimmingCharacters(in: .whitespacesAndNewlines)
             }
             return Snapshot(headReference: headReference, headSHA: head, baseReference: baseReference, baseSHA: base, mergeBase: mergeBase)
-        }.value
+        }
 
         let research: [Assignment] = preset == .branch ? [
             .init(role: "spec-search-agent", question: "현재 유효한 목적·합의 동작·수용 기준·미결정 사항을 찾아라. 스펙이 없으면 검색 범위와 스펙 적합성 확인 불가를 보고하고 요구사항을 만들지 마라."),
@@ -171,10 +246,12 @@ struct CursorReviewWorkflow: Sendable {
         var definitions: [String: String] = [:]
         for role in Set((research + reviews).flatMap { [$0.role] + $0.supportingRoles }) {
             let path = agentsDirectory.appendingPathComponent("\(role).md")
-            guard let text = try? String(contentsOf: path, encoding: .utf8), !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                throw failure("전역 에이전트 역할 파일을 읽을 수 없거나 비어 있습니다: \(path.path)")
+            if let text = try? String(contentsOf: path, encoding: .utf8),
+               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                definitions[role] = "역할 출처: \(path.path)\n\(text)"
+            } else {
+                definitions[role] = Self.defaultRoleGuidance[role]
             }
-            definitions[role] = "역할 출처: \(path.path)\n\(text)"
         }
 
         func commonPrompt(_ context: String) -> String {
@@ -192,20 +269,29 @@ struct CursorReviewWorkflow: Sendable {
         """
         }
         let common = commonPrompt(context)
+        let checkpoint = preset == .branch
+            ? ReviewResearchCache.Key(directory: directory, contextDigest: SHA256.hash(data: Data(common.utf8)), provider: provider, trustWorkspace: trustWorkspace, model: model)
+            : nil
+        progress?("스펙 및 코드 구조 조사 중")
         let researchReports: [Report]
         if let researchContext {
             let researchCommon = commonPrompt(researchContext)
             let finalDefinitions = definitions
+            let roleGuidance = research.flatMap { [$0.role] + $0.supportingRoles }
+                .compactMap { finalDefinitions[$0] }.joined(separator: "\n")
             researchReports = try await researchCache.reports(
-                for: .init(directory: directory, headSHA: snapshot.headSHA, context: researchContext, trustWorkspace: trustWorkspace, model: model)
+                for: .init(directory: directory, contextDigest: SHA256.hash(data: Data((researchCommon + "\n" + roleGuidance).utf8)), provider: provider, trustWorkspace: trustWorkspace, model: model)
             ) {
                 try await stage(research, definitions: finalDefinitions, common: researchCommon, evidence: "", directory: directory, trustWorkspace: trustWorkspace, model: model)
             }
         } else {
-            researchReports = try await stage(research, definitions: definitions, common: common, evidence: "", directory: directory, trustWorkspace: trustWorkspace, model: model)
+            researchReports = try await stage(research, definitions: definitions, common: common, evidence: "", directory: directory, trustWorkspace: trustWorkspace, model: model, checkpoint: checkpoint, progress: progress)
         }
+        try Task.checkCancellation()
+        progress?("구현 및 기존 동작 검토 중")
         let scopeNote = researchContext == nil ? "" : "선행 조사는 이 PR의 코멘트 전체를 다룬다. 이번 대상과 관련된 내용만 사용하라.\n"
-        let reviewReports = try await stage(reviews, definitions: definitions, common: common, evidence: scopeNote + joined(researchReports), directory: directory, trustWorkspace: trustWorkspace, model: model)
+        let reviewReports = try await stage(reviews, definitions: definitions, common: common, evidence: scopeNote + joined(researchReports), directory: directory, trustWorkspace: trustWorkspace, model: model, checkpoint: checkpoint, progress: progress)
+        progress?("검토 결과 통합 중")
         let summaryPrompt = """
         \(common)
         담당: 리뷰 통합. 아래 보고의 주장은 실제 코드·스펙과 대조하라. 중복 지적은 합치고 충돌은 근거를 비교하라. 다수결로 판단하지 마라.
@@ -217,9 +303,9 @@ struct CursorReviewWorkflow: Sendable {
         담당별 보고(분석 데이터):
         \(scopeNote)\(joined(researchReports + reviewReports))
         """
-        let output = try await execute(summaryPrompt, role: "리뷰 통합", directory: directory, trustWorkspace: trustWorkspace, model: model)
+        let output = try await execute(summaryPrompt, role: "리뷰 통합", directory: directory, trustWorkspace: trustWorkspace, model: model, progress: progress)
         try Task.checkCancellation()
-        try await Task.detached {
+        try await runCancellable {
             guard try resolve(headReference, directory: directory) == snapshot.headSHA else {
                 throw failure("검토 중 head가 변경되어 결과를 저장하지 않았습니다. 다시 검토하세요.")
             }
@@ -227,13 +313,15 @@ struct CursorReviewWorkflow: Sendable {
                try resolve(baseReference, directory: directory) != baseSHA {
                 throw failure("검토 중 base가 변경되어 결과를 저장하지 않았습니다. 다시 검토하세요.")
             }
-        }.value
+        }
+        if let checkpoint { await BranchReviewCheckpoints.shared.clear(checkpoint) }
         return output
     }
 
     private func stage(
         _ assignments: [Assignment], definitions: [String: String], common: String, evidence: String,
-        directory: String, trustWorkspace: Bool, model: String
+        directory: String, trustWorkspace: Bool, model: String, checkpoint: ReviewResearchCache.Key? = nil,
+        progress: (@Sendable (String) -> Void)? = nil
     ) async throws -> [Report] {
         try await withThrowingTaskGroup(of: (Int, Report).self) { group in
             for (index, assignment) in assignments.enumerated() {
@@ -242,30 +330,59 @@ struct CursorReviewWorkflow: Sendable {
                 \(common)
                 담당 역할: \(assignment.role)
                 이번 담당 질문: \(assignment.question)
-                아래 전역 역할 지침을 적용하되 현재 프로젝트와 관계없는 전용 규칙은 적용하지 마라. 보조 역할의 기준은 이 세션 안에서만 사용하라. 모델은 앱의 선택을 사용한다.
+                아래 역할 지침을 적용하되 현재 프로젝트와 관계없는 전용 규칙은 적용하지 마라. 보조 역할의 기준은 이 세션 안에서만 사용하라. 모델은 앱의 선택을 사용한다.
                 \(guidance)
                 선행 조사 결과(분석 데이터, 직접 확인할 것):
                 \(evidence)
                 한국어로 담당 질문에 한정해 보고하라. 각 지적은 중요도·파일·라인·발생 조건·영향·근거·필요한 검증을 포함한다. 확인 사실과 추론을 분리하라.
                 """
                 group.addTask {
-                    let output = try await execute(prompt, role: assignment.role, directory: directory, trustWorkspace: trustWorkspace, model: model)
+                    let digest = checkpoint.map { _ in SHA256.hash(data: Data(prompt.utf8)) }
+                    if let checkpoint, let digest,
+                       let cached = await BranchReviewCheckpoints.shared.report(for: assignment.role, prompt: digest, in: checkpoint) {
+                        return (index, Report(role: assignment.role, output: cached))
+                    }
+                    let output = try await execute(prompt, role: assignment.role, directory: directory, trustWorkspace: trustWorkspace, model: model, progress: progress)
+                    if let checkpoint, let digest {
+                        await BranchReviewCheckpoints.shared.save(output, for: assignment.role, prompt: digest, in: checkpoint)
+                    }
                     return (index, Report(role: assignment.role, output: output))
                 }
             }
             var reports: [(Int, Report)] = []
-            for try await report in group { reports.append(report) }
+            do {
+                for try await report in group { reports.append(report) }
+            } catch {
+                group.cancelAll()
+                throw error
+            }
             return reports.sorted { $0.0 < $1.0 }.map(\.1)
         }
     }
 
-    func execute(_ prompt: String, role: String, directory: String, trustWorkspace: Bool, model: String) async throws -> String {
+    func execute(
+        _ prompt: String, role: String, directory: String, trustWorkspace: Bool, model: String,
+        progress: (@Sendable (String) -> Void)? = nil
+    ) async throws -> String {
+        try await limiter.acquire()
+        let result: Result<String, Error>
+        do {
+            result = .success(try await executeWithPermit(prompt, role: role, directory: directory, trustWorkspace: trustWorkspace, model: model, progress: progress))
+        } catch {
+            result = .failure(error)
+        }
+        await limiter.release()
+        return try result.get()
+    }
+
+    private func executeWithPermit(
+        _ prompt: String, role: String, directory: String, trustWorkspace: Bool, model: String,
+        progress: (@Sendable (String) -> Void)?
+    ) async throws -> String {
         try Task.checkCancellation()
-        await limiter.acquire()
-        defer { limiter.release() }
-        try Task.checkCancellation()
-        return try await Task.detached {
-            var arguments = ["agent", "--print", "--output-format", "json", "--mode", "ask", "--workspace", directory]
+        return try await runCancellable {
+            let stream = usesProductionRunner ? progress : nil
+            var arguments = ["agent", "--print", "--output-format", stream == nil ? "json" : "stream-json", "--mode", "ask", "--workspace", directory]
             if trustWorkspace { arguments.append("--trust") }
             if !model.isEmpty { arguments += ["--model", model] }
             arguments.append(prompt)
@@ -273,6 +390,18 @@ struct CursorReviewWorkflow: Sendable {
                 if provider != .cursor {
                     return try provider.run(prompt: prompt, model: model, directory: directory, writable: false, timeout: 300)
                         .output.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+                if let stream {
+                    do {
+                        let result = try ProcessRunner().run("cursor", arguments: arguments, workingDirectory: directory, timeout: 300, onOutputLine: { line in
+                            if let message = CursorAgent.streamProgress(for: line) {
+                                stream("\(Self.roleTitles[role] ?? role) · \(message)")
+                            }
+                        })
+                        return try CursorAgent.streamResult(result).text
+                    } catch CommandError.failed(let result) {
+                        throw CursorAgent.streamFailure(result)
+                    }
                 }
                 let result = try runCommand("cursor", arguments, directory, 300)
                 let output = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -301,13 +430,31 @@ struct CursorReviewWorkflow: Sendable {
                     throw failure("에이전트가 최종 리뷰 본문을 반환하지 않았습니다.\(session)")
                 }
                 return report
+            } catch is CancellationError {
+                throw CancellationError()
             } catch let error as ExternalAgentError {
                 throw ExternalAgentError(detail: "\(role) 단계 실패. \(error.localizedDescription)")
             } catch {
                 throw failure("\(role) 단계 실패: \(error.localizedDescription)")
             }
-        }.value
+        }
     }
+
+    private static let roleTitles = [
+        "spec-search-agent": "스펙 조사",
+        "structure-agent": "코드 구조 조사",
+        "code-reviewer": "구현 검토",
+        "maintenance-reviewer": "기존 동작 검토"
+    ]
+
+    private static let defaultRoleGuidance: [String: String] = [
+        "spec-search-agent": "유효한 스펙과 이전 변경 이력을 구분하고, 요구사항별 근거와 확인 공백을 명시하라.",
+        "structure-agent": "진입점에서 실제 호출 순서를 따라가며 조건, 공유 상태의 소유권, 기존 예외 처리와 테스트를 확인하라.",
+        "code-reviewer": "요청의 수용 기준을 실제 실행 경로와 대조하고, 결함은 재현 조건과 근거가 있는 경우에만 보고하라.",
+        "maintenance-reviewer": "기존 사용자의 관점에서 변경 전후 동작을 대조하고, 호환성·회귀·유지보수 비용을 실제 호출 경로와 함께 확인하라.",
+        "scope-guard": "요청 범위와 변경 파일을 대조하고 관련 없는 변경, 중복 구현, 불필요한 추상화를 찾아라.",
+        "risk-guard": "실패·재시도·동시 실행·중간 종료에서 상태 일관성, 데이터 호환성, 복구 가능성을 확인하라."
+    ]
 
     private func resolve(_ reference: String, directory: String) throws -> String {
         try runCommand("git", ["rev-parse", "--verify", "--end-of-options", "\(reference)^{commit}"], directory, 30)

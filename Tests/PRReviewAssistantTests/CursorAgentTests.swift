@@ -4,6 +4,31 @@ import Testing
 
 @Suite("Cursor agent connection")
 struct CursorAgentTests {
+    @Test("Cursor 스트림은 진행 이벤트와 최종 답변을 구분한다")
+    func readsStreamProgressAndFinalResult() throws {
+        let progress = #"{"type":"tool_call","subtype":"started"}"#
+        let partial = #"{"type":"assistant","message":{"content":[{"text":"partial"}]}}"#
+        let final = #"{"type":"result","subtype":"success","is_error":false,"result":" 최종 답변 ","session_id":"chat-1"}"#
+        #expect(CursorAgent.streamProgress(for: Data(progress.utf8))?.contains("자료") == true)
+        let result = try CursorAgent.streamResult(.init(output: [progress, partial, final].joined(separator: "\n"), error: "", status: 0))
+        #expect(result.text == "최종 답변")
+        #expect(result.sessionID == "chat-1")
+        #expect(throws: CommandError.self) {
+            _ = try CursorAgent.streamResult(.init(output: partial, error: "workspace trust required", status: 0))
+        }
+    }
+
+    @Test("퀴즈 응답에서 코드 펜스를 허용하고 JSON 문자열 안의 펜스는 유지한다")
+    func parsesFencedQuizResponse() throws {
+        let output = "```json\n{\"needsQuiz\":false,\"reason\":\"코드 예제 ```swift\",\"questions\":[]}\n```"
+        let quiz = try CursorAgent.parseBranchQuiz(output)
+        #expect(!quiz.needsQuiz)
+        #expect(quiz.reason == "코드 예제 ```swift")
+        #expect(throws: CommandError.self) {
+            try CursorAgent.parseBranchQuiz("{\"needsQuiz\":true,\"reason\":\"\",\"questions\":[]}")
+        }
+    }
+
     @Test("로그인 성공 문구에서 계정을 추출한다")
     func parsesLoggedInAccount() {
         let output = "✓ Logged in as taid@supercent.io\n"

@@ -84,6 +84,8 @@ enum AgentProvider: String, CaseIterable, Codable, Sendable {
                 throw ExternalAgentError(detail: "최종 응답이 비어 있습니다.")
             }
             return .init(output: output, error: result.error, status: result.status)
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             throw ExternalAgentError(detail: "\(title) CLI 실행 실패. \(error.localizedDescription)")
         }

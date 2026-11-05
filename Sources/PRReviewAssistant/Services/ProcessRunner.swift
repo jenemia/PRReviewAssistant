@@ -1,5 +1,17 @@
 @preconcurrency import Foundation
 
+func runCancellable<Value: Sendable>(_ operation: @escaping @Sendable () throws -> Value) async throws -> Value {
+    try Task.checkCancellation()
+    let worker = Task.detached(operation: operation)
+    return try await withTaskCancellationHandler {
+        let result = try await worker.value
+        try Task.checkCancellation()
+        return result
+    } onCancel: {
+        worker.cancel()
+    }
+}
+
 struct CommandResult: Sendable {
     let output: String
     let error: String
@@ -55,7 +67,8 @@ final class ProcessRunner: @unchecked Sendable {
         self.defaultTimeout = defaultTimeout
     }
 
-    func run(_ executable: String, arguments: [String], workingDirectory: String? = nil, input: String? = nil, timeout: TimeInterval? = nil) throws -> CommandResult {
+    func run(_ executable: String, arguments: [String], workingDirectory: String? = nil, input: String? = nil, timeout: TimeInterval? = nil, onOutputLine: (@Sendable (Data) -> Void)? = nil) throws -> CommandResult {
+        try Task.checkCancellation()
         let timeout = timeout ?? defaultTimeout
         let process = Process()
         let outputPipe = Pipe()
@@ -80,19 +93,6 @@ final class ProcessRunner: @unchecked Sendable {
         // queued long enough to look like a stalled command under load.
         let readers = DispatchGroup()
         let commandOutput = CommandOutput()
-        readers.enter()
-        DispatchQueue.global(qos: .userInitiated).async {
-            let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
-            commandOutput.setStandardOutput(data)
-            readers.leave()
-        }
-        readers.enter()
-        DispatchQueue.global(qos: .userInitiated).async {
-            let data = errorPipe.fileHandleForReading.readDataToEndOfFile()
-            commandOutput.setStandardError(data)
-            readers.leave()
-        }
-
         let termination = DispatchSemaphore(value: 0)
         process.terminationHandler = { _ in termination.signal() }
         if let input {
@@ -111,19 +111,61 @@ final class ProcessRunner: @unchecked Sendable {
         } else {
             try process.run()
         }
-        if let timeout, termination.wait(timeout: .now() + timeout) == .timedOut {
-            if process.isRunning { process.terminate() }
-            if termination.wait(timeout: .now() + 5) == .timedOut {
-                kill(process.processIdentifier, SIGKILL)
-                _ = termination.wait(timeout: .now() + 1)
+        readers.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            let handle = outputPipe.fileHandleForReading
+            var data = Data()
+            if let onOutputLine {
+                var pending = Data()
+                while true {
+                    let chunk = handle.availableData
+                    if chunk.isEmpty { break }
+                    data.append(chunk)
+                    pending.append(chunk)
+                    while let end = pending.firstIndex(of: 10) {
+                        onOutputLine(Data(pending[..<end]))
+                        pending.removeSubrange(...end)
+                    }
+                }
+                if !pending.isEmpty { onOutputLine(pending) }
+            } else {
+                data = handle.readDataToEndOfFile()
             }
-            _ = readers.wait(timeout: .now() + 2)
+            commandOutput.setStandardOutput(data)
+            readers.leave()
+        }
+        readers.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            let data = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            commandOutput.setStandardError(data)
+            readers.leave()
+        }
+
+        let pid = process.processIdentifier
+        // Foundation normally starts a separate process group. Never signal
+        // a group unless this command is its leader.
+        let target = getpgid(pid) == pid ? -pid : pid
+        let deadline = timeout.map { DispatchTime.now() + $0 }
+        while termination.wait(timeout: min(deadline ?? .distantFuture, .now() + 0.1)) == .timedOut {
+            let cancelled = Task.isCancelled
+            guard cancelled || deadline.map({ DispatchTime.now() >= $0 }) == true else { continue }
+            kill(target, SIGTERM)
+            let needsForce = termination.wait(timeout: .now() + 0.5) == .timedOut
+            if needsForce || target < 0 { kill(target, SIGKILL) }
+            if needsForce { _ = termination.wait(timeout: .now() + 1) }
+            if cancelled { throw CancellationError() }
             throw CommandError.timedOut(executable)
         }
-        if timeout == nil { termination.wait() }
-        // A background descendant can keep the pipes open after the command
-        // itself has exited; output is only complete once both readers finish.
-        guard readers.wait(timeout: .now() + 5) == .success else { throw CommandError.timedOut(executable) }
+        // Descendants can keep inherited pipes open after the CLI exits.
+        let drainDeadline = DispatchTime.now() + 5
+        while readers.wait(timeout: min(drainDeadline, .now() + 0.1)) == .timedOut {
+            if Task.isCancelled {
+                if target < 0 { kill(target, SIGKILL) }
+                throw CancellationError()
+            }
+            if DispatchTime.now() >= drainDeadline { throw CommandError.timedOut(executable) }
+        }
+        try Task.checkCancellation()
         let capturedOutput = commandOutput.snapshot()
         let result = CommandResult(
             output: String(decoding: capturedOutput.output, as: UTF8.self),

@@ -14,6 +14,7 @@ struct CursorReviewWorkflowTests {
         var warning = ""
         var responseOverride: String?
         var changesHeadAfterSummary = false
+        var baseSHA = "base-sha"
 
         var calls: [[String]] {
             lock.lock()
@@ -43,7 +44,7 @@ struct CursorReviewWorkflowTests {
             recorded.append([executable] + arguments)
             if executable == "git" {
                 if arguments.first == "merge-base" { return "merge-sha\n" }
-                if arguments.last == "main^{commit}" { return "base-sha\n" }
+                if arguments.last == "main^{commit}" { return "\(baseSHA)\n" }
                 if changesHeadAfterSummary, recorded.contains(where: { $0.last?.contains("담당: 리뷰 통합.") == true }) { return "changed-sha\n" }
                 return "head-sha\n"
             }
@@ -259,16 +260,76 @@ struct CursorReviewWorkflowTests {
         #expect(summary.contains("지적의 타당성과 수정안 적절성"))
     }
 
-    @Test("필수 전역 역할이 없으면 모델 호출 전에 중단한다")
-    func missingRoleStopsBeforeAgentCalls() async throws {
-        let directory = try rolesDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
-        try FileManager.default.removeItem(at: directory.appendingPathComponent("maintenance-reviewer.md"))
+    @Test("전역 역할 파일이 없거나 비어 있으면 기본 지침을 사용한다")
+    func missingRolesUseDefaults() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let commands = Commands()
         let workflow = CursorReviewWorkflow(agentsDirectory: directory, runCommand: commands.run)
-        await #expect(throws: (any Error).self) {
-            try await workflow.run(preset: .branch, directory: "/repo", headReference: "feature", expectedSHA: "head-sha", baseReference: "main", context: "", outputInstructions: "", trustWorkspace: false, model: "")
+        _ = try await workflow.run(preset: .branch, directory: directory.path, headReference: "feature", expectedSHA: "head-sha", baseReference: "main", context: "", outputInstructions: "", trustWorkspace: false, model: "")
+        let calls = commands.calls.filter { $0.first == "cursor" }
+        #expect(calls.count == 5)
+        let maintenance = try #require(calls.compactMap(\.last).first { $0.contains("담당 역할: maintenance-reviewer") })
+        #expect(maintenance.contains("기존 사용자의 관점에서 변경 전후 동작을 대조"))
+        #expect(maintenance.contains("실패·재시도·동시 실행·중간 종료"))
+    }
+
+    @Test("브랜치 통합 실패 후 같은 비교 커밋과 컨텍스트에서는 통합만 다시 실행한다")
+    func retriesSummaryWithoutRepeatingCompletedRoles() async throws {
+        let directory = try rolesDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let commands = Commands()
+        let workflow = CursorReviewWorkflow(agentsDirectory: directory, runCommand: commands.run)
+
+        func run(context: String) async throws -> String {
+            try await workflow.run(preset: .branch, directory: directory.path, headReference: "feature", expectedSHA: "head-sha", baseReference: "main", context: context, outputInstructions: "", trustWorkspace: false, model: "")
         }
+        commands.failRole = "summary"
+        await #expect(throws: (any Error).self) { _ = try await run(context: "original") }
+        await #expect(throws: (any Error).self) { _ = try await run(context: "new context") }
+        #expect(commands.calls.filter { $0.first == "cursor" }.count == 10)
+        commands.baseSHA = "moved-base-sha"
+        await #expect(throws: (any Error).self) { _ = try await run(context: "original") }
+        #expect(commands.calls.filter { $0.first == "cursor" }.count == 15)
+
+        commands.failRole = nil
+        #expect(try await run(context: "original") == "evidence-from-summary")
+        #expect(commands.calls.filter { $0.first == "cursor" }.count == 16)
+
+        #expect(try await run(context: "original") == "evidence-from-summary")
+        #expect(commands.calls.filter { $0.first == "cursor" }.count == 21)
+    }
+
+    @Test("병렬 담당이 실패하면 실행 중인 다른 담당을 취소한다")
+    func failedParallelRoleCancelsSibling() async throws {
+        let directory = try rolesDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let commands = Commands()
+        let siblingStarted = DispatchSemaphore(value: 0)
+        let siblingCancelled = DispatchSemaphore(value: 0)
+        let workflow = CursorReviewWorkflow(limiter: AgentCallLimiter(limit: 2), agentsDirectory: directory) { executable, arguments, path, timeout in
+            let prompt = arguments.last ?? ""
+            if prompt.contains("담당 역할: structure-agent") {
+                siblingStarted.signal()
+                let deadline = Date().addingTimeInterval(3)
+                repeat {
+                    if Task.isCancelled {
+                        siblingCancelled.signal()
+                        throw CancellationError()
+                    }
+                    Thread.sleep(forTimeInterval: 0.01)
+                } while Date() < deadline
+            } else if prompt.contains("담당 역할: spec-search-agent") {
+                _ = siblingStarted.wait(timeout: .now() + 2)
+                throw CommandError.timedOut("spec-search-agent")
+            }
+            return try commands.run(executable, arguments, path, timeout)
+        }
+
+        await #expect(throws: (any Error).self) {
+            _ = try await workflow.run(preset: .branch, directory: directory.path, headReference: "feature", expectedSHA: "head-sha", baseReference: "main", context: "", outputInstructions: "", trustWorkspace: false, model: "")
+        }
+        func cancellationObserved() -> Bool { siblingCancelled.wait(timeout: .now()) == .success }
+        #expect(cancellationObserved())
         #expect(!commands.calls.contains { $0.first == "cursor" })
     }
 

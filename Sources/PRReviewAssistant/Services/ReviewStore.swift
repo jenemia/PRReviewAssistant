@@ -69,6 +69,7 @@ final class ReviewStore {
     var pullRequests: [PullRequest] = []
     /// Unfiltered refresh result. `pullRequests` is the author-filtered Inbox.
     private var allPullRequests: [PullRequest] = []
+    private var reviewDetailsStamps: [String: ReviewDetailsStamp] = [:]
     var repositories: [RegisteredRepository] = []
     var selectedID: PullRequest.ID?
     var lastRefreshed = Date.now
@@ -127,6 +128,7 @@ final class ReviewStore {
     var cursorSessionSummaries: [String: String] = [:]
     var isSummarizingCursorSessionID: String?
     var cursorSessionSpecs: [String: CursorSessionSpec] = [:]
+    private var cursorSpecRetryAfter: [String: (sessionUpdatedAt: Date, retryAt: Date)] = [:]
     var cursorSpecSidebarCache = CursorSpecSidebarCache()
     var automaticCursorSessionClassification = false { didSet { persist() } }
     var automaticReviewAnalysis = true { didSet { persist() } }
@@ -145,6 +147,13 @@ final class ReviewStore {
     var implementingBranchRepositoryIDs: Set<UUID> = []
     var isLoadingBranches = false
     var isReviewingBranch = false
+    private(set) var reviewingBranchID: String?
+    private var branchReviewTask: Task<Void, Never>?
+    private var branchMessageTasks: [UUID: Task<Void, Never>] = [:]
+    private var agentMessageTasks: [UUID: Task<Void, Never>] = [:]
+    private var reviewProgressTokens: [String: UUID] = [:]
+    private(set) var cardReviewProgress: [UUID: String] = [:]
+
     var branchQuizzes: [String: [BranchQuizQuestion]] = [:]
     var branchQuizNotices: [String: String] = [:]
     var branchQuizErrors: [String: String] = [:]
@@ -310,10 +319,14 @@ final class ReviewStore {
         cursorSpecSidebarCache.canPin(name)
     }
     var pendingCursorSpecClassificationCount: Int {
-        cursorSessions.filter { session in
-            guard let spec = cursorSessionSpecs[session.id], isCanonicalSpecRecord(spec) else { return true }
-            return spec.sessionUpdatedAt < session.updatedAt
-        }.count
+        cursorSessions.filter(needsCursorSpecClassification).count
+    }
+
+    private func needsCursorSpecClassification(_ session: CursorSession) -> Bool {
+        guard let record = cursorSessionSpecs[session.id] else { return true }
+        let isStoredUnclassifiedResult = record.specName == CursorSessionSpec.unclassifiedName && record.specPath == nil
+        guard isStoredUnclassifiedResult || isCanonicalSpecRecord(record) else { return true }
+        return record.sessionUpdatedAt < session.updatedAt
     }
 
     private func isCanonicalSpecRecord(_ record: CursorSessionSpec) -> Bool {
@@ -416,19 +429,50 @@ final class ReviewStore {
             return
         }
         isReviewingBranch = true
+        reviewingBranchID = branch.id
+        let task = Task { await runBranchReview(branch, repository: repository) }
+        branchReviewTask = task
+        await task.value
+        branchReviewTask = nil
+        reviewingBranchID = nil
+        isReviewingBranch = false
+    }
+
+    func cancelBranchReview() { branchReviewTask?.cancel() }
+    func canCancelBranchMessage(_ id: UUID) -> Bool { branchMessageTasks[id] != nil }
+    func cancelBranchMessage(_ id: UUID) { branchMessageTasks[id]?.cancel() }
+    func cancelAgentMessage(_ id: UUID) { agentMessageTasks[id]?.cancel() }
+
+    private func reviewProgress(key: String, update: @escaping @MainActor @Sendable (String) -> Void) -> @Sendable (String) -> Void {
+        let token = UUID()
+        reviewProgressTokens[key] = token
+        return { [weak self] message in
+            Task { @MainActor [weak self] in
+                guard self?.reviewProgressTokens[key] == token else { return }
+                update(message)
+            }
+        }
+    }
+
+    private func runBranchReview(_ branch: RepositoryBranch, repository: RegisteredRepository) async {
+        let progressKey = "branch:\(branch.id)"
+        let progress = reviewProgress(key: progressKey) { [weak self] in self?.branchReviewMessages[branch.id] = $0 }
+        defer { reviewProgressTokens[progressKey] = nil }
         branchReviewMessages[branch.id] = "스펙과 구조를 조사한 뒤 구현과 유지보수를 검토하고 결과를 통합합니다."
-        defer { isReviewingBranch = false }
         do {
             let model = effectiveAgentModel
             let isTrusted = trustedBranchReviewIDs.contains(branch.id)
             let baseReference = branchBaseReference(for: branch, repository: repository)
-            let output = try await selectedAgent.reviewBranch(repositoryPath: repository.localPath, branch: branch, baseBranch: baseReference, trustWorkspace: isTrusted, model: model)
+            let output = try await selectedAgent.reviewBranch(repositoryPath: repository.localPath, branch: branch, baseBranch: baseReference, trustWorkspace: isTrusted, model: model, progress: progress)
+            try Task.checkCancellation()
             guard requestedBranches.contains(where: { $0.id == branch.id }) else { return }
             clearBranchCards(for: branch.id)
             branchReviewCards[branch.id] = Self.makeBranchReviewCards(from: output, reviewedSHA: branch.sha)
             persist()
             statusMessage = "\(branch.name) 브랜치 리뷰를 분류했습니다."
             branchReviewMessages[branch.id] = statusMessage
+        } catch is CancellationError {
+            branchReviewMessages[branch.id] = "브랜치 리뷰를 취소했습니다."
         } catch {
             branchReviewMessages[branch.id] = "브랜치 리뷰 실패: \(error.localizedDescription)"
             if let kind = permissionKind(for: error) {
@@ -440,13 +484,27 @@ final class ReviewStore {
     }
 
     func sendBranchMessage(cardID: BranchReviewCard.ID, branch: RepositoryBranch, message: String, recordsUserMessage: Bool = true) async {
+        guard branchMessageTasks[cardID] == nil else { return }
+        let task = Task { await runBranchMessage(cardID: cardID, branch: branch, message: message, recordsUserMessage: recordsUserMessage) }
+        branchMessageTasks[cardID] = task
+        await task.value
+        branchMessageTasks[cardID] = nil
+    }
+
+    private func runBranchMessage(cardID: UUID, branch: RepositoryBranch, message: String, recordsUserMessage: Bool) async {
         guard let repository = repositories.first(where: { $0.id == branch.repositoryID }),
               let index = branchReviewCards[branch.id]?.firstIndex(where: { $0.id == cardID }),
               !branchCardBusy.contains(cardID) else { return }
         branchCardBusy.insert(cardID)
         branchCardErrors[cardID] = nil
         branchCardReviewed.remove(cardID)
-        defer { branchCardBusy.remove(cardID) }
+        let key = cardID.uuidString
+        let progress = reviewProgress(key: key) { [weak self] in self?.cardReviewProgress[cardID] = $0 }
+        defer {
+            branchCardBusy.remove(cardID)
+            reviewProgressTokens[key] = nil
+            cardReviewProgress[cardID] = nil
+        }
         if recordsUserMessage { branchReviewCards[branch.id]?[index].messages.append(.init(role: .user, body: message)) }
         branchReviewCards[branch.id]?[index].updatedAt = .now
         let card = branchReviewCards[branch.id]![index]
@@ -454,13 +512,20 @@ final class ReviewStore {
         do {
             let model = effectiveAgentModel
             let isTrusted = trustedBranchReviewIDs.contains(branch.id)
-            let response = try await selectedAgent.askAboutBranch(repositoryPath: repository.localPath, branch: branch, card: card, question: message, trustWorkspace: isTrusted, model: model)
+            let response = try await selectedAgent.askAboutBranch(repositoryPath: repository.localPath, branch: branch, card: card, question: message, trustWorkspace: isTrusted, model: model, progress: progress, onSession: { session in
+                await self.updateBranchCursorSession(session, cardID: cardID, branchID: branch.id)
+            })
+            try Task.checkCancellation()
             guard let updated = branchReviewCards[branch.id]?.firstIndex(where: { $0.id == cardID }) else { return }
             branchReviewCards[branch.id]?[updated].messages.append(.init(role: .agent, body: response))
             branchCardReviewed.insert(cardID)
             branchReviewCards[branch.id]?[updated].updatedAt = .now
             persist()
+        } catch is CancellationError {
+            branchCardErrors[cardID] = "대화 요청을 취소했습니다."
+            persist()
         } catch {
+            persist()
             guard branchReviewCards[branch.id]?.contains(where: { $0.id == cardID }) == true else { return }
             if let kind = permissionKind(for: error) {
                 branchAgentPermissionRequest = .init(kind: kind, branch: branch, action: .message(cardID: cardID, message: message), detail: error.localizedDescription)
@@ -468,6 +533,11 @@ final class ReviewStore {
             }
             branchCardErrors[cardID] = "대화 요청에 실패했습니다. \(error.localizedDescription)"
         }
+    }
+
+    private func updateBranchCursorSession(_ session: CursorReviewSession?, cardID: UUID, branchID: String) {
+        guard let index = branchReviewCards[branchID]?.firstIndex(where: { $0.id == cardID }) else { return }
+        branchReviewCards[branchID]?[index].cursorSession = session
     }
 
     static func branchImplementationRequest(card: BranchReviewCard) -> String {
@@ -816,7 +886,11 @@ final class ReviewStore {
             }
             let sessions = result.0
             cursorSessions = sessions
-            cursorSessionSpecs = result.1
+            cursorSessionSpecs.merge(result.1) { current, loaded in
+                current.classifiedAt > loaded.classifiedAt ? current : loaded
+            }
+            let now = Date.now
+            cursorSpecRetryAfter = cursorSpecRetryAfter.filter { $0.value.retryAt > now }
             reconcileCursorSpecSidebarCache()
             if let selectedCursorSpecName,
                !cursorSpecNames.contains(selectedCursorSpecName) {
@@ -829,7 +903,7 @@ final class ReviewStore {
             cursorSessionSummaries = cursorSessionSummaries.filter { key, _ in sessions.contains(where: { $0.id == key }) }
             cursorHistoryStatus = sessions.isEmpty ? "표시할 Cursor 세션 기록이 없습니다." : "Cursor 세션 \(sessions.count)개를 읽었습니다."
             if automaticCursorSessionClassification {
-                await classifyUpdatedCursorSessions()
+                await classifyUpdatedCursorSessions(automatic: true)
             }
         } catch {
             cursorSessions = []
@@ -853,10 +927,13 @@ final class ReviewStore {
         }
     }
 
-    func classifyUpdatedCursorSessions() async {
+    func classifyUpdatedCursorSessions(automatic: Bool = false) async {
+        let now = Date.now
         let pending = cursorSessions.filter { session in
-            guard let record = cursorSessionSpecs[session.id], isCanonicalSpecRecord(record) else { return true }
-            return record.sessionUpdatedAt < session.updatedAt
+            guard needsCursorSpecClassification(session) else { return false }
+            guard automatic, let retry = cursorSpecRetryAfter[session.id],
+                  retry.sessionUpdatedAt == session.updatedAt else { return true }
+            return retry.retryAt <= now
         }
         await classifyCursorSessions(pending, emptyMessage: "새로 분류할 세션이 없습니다.", progressLabel: "갱신된 세션")
     }
@@ -896,9 +973,11 @@ final class ReviewStore {
                 )
                 try await background { try self.cursorSessionSpecStore.save(record) }
                 cursorSessionSpecs[session.id] = record
+                cursorSpecRetryAfter[session.id] = nil
                 completed += 1
                 cursorSpecClassificationStatus = "\(completed)/\(pending.count)개 세션을 분류했습니다."
             } catch {
+                cursorSpecRetryAfter[session.id] = (session.updatedAt, Date.now.addingTimeInterval(300))
                 cursorSpecClassificationStatus = "세션 spec 분류 중 일부 항목을 건너뛰었습니다: \(error.localizedDescription)"
             }
         }
@@ -1072,6 +1151,8 @@ final class ReviewStore {
         let repositoryPrefix = "\(repository.fullName)#"
         pullRequests.removeAll { $0.repository == repository.fullName }
         comments = comments.filter { !$0.key.hasPrefix(repositoryPrefix) }
+        reviewRequests = reviewRequests.filter { !$0.key.hasPrefix(repositoryPrefix) }
+        reviewDetailsStamps = reviewDetailsStamps.filter { !$0.key.hasPrefix(repositoryPrefix) }
         analyses = analyses.filter { !$0.key.hasPrefix(repositoryPrefix) }
         worktreePaths = worktreePaths.filter { !$0.key.hasPrefix(repositoryPrefix) }
         committedHeads = committedHeads.filter { !$0.key.hasPrefix(repositoryPrefix) }
@@ -1087,6 +1168,10 @@ final class ReviewStore {
     func repositoryMonitoringChanged() { persist() }
 
     func refresh() async {
+        await refresh(forceReviewDetails: true)
+    }
+
+    private func refresh(forceReviewDetails: Bool) async {
         guard !isRefreshing else { return }
         isRefreshing = true
         defer { isRefreshing = false; lastRefreshed = .now }
@@ -1116,17 +1201,43 @@ final class ReviewStore {
             }
             for pr in prs {
                 let prKey = worktreeKey(pr)
+                let previous = allPullRequests.first { worktreeKey($0) == prKey }
+                let latestWithPreviousDetails = Self.pullRequest(pr, keepingReviewDetailsFrom: previous)
+                // Keep list metadata for immediate filter changes, but fetch
+                // review details only for PRs in the current Inbox.
+                guard matchesAuthorFilter(pr) else {
+                    fetched.append(latestWithPreviousDetails)
+                    recordObservedPullRequest(pr, key: prKey)
+                    continue
+                }
+                if !forceReviewDetails,
+                   previous != nil,
+                   reviewDetailsStamps[prKey]?.canReuse(for: pr) == true {
+                    fetched.append(latestWithPreviousDetails)
+                    continue
+                }
+                reviewDetailsStamps[prKey] = nil
                 let isNewPullRequest = !knownPullRequestIDs.contains(prKey)
                 let newComments: [ReviewComment]
                 do {
                     newComments = try await background { try self.github.comments(repository: repository.fullName, number: pr.number) }
                 } catch {
                     failures.append("\(prKey): \(error.localizedDescription)")
-                    fetched.append(Self.pullRequest(pr, keepingReviewDetailsFrom: allPullRequests.first { worktreeKey($0) == prKey }))
+                    fetched.append(latestWithPreviousDetails)
                     continue
                 }
-                comments[worktreeKey(pr)] = newComments
-                reviewRequests[prKey] = try? await background { try self.github.reviewRequests(repository: repository.fullName, number: pr.number) }
+                guard matchesAuthorFilter(pr) else {
+                    fetched.append(latestWithPreviousDetails)
+                    recordObservedPullRequest(pr, key: prKey)
+                    continue
+                }
+                // Keep the previous events on failure and retry on the next
+                // poll. The comments are usable even when events failed.
+                if let requests = try? await background({ try self.github.reviewRequests(repository: repository.fullName, number: pr.number) }) {
+                    reviewRequests[prKey] = requests
+                    reviewDetailsStamps[prKey] = ReviewDetailsStamp(pr)
+                }
+                comments[prKey] = newComments
                 var enrichedPR = pr
                 enrichedPR.commentCount = newComments.count
                 if let latestReview = newComments.last(where: { $0.kind == .review }) {
@@ -1164,13 +1275,8 @@ final class ReviewStore {
                     unreadPullRequestIDs.insert(prKey)
                     unreadCommentIDs.formUnion(unseen.map(\.id))
                 }
-                knownPullRequestIDs.insert(prKey)
                 processedCommentIDs.formUnion(newComments.map(\.id))
-                if pr.reviewState == .approved {
-                    approvedPullRequestIDs.insert(prKey)
-                } else {
-                    approvedPullRequestIDs.remove(prKey)
-                }
+                recordObservedPullRequest(pr, key: prKey)
             }
         }
         let previousSelectionKey = selectedPullRequest.map(worktreeKey)
@@ -1178,8 +1284,10 @@ final class ReviewStore {
             candidate.updatedAt > current.updatedAt ? candidate : current
         }).values
         allPullRequests = uniquePullRequests.sorted { $0.updatedAt > $1.updatedAt }
+        let openPullRequestKeys = Set(allPullRequests.map(worktreeKey))
+        reviewDetailsStamps = reviewDetailsStamps.filter { openPullRequestKeys.contains($0.key) }
         applyAuthorFilter()
-        // A skipped PR was not recorded as known, so it must not alert as new later.
+        // Do not establish a baseline from a partially failed refresh.
         if failures.isEmpty {
             hasEstablishedNotificationBaseline = true
             hasEstablishedApprovalBaseline = true
@@ -1191,6 +1299,40 @@ final class ReviewStore {
             statusMessage = "PR \(pullRequests.count)개를 확인했습니다."
         }
         persist()
+    }
+
+    private func recordObservedPullRequest(_ pullRequest: PullRequest, key: String) {
+        knownPullRequestIDs.insert(key)
+        if pullRequest.reviewState == .approved {
+            approvedPullRequestIDs.insert(key)
+        } else {
+            approvedPullRequestIDs.remove(key)
+        }
+    }
+
+    struct ReviewDetailsStamp {
+        private static let maxReuseInterval: TimeInterval = 10 * 60
+        private let updatedAt: Date
+        private let headSHA: String
+        private let reviewState: ReviewState
+        private let fetchedAt: Date
+
+        init(_ pullRequest: PullRequest, fetchedAt: Date = .now) {
+            updatedAt = pullRequest.updatedAt
+            headSHA = pullRequest.headSHA
+            reviewState = pullRequest.reviewState
+            self.fetchedAt = fetchedAt
+        }
+
+        func canReuse(for pullRequest: PullRequest, now: Date = .now) -> Bool {
+            // Recheck periodically in case an edit or deletion did not
+            // advance the PR's updatedAt.
+            let age = now.timeIntervalSince(fetchedAt)
+            return age >= 0 && age < Self.maxReuseInterval &&
+                updatedAt == pullRequest.updatedAt &&
+                headSHA == pullRequest.headSHA &&
+                reviewState == pullRequest.reviewState
+        }
     }
 
     /// Keeps the last known review summary when only this PR's comments failed.
@@ -2187,6 +2329,7 @@ final class ReviewStore {
                 persist()
             }
             statusMessage = "GitHub PR 코멘트를 등록했습니다."
+            reviewDetailsStamps[worktreeKey(pullRequest)] = nil
             await refresh()
             return true
         } catch {
@@ -2196,6 +2339,14 @@ final class ReviewStore {
     }
 
     func sendAgentMessage(id: AgentReviewCard.ID, pullRequest: PullRequest, message: String, hidesUserMessage: Bool = false, recordsUserMessage: Bool = true) async {
+        guard agentMessageTasks[id] == nil else { return }
+        let task = Task { await runAgentMessage(id: id, pullRequest: pullRequest, message: message, hidesUserMessage: hidesUserMessage, recordsUserMessage: recordsUserMessage) }
+        agentMessageTasks[id] = task
+        await task.value
+        agentMessageTasks[id] = nil
+    }
+
+    private func runAgentMessage(id: UUID, pullRequest: PullRequest, message: String, hidesUserMessage: Bool, recordsUserMessage: Bool) async {
         let question = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty, let index = agentReviewCards.firstIndex(where: { $0.id == id }) else { return }
         guard let repository = repositories.first(where: { $0.fullName == pullRequest.repository }) else { return }
@@ -2208,6 +2359,13 @@ final class ReviewStore {
             persist()
             return
         }
+        let progressKey = id.uuidString
+        let progress = reviewProgress(key: progressKey) { [weak self] in self?.cardReviewProgress[id] = $0 }
+        defer {
+            reviewProgressTokens[progressKey] = nil
+            cardReviewProgress[id] = nil
+        }
+        if hidesUserMessage { agentReviewCards[index].cursorSession = nil }
         agentReviewCards[index].status = .reviewing
         agentReviewCards[index].updatedAt = .now
         let card = agentReviewCards[index]
@@ -2226,11 +2384,15 @@ final class ReviewStore {
                 workspaceSHA = try await background { try self.workspaces.verifiedHead(path, expectedSHA: pullRequest.headSHA, expectedBranch: pullRequest.headBranch) }
                 setActiveWorkspace(path, for: pullRequest)
             }
+            try Task.checkCancellation()
             let isTrusted = trustedAgentReviewIDs.contains(id)
             let analysisPullRequest = pullRequestWithCurrentWorkspaceSHA(pullRequest, sha: workspaceSHA)
-            // Hidden starter messages cover initial review and explicit retries; follow-ups stay in one session.
+            // Initial reviews and explicit retries use the role workflow. Cursor follow-ups resume their own card session.
             let researchContext = hidesUserMessage ? Self.sharedResearchContext(for: agentCards(for: pullRequest)) : nil
-            let answer = try await agent.ask(repositoryPath: path, pullRequest: analysisPullRequest, card: card, question: question, trustWorkspace: isTrusted, model: model, reviewsComment: hidesUserMessage, researchContext: researchContext)
+            let answer = try await agent.ask(repositoryPath: path, pullRequest: analysisPullRequest, card: card, question: question, trustWorkspace: isTrusted, model: model, reviewsComment: hidesUserMessage, researchContext: researchContext, progress: progress, onSession: { session in
+                await self.updateAgentCursorSession(session, cardID: id)
+            })
+            try Task.checkCancellation()
             guard let updatedIndex = agentReviewCards.firstIndex(where: { $0.id == id }) else { return }
             agentReviewCards[updatedIndex].messages.append(.init(role: .agent, body: answer))
             agentReviewCards[updatedIndex].status = .complete
@@ -2238,6 +2400,13 @@ final class ReviewStore {
             persist()
         } catch {
             guard let updatedIndex = agentReviewCards.firstIndex(where: { $0.id == id }) else { return }
+            if error is CancellationError {
+                agentReviewCards[updatedIndex].status = agentReviewCards[updatedIndex].latestAgentJudgment == nil ? .ready : .complete
+                agentReviewCards[updatedIndex].updatedAt = .now
+                statusMessage = "에이전트 검토를 취소했습니다."
+                persist()
+                return
+            }
             if let permissionKind = permissionKind(for: error) {
                 agentReviewCards[updatedIndex].status = permissionKind == .workspaceTrust ? .workspaceTrustRequired : .permissionRequired
                 agentReviewCards[updatedIndex].updatedAt = .now
@@ -2250,6 +2419,11 @@ final class ReviewStore {
             agentReviewCards[updatedIndex].updatedAt = .now
             persist()
         }
+    }
+
+    private func updateAgentCursorSession(_ session: CursorReviewSession?, cardID: UUID) {
+        guard let index = agentReviewCards.firstIndex(where: { $0.id == cardID }) else { return }
+        agentReviewCards[index].cursorSession = session
     }
 
     /// One research pass over every current section of a PR, so reviewing each
@@ -2473,7 +2647,7 @@ final class ReviewStore {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: interval)
                 guard !Task.isCancelled, let self else { return }
-                await self.refresh()
+                await self.refresh(forceReviewDetails: false)
             }
         }
     }

@@ -203,6 +203,8 @@ struct PullRequestDetailView: View {
                 send: { message in Task { await store.sendAgentMessage(id: cardID, pullRequest: pullRequest, message: message) } },
                 startAnalysis: { Task { await store.beginAgentReview(id: cardID, pullRequest: pullRequest) } },
                 retryAnalysis: { Task { await store.retryAgentReview(id: cardID, pullRequest: pullRequest) } },
+                reviewProgress: store.cardReviewProgress[cardID],
+                cancelAnalysis: { store.cancelAgentMessage(cardID) },
                 writeResponse: {
                     responseCardID = cardID
                     detailNavigation.closePanel()
@@ -1558,6 +1560,8 @@ private struct AgentChatSidePanel: View {
     let send: (String) -> Void
     let startAnalysis: () -> Void
     let retryAnalysis: () -> Void
+    let reviewProgress: String?
+    let cancelAnalysis: () -> Void
     let writeResponse: () -> Void
     let openCodeLocation: (String, Int?, Int?) -> String
     let beginImplementation: () -> Void
@@ -1630,7 +1634,8 @@ private struct AgentChatSidePanel: View {
                     if card.status == .reviewing {
                         HStack(spacing: 8) {
                             ProgressView().controlSize(.small)
-                            Text("에이전트가 검토 중입니다…").font(.caption).foregroundStyle(.secondary)
+                            Text(reviewProgress ?? "에이전트가 검토 중입니다…").font(.caption).foregroundStyle(.secondary)
+                            Button("취소", action: cancelAnalysis)
                         }
                     }
                     if card.status == .workspaceTrustRequired {

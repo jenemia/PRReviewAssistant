@@ -48,11 +48,48 @@ struct CursorSessionHistoryTests {
     }
 
     @Test("모델 출력은 후보 spec 경로로만 연결한다")
-    func acceptsOnlyCatalogSpecPath() {
+    func acceptsOnlyCatalogSpecPath() throws {
         let documents = [WorkspaceSpecDocument(name: "로그인", relativePath: ".specs/login/spec.md")]
 
-        #expect(CursorAgent.parseSpecClassification("{\"specPath\":\".specs/login/spec.md\"}", documents: documents).specName == "로그인")
-        #expect(CursorAgent.parseSpecClassification("{\"specPath\":\"invented/spec.md\"}", documents: documents).specName == CursorSessionSpec.unclassifiedName)
+        #expect(try CursorAgent.parseSpecClassification("{\"specPath\":\".specs/login/spec.md\"}", documents: documents).specName == "로그인")
+        #expect(try CursorAgent.parseSpecClassification("{\"specPath\":\"invented/spec.md\"}", documents: documents).specName == CursorSessionSpec.unclassifiedName)
+        #expect(throws: CommandError.self) {
+            try CursorAgent.parseSpecClassification("{}", documents: documents)
+        }
+    }
+
+    @Test("저장된 미분류 결과는 세션이 갱신될 때까지 자동 분류 대상에서 제외한다")
+    @MainActor
+    func skipsPreviouslyClassifiedSessionVersion() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let specStore = CursorSessionSpecStore(databaseURL: directory.appendingPathComponent("spec.sqlite"))
+        let reviewStore = ReviewStore(persistence: AppPersistence(url: directory.appendingPathComponent("state.json")), startsBackgroundTasks: false)
+        let updatedAt = Date(timeIntervalSince1970: 1_700_000_000.123)
+        let session = CursorSession(id: "session-1", title: "로그인", workspacePath: nil, updatedAt: updatedAt, isArchived: false, messages: [])
+        reviewStore.cursorSessions = [session]
+        #expect(reviewStore.pendingCursorSpecClassificationCount == 1)
+
+        try specStore.save(.init(sessionID: session.id, specName: CursorSessionSpec.unclassifiedName, specPath: nil, sessionUpdatedAt: updatedAt, classifiedAt: .now))
+        reviewStore.cursorSessionSpecs = try specStore.load()
+        #expect(reviewStore.pendingCursorSpecClassificationCount == 0)
+        #expect(reviewStore.unclassifiedCursorSessionCount == 1)
+
+        reviewStore.cursorSessions = [.init(id: session.id, title: session.title, workspacePath: nil, updatedAt: updatedAt.addingTimeInterval(1), isArchived: false, messages: [])]
+        #expect(reviewStore.pendingCursorSpecClassificationCount == 1)
+    }
+
+    @Test("긴 분류 입력은 제목과 최근 대화를 남기고 바이트 제한을 지킨다")
+    func boundsClassificationPrompt() {
+        let session = CursorSession(id: "session-1", title: "로그인 수정", workspacePath: nil, updatedAt: .now, isArchived: false, messages: [
+            .init(id: UUID(), role: .user, body: String(repeating: "가", count: 6_000) + "중간 표식" + String(repeating: "나", count: 6_000) + "최신 요청")
+        ])
+        let prompt = CursorAgent.specClassificationPrompt(session: session, catalog: "- .specs/login/spec.md")
+        #expect(prompt.contains("로그인 수정"))
+        #expect(prompt.contains("최신 요청"))
+        #expect(!prompt.contains("중간 표식"))
+        #expect(prompt.utf8.count < 18_000)
     }
 
     @Test("숨김 .specs 폴더의 문서를 분류 후보로 읽는다")

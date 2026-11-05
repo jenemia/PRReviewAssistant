@@ -233,6 +233,9 @@ struct BranchRequestDetailView: View {
                                 Task { await store.reviewSelectedBranch() }
                             }
                             .buttonStyle(.borderedProminent).disabled(store.isReviewingBranch || store.implementingBranchRepositoryIDs.contains(branch.repositoryID) || cards.contains(where: { store.branchCardBusy.contains($0.id) }))
+                            if store.reviewingBranchID == branch.id {
+                                Button("취소", action: store.cancelBranchReview)
+                            }
                             Spacer()
                             if !cards.isEmpty { Text("분류 카드 \(cards.count)개").font(.caption).foregroundStyle(.secondary) }
                         }
@@ -403,7 +406,13 @@ private struct BranchAgentSidePanel: View {
             }.padding(16) }
             Divider()
             HStack {
-                if store.branchCardBusy.contains(card.id) { ProgressView().controlSize(.small); Text("에이전트 작업 중…").font(.caption) }
+                if store.branchCardBusy.contains(card.id) {
+                    ProgressView().controlSize(.small)
+                    Text(store.cardReviewProgress[card.id] ?? "에이전트 작업 중…").font(.caption)
+                    if store.canCancelBranchMessage(card.id) {
+                        Button("취소") { store.cancelBranchMessage(card.id) }
+                    }
+                }
                 if !store.branchCardReviewed.contains(card.id) {
                     Button("에이전트 검토 시작") { Task { await store.sendBranchMessage(cardID: card.id, branch: branch, message: "이 카드의 지적과 수정 방향을 검토하고 대응 계획을 알려주세요.") } }
                         .disabled(store.branchCardBusy.contains(card.id))

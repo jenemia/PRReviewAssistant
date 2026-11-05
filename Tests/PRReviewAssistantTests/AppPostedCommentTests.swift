@@ -55,4 +55,26 @@ struct AppPostedCommentTests {
         #expect(merged.summary == "마지막 리뷰")
         #expect(ReviewStore.pullRequest(latest, keepingReviewDetailsFrom: nil).summary == "기본")
     }
+
+    @Test("리뷰 정보는 같은 PR 버전에서만 잠시 재사용한다")
+    @MainActor
+    func invalidatesReviewDetailsWhenRemoteRevisionChanges() {
+        let fetchedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let original = pullRequest()
+        let stamp = ReviewStore.ReviewDetailsStamp(original, fetchedAt: fetchedAt)
+        let nextPoll = fetchedAt.addingTimeInterval(60)
+
+        #expect(stamp.canReuse(for: original, now: nextPoll))
+        #expect(!stamp.canReuse(for: original, now: fetchedAt.addingTimeInterval(600)))
+
+        var updated = original
+        updated.updatedAt += 1
+        #expect(!stamp.canReuse(for: updated, now: nextPoll))
+        updated = original
+        updated.headSHA = "def"
+        #expect(!stamp.canReuse(for: updated, now: nextPoll))
+        updated = original
+        updated.reviewState = .approved
+        #expect(!stamp.canReuse(for: updated, now: nextPoll))
+    }
 }

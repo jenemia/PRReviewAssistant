@@ -4,6 +4,26 @@ import Testing
 
 @Suite("Process runner")
 struct ProcessRunnerTests {
+    @Test("실행 중 출력이 먼저 도착하고 취소하면 명령이 즉시 끝난다")
+    func streamsBeforeExitAndCancelsRunningCommand() async {
+        let (lines, continuation) = AsyncStream<String>.makeStream()
+        let worker = Task {
+            defer { continuation.finish() }
+            return try await runCancellable {
+                try ProcessRunner().run(
+                    "/bin/sh", arguments: ["-c", "echo ready; /bin/sleep 20 & wait"],
+                    timeout: 6, onOutputLine: { continuation.yield(String(decoding: $0, as: UTF8.self)) }
+                )
+            }
+        }
+        var iterator = lines.makeAsyncIterator()
+        #expect(await iterator.next() == "ready")
+        let started = Date()
+        worker.cancel()
+        await #expect(throws: CancellationError.self) { _ = try await worker.value }
+        #expect(Date().timeIntervalSince(started) < 3)
+    }
+
     @Test("시간 제한을 넘긴 에이전트 명령을 실패로 돌려준다")
     func timesOutLongRunningCommand() throws {
         let runner = ProcessRunner()
