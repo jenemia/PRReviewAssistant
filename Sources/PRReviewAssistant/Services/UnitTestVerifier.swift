@@ -20,6 +20,8 @@ struct UnitTestVerifier: Sendable {
         let stylePath: String?
         let styleSample: String?
         var behavior: String = ""
+        /// Tests a previous run put on the UnitTest branch; the agent may rewrite or delete them.
+        var existingTests: [String] = []
     }
 
     struct Change: Sendable {
@@ -63,6 +65,14 @@ struct UnitTestVerifier: Sendable {
         let file = parts.last ?? path
         return parts.dropLast().contains { ["Tests", "Test", "EditModeTests", "PlayModeTests"].contains($0) }
             || file.hasSuffix("Tests.cs") || file.hasSuffix("Test.cs")
+    }
+
+    /// `sprint/s29/feature/christmas2026` → `sprint/s29/unittest/christmas2026`, `feature/x` → `unittest/x`.
+    static func unitTestBranchName(for branchName: String) -> String {
+        let parts = branchName.split(separator: "/").map(String.init)
+        let prefix = parts.count >= 3 && parts[0] == "sprint" ? Array(parts.prefix(2)) : []
+        let rest = Array(parts.dropFirst(prefix.count))
+        return (prefix + ["unittest"] + (rest.count > 1 ? Array(rest.dropFirst()) : rest)).joined(separator: "/")
     }
 
     /// Test-only patch guard (SpecGuard `PatchGuard.CheckProposal`).
@@ -208,12 +218,35 @@ struct UnitTestVerifier: Sendable {
         progress: @Sendable (String) -> Void
     ) throws -> UnitTestVerification {
         let path = repository.localPath
-        let head = try git(["rev-parse", "--verify", "--end-of-options", "\(branch.reference)^{commit}"], at: path)
+        let head: String
+        do {
+            head = try git(["rev-parse", "--verify", "--end-of-options", "\(branch.reference)^{commit}"], at: path)
+        } catch CommandError.failed(let result) {
+            throw failure("검증할 브랜치 '\(branch.name)'의 로컬 참조를 확인하지 못했습니다. 브랜치 목록을 새로 고치고 원격 브랜치가 남아 있는지 확인하세요.\n\(result.error)")
+        }
         guard head.hasPrefix(branch.sha) else {
             throw failure("브랜치가 목록과 달라졌습니다. 목록을 새로 고친 뒤 다시 시도하세요.")
         }
-        try verifyRemoteHead(repository: repository, branch: branch, expected: head)
-        let mergeBase = try git(["merge-base", baseReference, head], at: path)
+        if branch.isRemote { try verifyRemoteHead(repository: repository, branch: branch, expected: head) }
+        var mergeBase: String
+        do {
+            mergeBase = try git(["merge-base", baseReference, head], at: path)
+        } catch CommandError.failed(let result) {
+            throw failure("비교 기준 '\(baseReference)'을 찾거나 공통 조상을 확인할 수 없습니다. 기준 브랜치와 저장소 이력을 확인하세요.\n\(result.error)")
+        }
+
+        if mergeBase == head {
+            let merges = try git(["rev-list", "--first-parent", "--merges", "--parents", baseReference], at: path)
+            let matching = merges.split(whereSeparator: \.isNewline).compactMap { line -> String? in
+                let commits = line.split(separator: " ").map(String.init)
+                guard commits.count == 3, commits[2] == head else { return nil }
+                return commits[1]
+            }
+            guard matching.count == 1 else {
+                throw failure("병합 전 변경 범위를 Git 이력에서 유일하게 찾을 수 없습니다. 병합 커밋과 원본 브랜치가 보존되어 있는지 확인하세요.")
+            }
+            mergeBase = try git(["merge-base", matching[0], head], at: path)
+        }
 
         let statuses = try gitList(["diff", "--name-status", "-z", "--find-renames", "--diff-filter=AMR", mergeBase, head, "--", "*.cs"], at: path)
         var changed: [(source: String, paths: [String])] = []
@@ -234,13 +267,50 @@ struct UnitTestVerifier: Sendable {
         try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: work) }
         let workspace = work.appendingPathComponent("checkout").path
-        let outputBranch = "unittest/\(UUID().uuidString.lowercased())"
-        progress("선택한 커밋에서 UnitTest 작업 브랜치를 체크아웃하는 중입니다.")
-        try git(["worktree", "add", "-b", outputBranch, workspace, head], at: path)
+        let outputBranch = Self.unitTestBranchName(for: branch.name)
+        let outputRef = "refs/heads/\(outputBranch)"
+        let remoteTip = try git(["ls-remote", repository.remoteName, outputRef], at: path)
+            .split(whereSeparator: { $0 == "\t" || $0 == " " }).first.map(String.init)
+        let localTip = try? git(["rev-parse", "--verify", "--quiet", "\(outputRef)^{commit}"], at: path)
+        if remoteTip != nil {
+            try git(["fetch", "--no-tags", repository.remoteName, "+\(outputRef):refs/remotes/\(repository.remoteName)/\(outputBranch)"], at: path)
+        }
+        progress(localTip == nil && remoteTip == nil ? "선택한 커밋에서 UnitTest 작업 브랜치를 만드는 중입니다." : "기존 UnitTest 브랜치 \(outputBranch)를 체크아웃하는 중입니다.")
+        do {
+            if localTip != nil {
+                try git(["worktree", "add", workspace, outputBranch], at: path)
+            } else {
+                try git(["worktree", "add", "-b", outputBranch, workspace, remoteTip ?? head], at: path)
+            }
+        } catch CommandError.failed(let result) {
+            throw failure("UnitTest 브랜치 \(outputBranch)를 체크아웃하지 못했습니다. 다른 작업 폴더에서 체크아웃 중인지 확인하세요.\n\(result.error)")
+        }
+        // A pre-existing local branch is kept (moved only to what was pushed); one created here is removed.
+        var finalLocalTip = localTip
         defer {
             _ = try? git(["worktree", "remove", "--force", workspace], at: path)
-            _ = try? git(["branch", "-D", outputBranch], at: path)
+            if let finalLocalTip {
+                _ = try? git(["update-ref", outputRef, finalLocalTip], at: path)
+            } else {
+                _ = try? git(["branch", "-D", outputBranch], at: path)
+            }
         }
+        if let remoteTip, let localTip, localTip != remoteTip,
+           (try? git(["merge", "--ff-only", remoteTip], at: workspace)) == nil {
+            throw failure("로컬 \(outputBranch)와 원격 브랜치가 갈라졌습니다. 한쪽으로 정리한 뒤 다시 시도하세요.")
+        }
+        if (try? git(["merge-base", "--is-ancestor", head, "HEAD"], at: workspace)) == nil {
+            progress("선택한 커밋을 UnitTest 브랜치에 병합하는 중입니다.")
+            do {
+                try git(["merge", "--no-edit", "-m", "[개발 - \(developerName)] \(branch.name) 변경 병합", head], at: workspace)
+            } catch {
+                _ = try? git(["merge", "--abort"], at: workspace)
+                throw failure("선택한 커밋을 UnitTest 브랜치 \(outputBranch)에 병합하지 못했습니다. 충돌을 정리한 뒤 다시 시도하세요.")
+            }
+        }
+        let base = try git(["rev-parse", "HEAD"], at: workspace)
+        // Tests this UnitTest branch added on top of the selected commit; only these may be changed or deleted.
+        let ownedTests = Set(try gitList(["diff", "--name-only", "-z", "--diff-filter=AMR", head, base, "--", "*.cs"], at: path).filter(Self.isTestPath))
 
         var candidates: [(candidate: Candidate, paths: [String])] = []
         for start in stride(from: 0, to: changed.count, by: Self.selectionBatchSize) {
@@ -274,6 +344,7 @@ struct UnitTestVerifier: Sendable {
         }
         var results: [UnitTestVerification.FileResult] = []
         var accepted: [UnitTestProposal.File] = []
+        var deleted: [String] = []
         let targets = prioritized.prefix(Self.maxTargets)
         for (index, entry) in targets.enumerated() {
             let source = entry.candidate.sourcePath
@@ -286,23 +357,29 @@ struct UnitTestVerifier: Sendable {
                 suggestedTestPath: Self.suggestedTestPath(for: source, testFiles: testFiles + accepted.map(\.path)),
                 stylePath: style,
                 styleSample: try style.map { String(try git(["show", "\(head):\($0)"], at: path, trim: false).prefix(6000)) },
-                behavior: entry.candidate.behavior
+                behavior: entry.candidate.behavior,
+                existingTests: ownedTests.subtracting(deleted).sorted()
             )
             results.append(try validateTarget(
                 target, folder: work.appendingPathComponent("t\(index)").path, workspace: workspace,
-                repositoryPath: path, head: head, tracked: allFiles, generate: generate, accepted: &accepted
+                repositoryPath: path, head: head, tracked: allFiles, owned: ownedTests, generate: generate,
+                accepted: &accepted, deleted: &deleted
             ))
         }
 
         var pushed = false
         var resultSHA = head
-        if !accepted.isEmpty {
-            progress("통과한 테스트 \(accepted.count)개를 새 브랜치에 커밋·푸시하는 중입니다.")
-            try verifyRemoteHead(repository: repository, branch: branch, expected: head)
+        if !accepted.isEmpty || !deleted.isEmpty {
+            progress("통과한 테스트 \(accepted.count)개와 삭제 \(deleted.count)개를 UnitTest 브랜치에 커밋·푸시하는 중입니다.")
+            if branch.isRemote { try verifyRemoteHead(repository: repository, branch: branch, expected: head) }
             let currentHead = try git(["rev-parse", "--verify", "--end-of-options", "\(branch.reference)^{commit}"], at: path)
             guard currentHead == head else { throw failure("검증 중 원본 브랜치가 변경되었습니다. 다시 시도하세요.") }
-            let message = "[개발 - \(developerName)] UnitTest 추가: " + accepted.map { (($0.path as NSString).lastPathComponent as NSString).deletingPathExtension }.joined(separator: ", ")
-            resultSHA = try commitAndPush(accepted, parent: head, message: message, repository: repository, branchName: outputBranch, workFolder: work.path)
+            func names(_ paths: [String]) -> String { paths.map { (($0 as NSString).lastPathComponent as NSString).deletingPathExtension }.joined(separator: ", ") }
+            let updatesExisting = !deleted.isEmpty || accepted.contains { ownedTests.contains($0.path) }
+            let message = "[개발 - \(developerName)] UnitTest \(updatesExisting ? "갱신" : "추가"): " + names(accepted.map(\.path))
+                + (deleted.isEmpty ? "" : (accepted.isEmpty ? "" : " / ") + "삭제 " + names(deleted))
+            resultSHA = try commitAndPush(accepted, deleting: deleted, parent: base, expectedRemote: remoteTip, message: message, repository: repository, branchName: outputBranch, workFolder: work.path)
+            if localTip != nil { finalLocalTip = resultSHA }
             pushed = true
         }
 
@@ -318,19 +395,37 @@ struct UnitTestVerifier: Sendable {
     /// Up to `maxAttempts` generate → guard → validate rounds; failures feed the next prompt.
     private func validateTarget(
         _ target: Target, folder: String, workspace: String,
-        repositoryPath: String, head: String, tracked: Set<String>,
-        generate: Generator, accepted: inout [UnitTestProposal.File]
+        repositoryPath: String, head: String, tracked: Set<String>, owned: Set<String>,
+        generate: Generator, accepted: inout [UnitTestProposal.File], deleted: inout [String]
     ) throws -> UnitTestVerification.FileResult {
         func result(_ status: UnitTestVerification.FileResult.Status, _ detail: String, test: String? = nil) -> UnitTestVerification.FileResult {
             .init(sourcePath: target.sourcePath, testPath: test, status: status, detail: detail)
         }
         var previousError: String?
         for _ in 1...Self.maxAttempts {
-            let proposal = try generate(.init(target: target, previousError: previousError, workspace: workspace))
+            let proposal: UnitTestProposal
+            do {
+                proposal = try generate(.init(target: target, previousError: previousError, workspace: workspace))
+            } catch let error as UnitTestProposal.ParseError {
+                previousError = error.localizedDescription
+                continue
+            }
             guard proposal.status == UnitTestProposal.generated else {
                 return result(.skipped, proposal.reason.isEmpty ? "Agent가 UnitTest를 만들 수 없다고 판단했습니다 (\(proposal.status))." : proposal.reason)
             }
-            let violations = Self.violations(of: proposal.files, existingPaths: tracked.union(accepted.map(\.path)))
+            let deletions = proposal.deletions ?? []
+            let written = Set(proposal.files.map(\.path))
+            let acceptedPaths = Set(accepted.map(\.path))
+            let invalidDeletions = deletions.filter { !owned.contains($0) || deleted.contains($0) || written.contains($0) || acceptedPaths.contains($0) }
+            if !invalidDeletions.isEmpty {
+                return result(.failed, "정책 위반으로 폐기: 이 UnitTest 브랜치가 만든 테스트만 삭제할 수 있음 (" + invalidDeletions.joined(separator: ", ") + ")")
+            }
+            if proposal.files.isEmpty, !deletions.isEmpty {
+                deleted += deletions
+                return result(.passed, "기존 UnitTest 삭제: " + (proposal.reason.isEmpty ? "변경 동작에 맞지 않음" : proposal.reason), test: deletions.joined(separator: ", "))
+            }
+            // Tests owned by this UnitTest branch are not in the selected commit, so they may be rewritten.
+            let violations = Self.violations(of: proposal.files, existingPaths: tracked.union(accepted.map(\.path)).union(deleted))
             if !violations.isEmpty { return result(.failed, "정책 위반으로 폐기: " + violations.joined(separator: "; ")) }
 
             let dependencies = proposal.dependencies ?? []
@@ -362,6 +457,7 @@ struct UnitTestVerifier: Sendable {
             let outcome = try validator(folder, sourceFiles, testFiles)
             if outcome.success {
                 accepted += proposal.files
+                deleted += deletions
                 return result(.passed, outcome.log.isEmpty ? "검증 통과" : outcome.log, test: proposal.files.map(\.path).joined(separator: ", "))
             }
             previousError = outcome.log
@@ -376,7 +472,7 @@ struct UnitTestVerifier: Sendable {
 
     /// Builds the commit from a temporary index so the work folder, its index and HEAD stay untouched.
     private func commitAndPush(
-        _ files: [UnitTestProposal.File], parent: String, message: String,
+        _ files: [UnitTestProposal.File], deleting deletions: [String], parent: String, expectedRemote: String?, message: String,
         repository: RegisteredRepository, branchName: String, workFolder: String
     ) throws -> String {
         let path = repository.localPath
@@ -387,10 +483,13 @@ struct UnitTestVerifier: Sendable {
                 .output.trimmingCharacters(in: .whitespacesAndNewlines)
             _ = try git(["update-index", "--add", "--cacheinfo", "100644,\(blob),\(file.path)"], at: path, indexFile: index)
         }
+        for deletion in deletions {
+            _ = try git(["update-index", "--force-remove", "--", deletion], at: path, indexFile: index)
+        }
         let tree = try git(["write-tree"], at: path, indexFile: index)
         let commit = try git(["commit-tree", tree, "-p", parent, "-m", message], at: path)
-        // An empty lease requires that the output branch does not already exist.
-        _ = try git(["push", "--force-with-lease=refs/heads/\(branchName):", repository.remoteName, "\(commit):refs/heads/\(branchName)"], at: path)
+        // The lease pins the remote to what was checked out (empty: the branch must not exist yet).
+        _ = try git(["push", "--force-with-lease=refs/heads/\(branchName):\(expectedRemote ?? "")", repository.remoteName, "\(commit):refs/heads/\(branchName)"], at: path)
         let pushedHead = try git(["ls-remote", repository.remoteName, "refs/heads/\(branchName)"], at: path).split(whereSeparator: { $0 == "\t" || $0 == " " }).first.map(String.init)
         guard pushedHead == commit else {
             throw failure("푸시 후 원격 브랜치 SHA를 확인하지 못했습니다.")

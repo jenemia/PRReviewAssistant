@@ -43,36 +43,41 @@ struct UnitTestProposal: Decodable, Sendable {
     let reason: String
     let files: [File]
     let dependencies: [String]?
+    /// Tests previously added on the UnitTest branch that should be removed.
+    let deletions: [String]?
 
     static let generated = "generated"
 
-    private enum CodingKeys: String, CodingKey { case status, reason, files, dependencies }
+    enum ParseError: LocalizedError, Equatable {
+        case missingJSON, invalidProposal
 
-    init(status: String, reason: String = "", files: [File] = [], dependencies: [String]? = nil) {
+        var errorDescription: String? {
+            switch self {
+            case .missingJSON: "Agent가 UnitTest 제안을 JSON으로 반환하지 않았습니다."
+            case .invalidProposal: "Agent UnitTest 제안 형식이 올바르지 않습니다. status, reason, files를 포함한 JSON 객체가 필요합니다."
+            }
+        }
+    }
+
+    init(status: String, reason: String = "", files: [File] = [], dependencies: [String]? = nil, deletions: [String]? = nil) {
         self.status = status
         self.reason = reason
         self.files = files
         self.dependencies = dependencies
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        status = try container.decodeIfPresent(String.self, forKey: .status) ?? Self.generated
-        reason = try container.decodeIfPresent(String.self, forKey: .reason) ?? ""
-        files = try container.decodeIfPresent([File].self, forKey: .files) ?? []
-        dependencies = try container.decodeIfPresent([String].self, forKey: .dependencies)
+        self.deletions = deletions
     }
 
     /// Reads the first `{` to the last `}` so code fences or a sentence around the JSON are tolerated.
     static func parse(_ output: String) throws -> UnitTestProposal {
         let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let first = trimmed.firstIndex(of: "{"), let last = trimmed.lastIndex(of: "}"), first <= last else {
-            throw CommandError.failed(.init(output: output, error: "Agent가 UnitTest 제안을 JSON으로 반환하지 않았습니다.", status: 1))
+            throw ParseError.missingJSON
         }
-        do {
-            return try JSONDecoder().decode(UnitTestProposal.self, from: Data(trimmed[first...last].utf8))
-        } catch {
-            throw CommandError.failed(.init(output: output, error: "Agent UnitTest 제안 형식이 올바르지 않습니다: \(error.localizedDescription)", status: 1))
+        guard let proposal = try? JSONDecoder().decode(Self.self, from: Data(trimmed[first...last].utf8)),
+              proposal.status == generated ||
+              (["needs_source_change", "unity_dependent"].contains(proposal.status) && proposal.files.isEmpty) else {
+            throw ParseError.invalidProposal
         }
+        return proposal
     }
 }
