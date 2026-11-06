@@ -6,6 +6,7 @@ struct ContentView: View {
     @State private var selection: SidebarItem? = .inbox
     @State private var cursorHistorySearch = ""
     @State private var showingPRBranchPicker = false
+    @State private var showingUnitTestBranchPicker = false
     @State private var showingAgentSpecSearch = false
 
     var body: some View {
@@ -21,6 +22,11 @@ struct ContentView: View {
     private var mainInterface: some View {
         NavigationSplitView {
             List(selection: $selection) {
+                Section("UnitTest") {
+                    Button("브랜치 선택·검증", systemImage: "checkmark.shield") {
+                        showingUnitTestBranchPicker = true
+                    }.buttonStyle(.plain)
+                }
                 Section("PR 리뷰 대응") {
                     if store.pullRequests.isEmpty {
                         Label("열린 PR이 없습니다", systemImage: "tray")
@@ -238,6 +244,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showingPRBranchPicker) {
             BranchPickerSheet(store: store)
+        }
+        .sheet(isPresented: $showingUnitTestBranchPicker) {
+            UnitTestBranchPickerSheet(store: store)
         }
         .task { await store.loadCursorHistory() }
     }

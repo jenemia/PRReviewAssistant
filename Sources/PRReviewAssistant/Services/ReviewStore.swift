@@ -701,6 +701,14 @@ final class ReviewStore {
         verifyingUnitTestBranchIDs.contains(branch.id)
     }
 
+    func localUnitTestBranches() async -> [RepositoryBranch] {
+        let repositories = repositories
+        let workspaces = workspaces
+        return (try? await background {
+            repositories.flatMap { (try? workspaces.localBranches(in: $0)) ?? [] }
+        }) ?? []
+    }
+
     /// PR gate: the stored result must still describe this branch head and must not have failed.
     func isUnitTestPassed(for branch: RepositoryBranch) -> Bool {
         branchUnitTestResults[branch.id]?.satisfies(branchSHA: branch.sha) == true
@@ -709,7 +717,7 @@ final class ReviewStore {
     /// Selects changed business rules, verifies NUnit tests, and pushes passing
     /// tests to a separate branch while preserving the registered checkout.
     func verifyUnitTests(for branch: RepositoryBranch) async {
-        guard !verifyingUnitTestBranchIDs.contains(branch.id), !isReviewingBranch,
+        guard !verifyingUnitTestBranchIDs.contains(branch.id),
               !implementingBranchRepositoryIDs.contains(branch.repositoryID) else { return }
         guard let repository = repositories.first(where: { $0.id == branch.repositoryID }) else {
             branchUnitTestErrors[branch.id] = "저장소를 찾을 수 없습니다. 저장소를 다시 등록하세요."
@@ -735,7 +743,6 @@ final class ReviewStore {
                     progress: { message in Task { @MainActor in self.branchUnitTestMessages[branch.id] = message } }
                 )
             }
-            guard requestedBranches.contains(where: { $0.id == branch.id }) else { return }
             branchUnitTestResults[branch.id] = verification
             persist()
             branchUnitTestMessages[branch.id] = verification.summary

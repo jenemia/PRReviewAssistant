@@ -147,6 +147,7 @@ struct BranchRequestDetailView: View {
     @State private var showingQuizSheet = false
     @State private var showingUnitTestConfirmation = false
     @State private var showingUnitTestWarning = false
+    @State private var showingUnitTestBranchPicker = false
 
     private var cards: [BranchReviewCard] { store.branchCards(for: branch) }
     private var unitTestResult: UnitTestVerification? { store.branchUnitTestResults[branch.id] }
@@ -179,11 +180,14 @@ struct BranchRequestDetailView: View {
         .sheet(isPresented: $showingQuizSheet) {
             BranchQuizSheet(branch: branch, store: store)
         }
+        .sheet(isPresented: $showingUnitTestBranchPicker) {
+            UnitTestBranchPickerSheet(store: store)
+        }
         .alert("UnitTest 생성·검증을 시작할까요?", isPresented: $showingUnitTestConfirmation) {
             Button("취소", role: .cancel) {}
             Button("시작") { Task { await store.verifyUnitTests(for: branch) } }
         } message: {
-            Text("통과한 테스트 파일은 새 커밋으로 origin의 \(branch.name) 브랜치에 푸시됩니다. 푸시 후에는 현재 리뷰 결과가 이전 커밋 기준이 되므로 필요하면 다시 리뷰하세요.")
+            Text("통과한 테스트 파일은 \(branch.name)에서 생성한 새 브랜치에 커밋하고 원격 저장소에 푸시합니다.")
         }
         .alert("UnitTest 검증이 통과되지 않았습니다", isPresented: $showingUnitTestWarning) {
             Button("취소", role: .cancel) {}
@@ -267,15 +271,16 @@ struct BranchRequestDetailView: View {
 
                 GroupBox("UnitTest 검증") {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("코드 리뷰 다음 단계입니다. 변경된 C# 파일 중 테스트가 없는 순수 로직의 NUnit 테스트를 Agent가 생성하고 `dotnet test`로 검증합니다. 통과한 테스트만 origin의 \(branch.name) 브랜치에 커밋·푸시하며 작업 폴더는 변경하지 않습니다.")
+                        Text("변경된 C# 파일 중 테스트가 없는 순수 로직의 NUnit 테스트를 Agent가 생성하고 `dotnet test`로 검증합니다. 통과한 테스트는 선택한 브랜치를 기준으로 새 브랜치에 커밋·푸시합니다.")
                             .font(.caption).foregroundStyle(.secondary)
                         HStack {
                             Button(isVerifyingUnitTests ? "검증 중…" : "UnitTest 생성·검증", systemImage: "checkmark.shield") {
                                 showingUnitTestConfirmation = true
                             }
                             .buttonStyle(.borderedProminent)
-                            .disabled(isVerifyingUnitTests || cards.isEmpty || store.isReviewingBranch || store.implementingBranchRepositoryIDs.contains(branch.repositoryID))
-                            .help(cards.isEmpty ? "먼저 리뷰를 실행하세요." : "UnitTest를 생성하고 검증합니다.")
+                            .disabled(isVerifyingUnitTests || store.implementingBranchRepositoryIDs.contains(branch.repositoryID))
+                            .help("UnitTest를 생성하고 검증합니다.")
+                            Button("다른 브랜치 선택") { showingUnitTestBranchPicker = true }
                             if isVerifyingUnitTests { ProgressView().controlSize(.small) }
                             Spacer()
                             if let result = unitTestResult { UnitTestBadge(result: result, isCurrent: store.isUnitTestPassed(for: branch)) }
@@ -346,6 +351,65 @@ struct BranchRequestDetailView: View {
             return "Cursor Agent 로그인이 필요합니다. 승인하면 Terminal과 브라우저에서 Cursor 인증을 시작합니다. 인증 후 브랜치 요청을 다시 시도하세요."
         case .other:
             return "Cursor Agent가 추가 권한을 요청했습니다. 앱은 범위를 알 수 없는 권한을 자동 허용하지 않습니다. Cursor에서 요청 내용을 확인하고 승인하세요.\n\n\(request.detail)"
+        }
+    }
+}
+
+struct UnitTestBranchPickerSheet: View {
+    @Bindable var store: ReviewStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var localBranches: [RepositoryBranch] = []
+    @State private var selected: RepositoryBranch?
+    @State private var query = ""
+
+    private var branches: [RepositoryBranch] {
+        (localBranches + store.repositoryBranches).filter {
+            query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) || $0.repositoryName.localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("UnitTest 대상 브랜치").font(.title2.bold())
+            Text("로컬 또는 원격 브랜치를 선택하세요. 통과한 테스트는 선택한 커밋에서 새 브랜치를 만들어 푸시합니다.")
+                .font(.caption).foregroundStyle(.secondary)
+            TextField("브랜치 또는 저장소 검색", text: $query).textFieldStyle(.roundedBorder)
+            List(Array(branches.enumerated()), id: \.offset) { _, branch in
+                Button {
+                    if !store.isVerifyingUnitTests(for: branch) {
+                        store.branchUnitTestMessages[branch.id] = nil
+                        store.branchUnitTestErrors[branch.id] = nil
+                    }
+                    selected = branch
+                } label: {
+                    VStack(alignment: .leading) {
+                        Text("\(branch.name) · \(branch.isRemote ? "원격" : "로컬")")
+                        Text("\(branch.repositoryName) · \(branch.sha)").font(.caption).foregroundStyle(.secondary)
+                    }
+                }.buttonStyle(.plain)
+            }
+            if let selected {
+                Text("선택: \(selected.name) (\(selected.isRemote ? "원격" : "로컬"))").font(.caption)
+                if let message = store.branchUnitTestMessages[selected.id] { Text(message).font(.caption).textSelection(.enabled) }
+                if let error = store.branchUnitTestErrors[selected.id] { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
+                if let result = store.branchUnitTestResults[selected.id], result.verifiedSHA.hasPrefix(selected.sha) {
+                    Text(result.summary).font(.caption).textSelection(.enabled)
+                }
+            }
+            HStack {
+                Spacer()
+                Button("닫기") { dismiss() }
+                Button("생성·검증 및 새 브랜치 푸시") {
+                    if let selected { Task { await store.verifyUnitTests(for: selected) } }
+                }
+                .disabled(selected == nil || selected.map { store.isVerifyingUnitTests(for: $0) || store.implementingBranchRepositoryIDs.contains($0.repositoryID) } == true)
+            }
+        }
+        .padding(24).frame(width: 600, height: 560)
+        .task {
+            async let locals = store.localUnitTestBranches()
+            await store.loadRepositoryBranches()
+            localBranches = await locals
         }
     }
 }

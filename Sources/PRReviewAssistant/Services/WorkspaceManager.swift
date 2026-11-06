@@ -4,6 +4,15 @@ struct WorkspaceManager: Sendable {
     /// Generous because fetch and push on a large repository can be slow.
     private let runner = ProcessRunner(defaultTimeout: 600)
 
+    func localBranches(in repository: RegisteredRepository) throws -> [RepositoryBranch] {
+        let output = try runner.run("git", arguments: ["for-each-ref", "--format=%(refname:short)%00%(objectname:short)%00%(subject)", "refs/heads/"], workingDirectory: repository.localPath).output
+        return output.split(whereSeparator: \.isNewline).compactMap { line in
+            let parts = line.split(separator: "\0", omittingEmptySubsequences: false).map(String.init)
+            guard parts.count == 3, !parts[0].isEmpty else { return nil }
+            return RepositoryBranch(repositoryID: repository.id, repositoryName: repository.fullName, name: parts[0], reference: "refs/heads/\(parts[0])", sha: parts[1], subject: parts[2], updatedAt: nil, isCurrent: false, isRemote: false)
+        }
+    }
+
     /// Reads the origin branches without switching the repository's working
     /// tree.  PR requests must use GitHub-visible branches, so the picker is
     /// deliberately backed by `refs/remotes/origin` rather than only local
