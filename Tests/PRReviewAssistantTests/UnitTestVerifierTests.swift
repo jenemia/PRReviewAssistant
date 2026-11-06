@@ -4,13 +4,11 @@ import Testing
 
 @Suite("UnitTest verification")
 struct UnitTestVerifierTests {
-    @Test("테스트 경로와 Unity 의존 코드를 구분한다")
+    @Test("기존 테스트 경로와 일반 소스 경로를 구분한다")
     func classifiesPaths() {
         #expect(UnitTestVerifier.isTestPath("Tests/Demo.Tests/ItemPriceTests.cs"))
         #expect(UnitTestVerifier.isTestPath("Assets/Scripts/ItemPriceTests.cs"))
         #expect(!UnitTestVerifier.isTestPath("Assets/Scripts/Item/ItemPrice.cs"))
-        #expect(UnitTestVerifier.isUnityDependent("using UnityEngine;\nclass A : MonoBehaviour {}"))
-        #expect(!UnitTestVerifier.isUnityDependent("namespace Demo { public static class Price {} }"))
     }
 
     @Test("patch guard가 테스트 경로 밖 파일·덮어쓰기·금지 토큰을 거부한다")
@@ -28,13 +26,12 @@ struct UnitTestVerifierTests {
         #expect(!UnitTestVerifier.violations(of: [unity], existingPaths: []).isEmpty)
     }
 
-    @Test("기존 테스트 위치를 따라 경로를 제안하고 이미 있는 테스트를 감지한다")
+    @Test("정책에 맞고 기존 테스트와 충돌하지 않는 경로를 제안한다")
     func suggestsPathAndDetectsExistingTests() {
         let tests = ["Tests/Demo.Tests/Item/ItemPriceTests.cs", "Tests/Demo.Tests/Inventory/InventorySlotsTests.cs"]
         #expect(UnitTestVerifier.suggestedTestPath(for: "Assets/Scripts/Shop/ShopDiscount.cs", testFiles: []) == "Tests/ShopDiscountTests.cs")
-        #expect(UnitTestVerifier.suggestedTestPath(for: "Assets/Scripts/Item/ItemPrice.cs", testFiles: tests).hasSuffix("ItemPriceTests.cs"))
-        #expect(UnitTestVerifier.hasExistingTest(for: "Assets/Scripts/Item/ItemPrice.cs", in: Set(tests)))
-        #expect(!UnitTestVerifier.hasExistingTest(for: "Assets/Scripts/Shop/ShopDiscount.cs", in: Set(tests)))
+        #expect(UnitTestVerifier.suggestedTestPath(for: "Assets/Scripts/Item/ItemPrice.cs", testFiles: tests).hasSuffix("ItemPriceDiffTests.cs"))
+        #expect(UnitTestVerifier.suggestedTestPath(for: "Assets/Scripts/Shop/ShopDiscount.cs", testFiles: ["Assets/Editor/ViewTests.cs"]) == "Tests/ShopDiscountTests.cs")
     }
 
     @Test("dotnet 결과 요약과 검증 프로젝트를 만든다")
@@ -44,7 +41,7 @@ struct UnitTestVerifierTests {
         #expect(counts?.failed == 1 && counts?.passed == 3 && counts?.skipped == 1)
         #expect(UnitTestVerifier.testCounts(inTRX: "error CS0246: type not found") == nil)
 
-        let project = UnitTestVerifier.validationProject(sourceFile: "Source/A&B.cs", testFiles: ["Tests/0_ATests.cs"], framework: "net10.0")
+        let project = UnitTestVerifier.validationProject(sourceFiles: ["Source/A&B.cs"], testFiles: ["Tests/0_ATests.cs"], framework: "net10.0")
         #expect(project.contains("<TargetFramework>net10.0</TargetFramework>"))
         #expect(project.contains("Source/A&amp;B.cs"))
         #expect(project.contains("NUnit\" Version=\"3.14.0\""))
@@ -97,8 +94,8 @@ struct UnitTestWorkflowTests {
                 .output.trimmingCharacters(in: .whitespacesAndNewlines)
         }
 
-        func remoteFiles() throws -> [String] {
-            try runner.run("git", arguments: ["--git-dir", root.appending(path: "remote.git").path, "ls-tree", "-r", "--name-only", "feature/x"])
+        func remoteFiles(_ ref: String = "feature/x") throws -> [String] {
+            try runner.run("git", arguments: ["--git-dir", root.appending(path: "remote.git").path, "ls-tree", "-r", "--name-only", ref])
                 .output.split(whereSeparator: \.isNewline).map(String.init)
         }
 
@@ -125,6 +122,7 @@ struct UnitTestWorkflowTests {
         try git(["add", "."]); try git(["commit", "-m", "base"])
         try git(["remote", "add", "origin", remote.path]); try git(["push", "-u", "origin", "main"])
         try git(["switch", "-c", "feature/x"])
+        try write("Assets/Scripts/Shop/DiscountRules.cs", "namespace Demo { public static class DiscountRules { public const int Minimum = 0; } }")
         try write("Assets/Scripts/Shop/ShopDiscount.cs", "namespace Demo { public static class ShopDiscount { public static int Apply(int p) => p; } }")
         try write("Assets/Scripts/Shop/ShopView.cs", "using UnityEngine;\nclass ShopView : MonoBehaviour {}")
         try write("Assets/Scripts/Item/ItemPrice.cs", "namespace Demo { public static class ItemPrice {} }")
@@ -135,33 +133,86 @@ struct UnitTestWorkflowTests {
         return Fixture(root: root, repository: repository, branch: branch, head: head)
     }
 
+    private static func selectShopDiscount(_ workspace: String, _ comparisonBase: String, _ changes: [UnitTestVerifier.Change]) -> [UnitTestVerifier.Candidate] {
+        changes.filter { $0.sourcePath.hasSuffix("/ShopDiscount.cs") }.map {
+            .init(sourcePath: $0.sourcePath, behavior: "가격 계산 규칙", priority: 3)
+        }
+    }
+
     private let proposal = UnitTestProposal(status: "generated", files: [
         .init(path: "Tests/Demo.Tests/Shop/ShopDiscountTests.cs", content: "class ShopDiscountTests {}")
     ])
 
-    @Test("통과한 테스트만 origin 브랜치에 커밋·푸시하고 작업 폴더는 건드리지 않는다")
+    @Test("선택 커밋을 임시 브랜치에 체크아웃해 선별하고 검증 통과 파일만 푸시한다")
     func pushesPassingTestsWithoutTouchingWorkFolder() throws {
         let fixture = try makeFixture()
         defer { fixture.cleanup() }
-        let verifier = UnitTestVerifier { _, _, _ in .init(success: true, log: "Passed!") }
+        let runner = fixture.runner
+        let path = fixture.repository.localPath
+        _ = try runner.run("git", arguments: ["switch", "main"], workingDirectory: path)
+        let originalHead = try runner.run("git", arguments: ["rev-parse", "HEAD"], workingDirectory: path).output
+        let dependency = "Assets/Scripts/Shop/DiscountRules.cs"
+        let verifier = UnitTestVerifier { folder, sources, _ in
+            #expect(sources.count == 2)
+            let relative = try #require(sources.last)
+            let content = try String(contentsOfFile: (folder as NSString).appendingPathComponent(relative), encoding: .utf8)
+            #expect(content.contains("class DiscountRules"))
+            return .init(success: true, log: "Passed!")
+        }
 
         let result = try verifier.verify(
             repository: fixture.repository, branch: fixture.branch, baseReference: "origin/main", developerName: "테스터",
-            generate: { _ in proposal }, progress: { _ in }
+            select: { workspace, comparisonBase, changes in
+                #expect(workspace != path)
+                #expect(changes.count == 4)
+                #expect(changes.contains { $0.sourcePath.hasSuffix("/ShopDiscount.cs") && $0.diff.contains("+namespace Demo") })
+                let checkout = try runner.run("git", arguments: ["rev-parse", "HEAD"], workingDirectory: workspace)
+                #expect(checkout.output.trimmingCharacters(in: .whitespacesAndNewlines) == fixture.head)
+                return Self.selectShopDiscount(workspace, comparisonBase, changes)
+            },
+            generate: { request in
+                let checkedOut = try runner.run("git", arguments: ["branch", "--show-current"], workingDirectory: request.workspace)
+                #expect(checkedOut.output.hasPrefix("unittest/"))
+                #expect(request.target.behavior == "가격 계산 규칙")
+                return .init(status: "generated", files: proposal.files, dependencies: [dependency])
+            },
+            progress: { _ in }
         )
 
         #expect(result.outcome == .passed && result.pushed)
         #expect(result.verifiedSHA == fixture.head && result.resultSHA != fixture.head)
-        #expect(try fixture.remoteHead() == result.resultSHA)
-        #expect(try fixture.remoteFiles().contains("Tests/Demo.Tests/Shop/ShopDiscountTests.cs"))
-        let skipped = result.files.filter { $0.status == .skipped }.map(\.sourcePath).sorted()
-        #expect(skipped == ["Assets/Scripts/Item/ItemPrice.cs", "Assets/Scripts/Shop/ShopView.cs"])
+        #expect(try fixture.remoteHead() == fixture.head)
+        #expect(try fixture.remoteFiles(result.resultSHA).contains("Tests/Demo.Tests/Shop/ShopDiscountTests.cs"))
+        let refs = try runner.run("git", arguments: ["--git-dir", fixture.root.appending(path: "remote.git").path, "for-each-ref", "--format=%(objectname)", "refs/heads/unittest/"]).output
+        #expect(refs.contains(result.resultSHA))
+        #expect(result.files.map(\.sourcePath) == ["Assets/Scripts/Shop/ShopDiscount.cs"])
+        #expect(result.summary.contains("범위 밖 3개"))
 
-        let runner = ProcessRunner()
-        let path = fixture.repository.localPath
-        #expect(try runner.run("git", arguments: ["rev-parse", "HEAD"], workingDirectory: path).output.trimmingCharacters(in: .whitespacesAndNewlines) == fixture.head)
+        #expect(try runner.run("git", arguments: ["rev-parse", "HEAD"], workingDirectory: path).output == originalHead)
         #expect(try runner.run("git", arguments: ["status", "--porcelain"], workingDirectory: path).output.isEmpty)
+        #expect(try runner.run("git", arguments: ["branch", "--list", "unittest/*"], workingDirectory: path).output.isEmpty)
+        #expect(try runner.run("git", arguments: ["worktree", "list", "--porcelain"], workingDirectory: path).output.components(separatedBy: "worktree ").count == 2)
         #expect(try runner.run("git", arguments: ["log", "-1", "--format=%s", result.resultSHA], workingDirectory: path).output.hasPrefix("[개발 - 테스터] UnitTest 추가: ShopDiscountTests"))
+    }
+
+    @Test("diff에 없는 경로가 선별되면 생성을 중단하고 임시 브랜치를 정리한다")
+    func rejectsSelectionOutsideDiff() throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        let verifier = UnitTestVerifier { _, _, _ in .init(success: true, log: "") }
+        #expect(throws: CommandError.self) {
+            try verifier.verify(
+                repository: fixture.repository, branch: fixture.branch, baseReference: "origin/main", developerName: "테스터",
+                select: { _, _, _ in [.init(sourcePath: "Unchanged.cs", behavior: "변경되지 않은 규칙", priority: 3)] },
+                generate: { _ in
+                    Issue.record("유효하지 않은 분류 결과로 생성을 호출했습니다.")
+                    return proposal
+                },
+                progress: { _ in }
+            )
+        }
+        let refs = try fixture.runner.run("git", arguments: ["branch", "--list", "unittest/*"], workingDirectory: fixture.repository.localPath)
+        #expect(refs.output.isEmpty)
     }
 
     @Test("검증이 계속 실패하면 재시도 후 실패로 기록하고 푸시하지 않는다")
@@ -173,6 +224,7 @@ struct UnitTestWorkflowTests {
 
         let result = try verifier.verify(
             repository: fixture.repository, branch: fixture.branch, baseReference: "origin/main", developerName: "테스터",
+            select: Self.selectShopDiscount,
             generate: { _ in attempts.increment(); return proposal }, progress: { _ in }
         )
 
@@ -191,12 +243,14 @@ struct UnitTestWorkflowTests {
 
         let result = try verifier.verify(
             repository: fixture.repository, branch: fixture.branch, baseReference: "origin/main", developerName: "테스터",
+            select: Self.selectShopDiscount,
             generate: { _ in production }, progress: { _ in }
         )
 
         #expect(result.outcome == .failed && !result.pushed)
         #expect(try fixture.remoteHead() == fixture.head)
     }
+
 }
 
 private final class Counter: @unchecked Sendable {

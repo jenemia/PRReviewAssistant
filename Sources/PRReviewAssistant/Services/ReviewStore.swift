@@ -706,8 +706,8 @@ final class ReviewStore {
         branchUnitTestResults[branch.id]?.satisfies(branchSHA: branch.sha) == true
     }
 
-    /// Generates NUnit tests for the branch's changed C# files, validates them, and
-    /// commits/pushes the passing ones to the origin branch (never touching the work folder).
+    /// Selects changed business rules, verifies NUnit tests, and pushes passing
+    /// tests to a separate branch while preserving the registered checkout.
     func verifyUnitTests(for branch: RepositoryBranch) async {
         guard !verifyingUnitTestBranchIDs.contains(branch.id), !isReviewingBranch,
               !implementingBranchRepositoryIDs.contains(branch.repositoryID) else { return }
@@ -728,15 +728,15 @@ final class ReviewStore {
                 try verifier.verify(
                     repository: repository, branch: branch, baseReference: baseReference,
                     developerName: (try? workspaces.developerName(at: repository.localPath)) ?? "개발자",
-                    generate: { try cursor.generateUnitTest(repositoryPath: repository.localPath, request: $0, trustWorkspace: isTrusted, model: model) },
+                    select: { workspace, comparisonBase, changes in
+                        try cursor.selectUnitTestTargets(repositoryPath: workspace, comparisonBase: comparisonBase, changes: changes, trustWorkspace: isTrusted, model: model)
+                    },
+                    generate: { try cursor.generateUnitTest(repositoryPath: $0.workspace, request: $0, trustWorkspace: isTrusted, model: model) },
                     progress: { message in Task { @MainActor in self.branchUnitTestMessages[branch.id] = message } }
                 )
             }
             guard requestedBranches.contains(where: { $0.id == branch.id }) else { return }
             branchUnitTestResults[branch.id] = verification
-            if verification.pushed, let index = requestedBranches.firstIndex(where: { $0.id == branch.id }) {
-                requestedBranches[index].sha = String(verification.resultSHA.prefix(branch.sha.count))
-            }
             persist()
             branchUnitTestMessages[branch.id] = verification.summary
             statusMessage = "\(branch.name) UnitTest 검증: \(verification.summary)"

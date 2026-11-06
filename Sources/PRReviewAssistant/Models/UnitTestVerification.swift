@@ -42,15 +42,17 @@ struct UnitTestProposal: Decodable, Sendable {
     let status: String
     let reason: String
     let files: [File]
+    let dependencies: [String]?
 
     static let generated = "generated"
 
-    private enum CodingKeys: String, CodingKey { case status, reason, files }
+    private enum CodingKeys: String, CodingKey { case status, reason, files, dependencies }
 
-    init(status: String, reason: String = "", files: [File] = []) {
+    init(status: String, reason: String = "", files: [File] = [], dependencies: [String]? = nil) {
         self.status = status
         self.reason = reason
         self.files = files
+        self.dependencies = dependencies
     }
 
     init(from decoder: Decoder) throws {
@@ -58,6 +60,7 @@ struct UnitTestProposal: Decodable, Sendable {
         status = try container.decodeIfPresent(String.self, forKey: .status) ?? Self.generated
         reason = try container.decodeIfPresent(String.self, forKey: .reason) ?? ""
         files = try container.decodeIfPresent([File].self, forKey: .files) ?? []
+        dependencies = try container.decodeIfPresent([String].self, forKey: .dependencies)
     }
 
     /// Reads the first `{` to the last `}` so code fences or a sentence around the JSON are tolerated.
