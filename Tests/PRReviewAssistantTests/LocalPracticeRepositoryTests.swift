@@ -2,11 +2,21 @@ import Foundation
 import Testing
 @testable import PRReviewAssistant
 
+extension LocalPracticeRepository {
+    /// Parallel tests must not delete each other's fixture, so each one gets its own root.
+    static func isolatedForTesting() -> LocalPracticeRepository {
+        LocalPracticeRepository(root: FileManager.default.temporaryDirectory.appending(
+            path: "LocalPractice-\(UUID().uuidString)",
+            directoryHint: .isDirectory
+        ))
+    }
+}
+
 @Suite(.serialized)
 struct LocalPracticeRepositoryTests {
     @Test("로컬 연습 PR은 GitHub 없이 로컬 bare 원격에만 생성된다")
     func createsDisposableLocalOnlyFixture() throws {
-        let practice = LocalPracticeRepository()
+        let practice = LocalPracticeRepository.isolatedForTesting()
         let fixture = try practice.create()
         defer { try? practice.remove(at: fixture.repository.localPath) }
 
@@ -18,7 +28,8 @@ struct LocalPracticeRepositoryTests {
         let remote = try ProcessRunner()
             .run("git", arguments: ["remote", "get-url", "origin"], workingDirectory: fixture.repository.localPath)
             .output.trimmingCharacters(in: .whitespacesAndNewlines)
-        #expect(remote.hasPrefix("/tmp/PRReviewAssistant-LocalPractice/remote.git"))
+        let practiceRoot = URL(fileURLWithPath: fixture.repository.localPath).deletingLastPathComponent()
+        #expect(remote == practiceRoot.appending(path: "remote.git").path)
 
         let checkoutHead = try ProcessRunner()
             .run("git", arguments: ["rev-parse", "--verify", "HEAD"], workingDirectory: fixture.repository.localPath)
@@ -32,7 +43,7 @@ struct LocalPracticeRepositoryTests {
 
     @Test("작업 카드 커밋은 지정된 파일만 포함하고 다른 변경은 남긴다")
     func commitsOnlySpecifiedWorkCardFiles() throws {
-        let practice = LocalPracticeRepository()
+        let practice = LocalPracticeRepository.isolatedForTesting()
         let fixture = try practice.create()
         defer { try? practice.remove(at: fixture.repository.localPath) }
 
@@ -67,7 +78,7 @@ struct LocalPracticeRepositoryTests {
 
     @Test("저장된 PR SHA가 오래되어도 현재 원격 브랜치로 작업 폴더를 준비한다")
     func preparesCurrentBranchWhenStoredPRSHAIsStale() throws {
-        let practice = LocalPracticeRepository()
+        let practice = LocalPracticeRepository.isolatedForTesting()
         let fixture = try practice.create()
         defer { try? practice.remove(at: fixture.repository.localPath) }
 
@@ -86,7 +97,7 @@ struct LocalPracticeRepositoryTests {
 
     @Test("PR 요청 브랜치 목록은 origin 추적 브랜치만 읽고 체크아웃하지 않는다")
     func readsOriginBranchesForPullRequestRequests() async throws {
-        let practice = LocalPracticeRepository()
+        let practice = LocalPracticeRepository.isolatedForTesting()
         let fixture = try practice.create()
         defer { try? practice.remove(at: fixture.repository.localPath) }
 

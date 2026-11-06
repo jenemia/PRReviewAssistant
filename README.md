@@ -26,6 +26,12 @@ open "dist/PR Review Assistant.app"
 swift run PRReviewAssistant
 ```
 
+테스트 실행(실행된 테스트가 0개이면 실패):
+
+```zsh
+scripts/test.sh
+```
+
 배포본 재생성:
 
 ```zsh

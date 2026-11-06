@@ -59,7 +59,9 @@ struct WorkspaceSpecCatalog: Sendable {
                 continue
             }
             guard fileURL.lastPathComponent.lowercased() == "spec.md" else { continue }
-            let relative = fileURL.path.replacingOccurrences(of: root.path + "/", with: "")
+            // The enumerator may report a symlink-resolved path (/var -> /private/var),
+            // so derive the relative path from its depth instead of the root prefix.
+            let relative = fileURL.pathComponents.suffix(enumerator.level).joined(separator: "/")
             let components = relative.lowercased().split(separator: "/")
             guard components.contains(where: { $0 == "specs" || $0 == ".specs" }) else { continue }
             let name = fileURL.deletingLastPathComponent().lastPathComponent

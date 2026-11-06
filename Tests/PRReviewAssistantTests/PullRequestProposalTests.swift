@@ -37,7 +37,7 @@ struct PullRequestProposalTests {
 
     @Test("검증기가 원격 base와 head를 대조해 실제 PR 범위를 계산한다")
     func verifiesGitRange() throws {
-        let practice = LocalPracticeRepository()
+        let practice = LocalPracticeRepository.isolatedForTesting()
         let fixture = try practice.create()
         defer { try? practice.remove(at: fixture.repository.localPath) }
         let branch = RepositoryBranch(

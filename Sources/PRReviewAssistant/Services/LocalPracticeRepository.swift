@@ -4,8 +4,12 @@ import Foundation
 /// Its `origin` is a bare repository under `/tmp`, never a GitHub remote.
 struct LocalPracticeRepository: Sendable {
     static let fullName = "local/pr-review-practice"
-    private let root = URL(fileURLWithPath: "/tmp/PRReviewAssistant-LocalPractice", isDirectory: true)
+    private let root: URL
     private let runner = ProcessRunner()
+
+    init(root: URL = URL(fileURLWithPath: "/tmp/PRReviewAssistant-LocalPractice", isDirectory: true)) {
+        self.root = root
+    }
 
     struct Fixture: Sendable {
         let repository: RegisteredRepository

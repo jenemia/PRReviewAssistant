@@ -13,9 +13,9 @@ struct GitHubRelease: Codable, Hashable, Sendable {
     let publishedAt: Date?
 
     private enum CodingKeys: String, CodingKey {
-        case tagName, name, body
-        case htmlURL = "html_url"
-        case publishedAt = "published_at"
+        case tagName, name, body, publishedAt
+        // `convertFromSnakeCase` turns html_url into htmlUrl before matching this key.
+        case htmlURL = "htmlUrl"
     }
 }
 
