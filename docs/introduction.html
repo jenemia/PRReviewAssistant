@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ReviewPilot 소개</title>
+<meta name="description" content="PR 코드 리뷰와 UnitTest 검증, 재리뷰까지 이어 주는 AI 코드 리뷰 서비스 소개">
+<style>
+:root{--bg:#f7f8fb;--card:#fff;--ink:#1c2230;--sub:#5b6577;--line:#e3e7ef;--brand:#4f46e5;--brand-soft:#eef0ff;--ok:#0f9d6b;--warn:#c27803;--shadow:0 6px 24px rgba(30,40,80,.07)}
+@media (prefers-color-scheme:dark){:root{--bg:#10131b;--card:#181c27;--ink:#e8ebf3;--sub:#9aa4b8;--line:#2a3042;--brand:#8b85ff;--brand-soft:#232748;--ok:#3ccf91;--warn:#f0b43c;--shadow:none}}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.75 -apple-system,"Apple SD Gothic Neo","Noto Sans KR","Malgun Gothic",system-ui,sans-serif}
+a{color:var(--brand)}
+header.top{position:sticky;top:0;z-index:10;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+.bar{max-width:960px;margin:0 auto;padding:12px 20px;display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+.logo{font-weight:800;letter-spacing:-.02em}
+.bar nav{display:flex;gap:4px;flex-wrap:wrap;margin-left:auto}
+.bar nav a{padding:4px 10px;border-radius:999px;color:var(--sub);text-decoration:none;font-size:14px}
+.bar nav a.on,.bar nav a:hover{background:var(--brand-soft);color:var(--brand)}
+.hero{max-width:960px;margin:0 auto;padding:64px 20px 24px}
+.hero h1{font-size:clamp(30px,5vw,46px);line-height:1.25;margin:0 0 14px;letter-spacing:-.03em}
+.hero p{color:var(--sub);font-size:18px;max-width:640px;margin:0 0 24px}
+.btn{display:inline-block;padding:11px 20px;border-radius:10px;background:var(--brand);color:#fff;text-decoration:none;font-weight:700}
+button.btn{border:0;cursor:pointer;font:inherit}
+.btn.ghost{background:transparent;color:var(--brand);border:1px solid var(--brand);margin-left:8px}
+main{max-width:960px;margin:0 auto;padding:0 20px 80px}
+section{padding:40px 0 8px;scroll-margin-top:70px}
+.num{display:inline-grid;place-items:center;width:28px;height:28px;border-radius:50%;background:var(--brand);color:#fff;font-size:14px;font-weight:700;margin-right:8px;vertical-align:2px}
+h2{font-size:26px;letter-spacing:-.02em;margin:0 0 6px}
+.lead{color:var(--sub);margin:0 0 20px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:22px;box-shadow:var(--shadow)}
+.grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
+.grid .card h3{margin:0 0 6px;font-size:17px}
+.grid .card p{margin:0;color:var(--sub);font-size:15px}
+.flow{display:grid;gap:12px;counter-reset:s}
+.flow-common{margin-bottom:18px}
+.flow-common .card::before{content:"공통";width:auto;min-width:52px;padding:0 10px;font-size:12px;letter-spacing:-.02em}
+.scenarios{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
+.scenario{padding:22px}
+.scenario>h3{margin:0 0 14px;font-size:18px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.scenario .flow{counter-reset:sc;margin:0}
+.scenario .flow .card::before{counter-increment:sc;content:counter(sc)}
+.flow .card{display:flex;gap:14px;align-items:flex-start}
+.flow .card::before{counter-increment:s;content:counter(s);flex:none;width:30px;height:30px;border-radius:8px;background:var(--brand-soft);color:var(--brand);display:grid;place-items:center;font-weight:800}
+.flow h3{margin:0 0 2px;font-size:17px}.flow p{margin:0;color:var(--sub);font-size:15px}
+.stat{font-size:32px;font-weight:800;color:var(--ok);letter-spacing:-.02em;line-height:1.2}
+.two{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}
+.two h3{margin:0 0 10px}
+ul.list{margin:0;padding-left:20px;color:var(--sub)}ul.list li{margin:4px 0}
+.note{font-size:13px;color:var(--sub);margin-top:10px}
+.tag{font-size:12px;padding:2px 8px;border-radius:999px;background:var(--brand-soft);color:var(--brand);font-weight:700}
+footer{border-top:1px solid var(--line);padding:24px 20px;text-align:center;color:var(--sub);font-size:14px}
+@media (max-width:560px){.hero{padding-top:40px}.btn.ghost{margin:8px 0 0}}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="bar">
+    <span class="logo">🧭 ReviewPilot</span>
+    <nav id="nav">
+      <a href="#problem">문제</a><a href="#solution">해결</a><a href="#effect">효용</a><a href="#limits">제한점</a>
+    </nav>
+  </div>
+</header>
+
+<div class="hero">
+  <h1>PR 리뷰의 병목을<br>AI와 테스트로 줄입니다</h1>
+  <p>저장소와 브랜치를 고르면 코드 리뷰와 UnitTest 검증을 자동으로 수행하고, PR 코멘트 대응 후 재리뷰까지 한 흐름으로 이어 줍니다.</p>
+  <a class="btn" href="onboarding.html">온보딩 가이드</a><a class="btn ghost" href="#problem">자세히 보기</a>
+</div>
+
+<main>
+  <section id="problem">
+    <h2><span class="num">1</span>문제 인식</h2>
+    <p class="lead">코드 리뷰는 품질에 꼭 필요하지만, 일상 개발과 PR·리뷰가 겹치면서 생기는 마찰이 큽니다.</p>
+    <div class="grid">
+      <div class="card"><h3>🔀 작업과 PR·리뷰 병행</h3><p>기능 개발을 이어 가면서 동시에 PR을 올리고 리뷰를 검토해야 해, 맥락 전환과 부담이 커집니다.</p></div>
+      <div class="card"><h3>🔔 PR 코멘트 인지 어려움</h3><p>코멘트가 달렸는지 알기 어렵고, 확인이 늦어지면 대응과 재작업이 밀립니다.</p></div>
+      <div class="card"><h3>🔁 반복되는 지적</h3><p>네이밍, 누락된 예외 처리처럼 기계적으로 잡을 수 있는 내용에 리뷰 시간이 쓰입니다.</p></div>
+      <div class="card"><h3>🧪 검증과 리뷰의 분리</h3><p>테스트 결과와 리뷰 의견이 따로 흩어져 있어 무엇을 고쳐야 하는지 파악하기 어렵습니다.</p></div>
+      <div class="card"><h3>📐 비즈니스 로직 테스트 부재</h3><p>핵심 도메인·비즈니스 로직에 대한 UnitTest가 부족해, 리뷰만으로는 회귀와 설계 결함을 막기 어렵습니다.</p></div>
+    </div>
+  </section>
+
+  <section id="solution">
+    <h2><span class="num">2</span>해결 방법</h2>
+    <p class="lead">먼저 <strong>공통</strong>에서 LLM 설정을 맞춘 뒤, PR을 올릴 때와 리뷰 코멘트에 대응할 때 흐름이 나뉩니다.</p>
+    <div class="flow flow-common">
+      <div class="card"><div><h3>LLM 설정</h3><p>리뷰에 사용할 LLM 모델·API·옵션을 옵션 창에서 확인·설정합니다.</p></div></div>
+    </div>
+    <div class="scenarios">
+      <div class="card scenario">
+        <h3><span class="tag">시나리오 1</span> PR하기</h3>
+        <div class="flow">
+          <div class="card"><div><h3>저장소·브랜치 선택</h3><p>작업할 GitHub 저장소와 대상 브랜치(PR)를 고릅니다.</p></div></div>
+          <div class="card"><div><h3>코드 리뷰</h3><p>변경분을 분석해 버그, 가독성, 설계 이슈를 짚고 리뷰 의견을 정리합니다.</p></div></div>
+          <div class="card"><div><h3>UnitTest 생성 및 검증</h3><p>필요한 단위 테스트를 생성·보완하고 실행해, 리뷰와 함께 검증 결과를 확인한 뒤 PR을 올립니다.</p></div></div>
+        </div>
+      </div>
+      <div class="card scenario">
+        <h3><span class="tag">시나리오 2</span> PR 리뷰 대응</h3>
+        <div class="flow">
+          <div class="card"><div><h3>코멘트 확인 → 리뷰 검토</h3><p>PR 코멘트를 모아 타당성을 검토하고, 반영할 항목을 정리합니다.</p></div></div>
+          <div class="card"><div><h3>코드 작업</h3><p>검토 결과에 따라 코드를 수정하고, 필요하면 테스트를 함께 맞춥니다.</p></div></div>
+          <div class="card"><div><h3>재리뷰</h3><p>수정분을 다시 검토하고 테스트를 재실행해, 지적 사항이 해소됐는지 확인합니다.</p></div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="effect">
+    <h2><span class="num">3</span>기대 효용성 <span class="tag">예상치</span></h2>
+    <p class="lead">위 문제를 기준으로 도입 시 기대하는 방향입니다. 수치는 실제 측정 후 갱신합니다.</p>
+    <div class="grid">
+      <div class="card"><div class="stat">↓ 맥락 전환</div><p style="margin:6px 0 0;color:var(--sub)">개발·PR·리뷰 검토를 한 흐름에서 이어 PR하기와 대응을 나눠 부담을 줄입니다.</p></div>
+      <div class="card"><div class="stat">↑ 코멘트 대응</div><p style="margin:6px 0 0;color:var(--sub)">PR 코멘트를 한곳에서 확인·검토해, 놓침 없이 빠르게 수정으로 이어 갑니다.</p></div>
+      <div class="card"><div class="stat">↑ 로직 검증</div><p style="margin:6px 0 0;color:var(--sub)">비즈니스 로직 UnitTest를 생성·실행하고 리뷰와 함께 보아 회귀 위험을 줄입니다.</p></div>
+      <div class="card"><div class="stat">↑ 리뷰 집중도</div><p style="margin:6px 0 0;color:var(--sub)">기계적 지적은 자동화하고, 사람은 설계·맥락 판단에 집중합니다.</p></div>
+    </div>
+  </section>
+
+  <section id="limits">
+    <h2><span class="num">4</span>제한점 및 필요 자원</h2>
+    <p class="lead">도입 전 알아 두어야 할 전제입니다.</p>
+    <div class="two">
+      <div class="card"><h3 style="color:var(--ok)">필요 자원</h3>
+        <ul class="list"><li>GitHub 저장소 접근 권한(읽기, 코멘트 작성)</li><li>UnitTest가 실행 가능한 프로젝트 설정</li><li>테스트를 돌릴 실행 환경(CI 또는 샌드박스)</li><li>AI 모델 사용 비용 및 API 접근</li></ul></div>
+      <div class="card"><h3 style="color:var(--warn)">제한 사항</h3>
+        <ul class="list"><li>AI 리뷰는 보조 수단이며 최종 병합 판단은 사람이 합니다.</li><li>테스트가 없거나 부족한 코드는 검증 범위가 좁습니다.</li><li>매우 큰 PR은 분석 정확도와 시간이 영향을 받을 수 있습니다.</li><li>비공개 코드의 외부 전송 정책을 조직 기준으로 확인해야 합니다.</li></ul></div>
+    </div>
+    <p class="note">※ 위 내용은 초안이며 서비스 이름·세부 수치는 확정 후 수정해 주세요.</p>
+  </section>
+</main>
+
+<footer>ReviewPilot · <a href="onboarding.html">온보딩 가이드</a></footer>
+
+<script>
+(function(){
+  var links=[].slice.call(document.querySelectorAll('#nav a'));
+  var secs=links.map(function(a){return document.querySelector(a.getAttribute('href'))});
+  function on(){
+    var y=window.scrollY+110,cur=0;
+    secs.forEach(function(s,i){if(s&&s.offsetTop<=y)cur=i});
+    links.forEach(function(a,i){a.classList.toggle('on',i===cur&&window.scrollY>200)});
+  }
+  window.addEventListener('scroll',on,{passive:true});on();
+})();
+</script>
+</body>
+</html>
