@@ -692,9 +692,22 @@ final class ReviewStore {
         }
     }
 
+    /// PR proposal base first; otherwise a sprint branch compares with its sprint `main`
+    /// (`sprint/s29/feature/x` → `sprint/s29/main`) so other sprint work is not counted as this branch's change.
     private func branchBaseReference(for branch: RepositoryBranch, repository: RegisteredRepository) -> String {
-        let base = branchPullRequestProposals[branch.id]?.base ?? repository.defaultBranch
-        return repository.isLocalPractice == true ? base : "refs/remotes/\(repository.remoteName)/\(base)"
+        func reference(_ base: String) -> String { repository.isLocalPractice == true ? base : "refs/remotes/\(repository.remoteName)/\(base)" }
+        if let base = branchPullRequestProposals[branch.id]?.base { return reference(base) }
+        if let parent = Self.sprintParentBranch(of: branch.name),
+           (try? ProcessRunner().run("git", arguments: ["rev-parse", "--verify", "--quiet", "\(reference(parent))^{commit}"], workingDirectory: repository.localPath, timeout: 30)) != nil {
+            return reference(parent)
+        }
+        return reference(repository.defaultBranch)
+    }
+
+    nonisolated static func sprintParentBranch(of name: String) -> String? {
+        let parts = name.split(separator: "/").map(String.init)
+        guard parts.count >= 3, parts[0] == "sprint", parts[2] != "main" else { return nil }
+        return "sprint/\(parts[1])/main"
     }
 
     func isVerifyingUnitTests(for branch: RepositoryBranch) -> Bool {
@@ -714,8 +727,8 @@ final class ReviewStore {
         branchUnitTestResults[branch.id]?.satisfies(branchSHA: branch.sha) == true
     }
 
-    /// Selects changed business rules, verifies NUnit tests, and pushes passing
-    /// tests to a separate branch while preserving the registered checkout.
+    /// Selects changed business rules, verifies NUnit tests, and leaves passing tests
+    /// uncommitted on the local UnitTest branch checked out in the registered folder.
     func verifyUnitTests(for branch: RepositoryBranch) async {
         guard !verifyingUnitTestBranchIDs.contains(branch.id),
               !implementingBranchRepositoryIDs.contains(branch.repositoryID) else { return }
@@ -725,17 +738,18 @@ final class ReviewStore {
         }
         verifyingUnitTestBranchIDs.insert(branch.id)
         branchUnitTestErrors[branch.id] = nil
+        // A new attempt replaces the previous result, so its file list is not shown as current.
+        if branchUnitTestResults.removeValue(forKey: branch.id) != nil { persist() }
         branchUnitTestMessages[branch.id] = "변경된 C# 파일에서 UnitTest 대상을 찾는 중입니다."
         defer { verifyingUnitTestBranchIDs.remove(branch.id) }
         do {
             let model = effectiveAgentModel
             let isTrusted = trustedBranchReviewIDs.contains(branch.id)
             let baseReference = branchBaseReference(for: branch, repository: repository)
-            let cursor = selectedAgent, workspaces = workspaces, verifier = unitTestVerifier
+            let cursor = selectedAgent, verifier = unitTestVerifier
             let verification = try await background {
                 try verifier.verify(
                     repository: repository, branch: branch, baseReference: baseReference,
-                    developerName: (try? workspaces.developerName(at: repository.localPath)) ?? "개발자",
                     select: { workspace, comparisonBase, changes in
                         try cursor.selectUnitTestTargets(repositoryPath: workspace, comparisonBase: comparisonBase, changes: changes, trustWorkspace: isTrusted, model: model)
                     },

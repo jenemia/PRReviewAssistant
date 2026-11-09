@@ -187,7 +187,7 @@ struct BranchRequestDetailView: View {
             Button("취소", role: .cancel) {}
             Button("시작") { Task { await store.verifyUnitTests(for: branch) } }
         } message: {
-            Text("통과한 테스트 파일은 \(branch.name)에서 생성한 새 브랜치에 커밋하고 원격 저장소에 푸시합니다.")
+            Text("등록 폴더를 \(UnitTestVerifier.unitTestBranchName(for: branch.name)) 로컬 브랜치로 전환합니다. 통과한 테스트 파일은 커밋하지 않고 작업 트리에 둡니다. 커밋하지 않은 변경이 있으면 전환하지 않습니다.")
         }
         .alert("UnitTest 검증이 통과되지 않았습니다", isPresented: $showingUnitTestWarning) {
             Button("취소", role: .cancel) {}
@@ -271,7 +271,7 @@ struct BranchRequestDetailView: View {
 
                 GroupBox("UnitTest 검증") {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("변경된 C# 파일 중 테스트가 없는 순수 로직의 NUnit 테스트를 Agent가 생성하고 `dotnet test`로 검증합니다. 통과한 테스트는 선택한 브랜치를 기준으로 새 브랜치에 커밋·푸시합니다.")
+                        Text("변경된 C# 파일 중 테스트가 없는 순수 로직의 NUnit 테스트를 Agent가 생성하고 `dotnet test`로 검증합니다. 통과한 테스트는 로컬 UnitTest 브랜치의 작업 트리에 커밋하지 않고 둡니다.")
                             .font(.caption).foregroundStyle(.secondary)
                         HStack {
                             Button(isVerifyingUnitTests ? "검증 중…" : "UnitTest 생성·검증", systemImage: "checkmark.shield") {
@@ -295,6 +295,14 @@ struct BranchRequestDetailView: View {
                             VStack(alignment: .leading, spacing: 6) {
                                 ForEach(result.files) { file in
                                     DisclosureGroup {
+                                        if let rules = file.rules, !rules.isEmpty {
+                                            VStack(alignment: .leading, spacing: 2) {
+                                                Text("추출한 비즈니스 규칙").font(.caption.bold())
+                                                ForEach(rules, id: \.self) { Text($0).font(.caption) }
+                                            }
+                                            .textSelection(.enabled)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                        }
                                         Text(file.detail).font(.caption.monospaced()).textSelection(.enabled)
                                             .frame(maxWidth: .infinity, alignment: .leading)
                                     } label: {
@@ -371,7 +379,7 @@ struct UnitTestBranchPickerSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("UnitTest 대상 브랜치").font(.title2.bold())
-            Text("로컬 또는 원격 브랜치를 선택하세요. 통과한 테스트는 선택한 커밋에서 새 브랜치를 만들어 푸시합니다.")
+            Text("로컬 또는 원격 브랜치를 선택하세요. 통과한 테스트는 선택한 커밋에서 만든 로컬 UnitTest 브랜치에 커밋하지 않고 둡니다.")
                 .font(.caption).foregroundStyle(.secondary)
             TextField("브랜치 또는 저장소 검색", text: $query).textFieldStyle(.roundedBorder)
             List(Array(branches.enumerated()), id: \.offset) { _, branch in
@@ -390,7 +398,12 @@ struct UnitTestBranchPickerSheet: View {
             }
             if let selected {
                 Text("선택: \(selected.name) (\(selected.isRemote ? "원격" : "로컬"))").font(.caption)
-                if let message = store.branchUnitTestMessages[selected.id] { Text(message).font(.caption).textSelection(.enabled) }
+                if let message = store.branchUnitTestMessages[selected.id] {
+                    HStack(spacing: 6) {
+                        if store.isVerifyingUnitTests(for: selected) { ProgressView().controlSize(.small) }
+                        Text(message).font(.caption).textSelection(.enabled)
+                    }
+                }
                 if let error = store.branchUnitTestErrors[selected.id] { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
                 if let result = store.branchUnitTestResults[selected.id], result.verifiedSHA.hasPrefix(selected.sha) {
                     Text(result.summary).font(.caption).textSelection(.enabled)
@@ -399,7 +412,7 @@ struct UnitTestBranchPickerSheet: View {
             HStack {
                 Spacer()
                 Button("닫기") { dismiss() }
-                Button("생성·검증 및 새 브랜치 푸시") {
+                Button(selected.map { store.isVerifyingUnitTests(for: $0) } == true ? "검증 중…" : "생성·검증") {
                     if let selected { Task { await store.verifyUnitTests(for: selected) } }
                 }
                 .disabled(selected == nil || selected.map { store.isVerifyingUnitTests(for: $0) || store.implementingBranchRepositoryIDs.contains($0.repositoryID) } == true)

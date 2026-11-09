@@ -16,7 +16,7 @@ struct SkillFileStore: Sendable {
     /// Roles `CursorReviewWorkflow` loads for a branch review.
     static let reviewRoles = ["spec-search-agent", "structure-agent", "code-reviewer", "maintenance-reviewer", "scope-guard", "risk-guard"]
     static let unitTestPrefix = "unittest-"
-    static let defaultUnitTestSkills = ["unittest-csharp-base", "unittest-unity-base", "unittest-domain-currency", "unittest-domain-time-season", "unittest-writer"]
+    static let defaultUnitTestSkills = ["unittest-csharp-base", "unittest-unity-base", "unittest-domain-currency", "unittest-domain-time-season", "unittest-domain-probability", "unittest-target-selection", "unittest-writer"]
 
     let agentsDirectory: URL
     let skillsDirectory: URL

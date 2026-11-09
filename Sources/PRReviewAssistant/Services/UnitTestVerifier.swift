@@ -2,8 +2,8 @@ import Foundation
 
 /// Pre-PR UnitTest step, ported from SpecGuard's generate → patch guard → validate flow.
 ///
-/// Agents read a temporary checkout of the selected commit. Validation and the
-/// output commit use separate temporary files, leaving the registered checkout intact.
+/// The registered checkout is switched to the local UnitTest branch; agents read it and
+/// tests that pass validation (in temporary projects) are left there uncommitted.
 struct UnitTestVerifier: Sendable {
     static let maxTargets = 5
     static let maxAttempts = 3
@@ -22,12 +22,20 @@ struct UnitTestVerifier: Sendable {
         var behavior: String = ""
         /// Tests a previous run put on the UnitTest branch; the agent may rewrite or delete them.
         var existingTests: [String] = []
+        /// Unity repositories validate against `UnityEngineShim` and may use UnityEngine in tests.
+        var isUnityProject = false
     }
 
     struct Change: Sendable {
         let sourcePath: String
         let diff: String
+        /// Subjects of this branch's own (first-parent, non-merge) commits that touched the file.
+        var commits: [String] = []
     }
+
+    /// Proposal `verification` value for a test that copies source rules because the source cannot compile.
+    static let replicaVerification = "replica"
+
 
     struct Candidate: Decodable, Sendable {
         let sourcePath: String
@@ -76,7 +84,8 @@ struct UnitTestVerifier: Sendable {
     }
 
     /// Test-only patch guard (SpecGuard `PatchGuard.CheckProposal`).
-    static func violations(of files: [UnitTestProposal.File], existingPaths: Set<String>) -> [String] {
+    static func violations(of files: [UnitTestProposal.File], existingPaths: Set<String>, allowsUnityEngine: Bool = false) -> [String] {
+        let tokens = allowsUnityEngine ? forbiddenTokens.filter { $0 != "UnityEngine" } + ["UnityShim"] : forbiddenTokens
         var result: [String] = files.isEmpty ? ["생성 파일 없음"] : []
         for file in files {
             let path = file.path
@@ -88,7 +97,7 @@ struct UnitTestVerifier: Sendable {
             } else if existingPaths.contains(path) {
                 result.append("\(path): 기존 파일 덮어쓰기 금지")
             }
-            for token in forbiddenTokens where file.content.contains(token) {
+            for token in tokens where file.content.contains(token) {
                 result.append("\(path): 금지 토큰 '\(token)' 포함")
             }
         }
@@ -212,7 +221,6 @@ struct UnitTestVerifier: Sendable {
         repository: RegisteredRepository,
         branch: RepositoryBranch,
         baseReference: String,
-        developerName: String,
         select: Selector,
         generate: Generator,
         progress: @Sendable (String) -> Void
@@ -258,59 +266,79 @@ struct UnitTestVerifier: Sendable {
                 changed.append((first, [first]))
             }
         }
+        let baseName = baseReference.hasPrefix("refs/remotes/") ? String(baseReference.dropFirst("refs/remotes/".count)) : baseReference
         func noTargets(_ summary: String) -> UnitTestVerification {
-            .init(outcome: .notApplicable, verifiedSHA: head, resultSHA: head, pushed: false, summary: summary, files: [])
+            .init(outcome: .notApplicable, verifiedSHA: head, resultSHA: head, pushed: false, summary: "기준 \(baseName) · " + summary, files: [])
         }
         guard !changed.isEmpty else { return noTargets("변경된 C# 소스가 없어 UnitTest 대상이 없습니다.") }
 
+        // Files that only arrived through merges of other branches are not this branch's work.
+        let ownLog = try git(["-c", "core.quotePath=false", "log", "--first-parent", "--no-merges", "--name-only", "--format=%x01%s", "\(mergeBase)..\(head)", "--", "*.cs"], at: path, trim: false)
+        var ownCommits: [String: [String]] = [:]
+        for block in ownLog.split(separator: "\u{01}") {
+            let lines = block.split(whereSeparator: \.isNewline).map(String.init)
+            guard let subject = lines.first else { continue }
+            for file in lines.dropFirst() where !file.isEmpty { ownCommits[file, default: []].append(subject) }
+        }
+        let mergedOnly = changed.filter { entry in entry.paths.allSatisfy { ownCommits[$0] == nil } }.count
+        changed.removeAll { entry in entry.paths.allSatisfy { ownCommits[$0] == nil } }
+        guard !changed.isEmpty else { return noTargets("변경된 C# 소스 \(mergedOnly)개가 모두 다른 브랜치 병합으로 들어와 이 브랜치의 UnitTest 대상이 없습니다.") }
+
+        // Validation projects only; the tests themselves are written into the registered checkout.
         let work = FileManager.default.temporaryDirectory.appendingPathComponent("PRReviewAssistant-unittest-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: work) }
-        let workspace = work.appendingPathComponent("checkout").path
         let outputBranch = Self.unitTestBranchName(for: branch.name)
         let outputRef = "refs/heads/\(outputBranch)"
-        let remoteTip = try git(["ls-remote", repository.remoteName, outputRef], at: path)
+        let current = try? git(["symbolic-ref", "--quiet", "--short", "HEAD"], at: path)
+        // Switching must not touch the user's work. Untracked files survive a switch (git refuses one that would
+        // overwrite them); tracked changes may remain only as tests of an earlier run on this UnitTest branch.
+        let dirty = try dirtyPaths(at: path)
+        let blocking = dirty.filter { !$0.untracked && !(current == outputBranch && Self.isTestPath($0.path)) }.map(\.path)
+        guard blocking.isEmpty else {
+            throw failure("등록 폴더에 커밋하지 않은 변경이 있어 UnitTest 브랜치 \(outputBranch)로 전환할 수 없습니다. 변경을 커밋하거나 정리한 뒤 다시 시도하세요.\n" + blocking.prefix(10).joined(separator: "\n"))
+        }
+        let localTip = current == outputBranch ? nil : try? git(["rev-parse", "--verify", "--quiet", "\(outputRef)^{commit}"], at: path)
+        let remoteTip = current == outputBranch || localTip != nil ? nil : try git(["ls-remote", repository.remoteName, outputRef], at: path)
             .split(whereSeparator: { $0 == "\t" || $0 == " " }).first.map(String.init)
-        let localTip = try? git(["rev-parse", "--verify", "--quiet", "\(outputRef)^{commit}"], at: path)
         if remoteTip != nil {
             try git(["fetch", "--no-tags", repository.remoteName, "+\(outputRef):refs/remotes/\(repository.remoteName)/\(outputBranch)"], at: path)
         }
-        progress(localTip == nil && remoteTip == nil ? "선택한 커밋에서 UnitTest 작업 브랜치를 만드는 중입니다." : "기존 UnitTest 브랜치 \(outputBranch)를 체크아웃하는 중입니다.")
-        do {
-            if localTip != nil {
-                try git(["worktree", "add", workspace, outputBranch], at: path)
-            } else {
-                try git(["worktree", "add", "-b", outputBranch, workspace, remoteTip ?? head], at: path)
-            }
-        } catch CommandError.failed(let result) {
-            throw failure("UnitTest 브랜치 \(outputBranch)를 체크아웃하지 못했습니다. 다른 작업 폴더에서 체크아웃 중인지 확인하세요.\n\(result.error)")
+        // An existing UnitTest branch that is behind only fast-forwards, which creates no commit. A diverged branch
+        // would need a merge commit, so it is refused before switching and the folder stays as it was.
+        let tip = current == outputBranch ? "HEAD" : (localTip ?? remoteTip ?? head)
+        let containsHead = (try? git(["merge-base", "--is-ancestor", head, tip], at: path)) != nil
+        guard containsHead || (try? git(["merge-base", "--is-ancestor", tip, head], at: path)) != nil else {
+            throw failure("UnitTest 브랜치 \(outputBranch)에 \(branch.name)에 없는 커밋이 있어 최신으로 옮길 수 없습니다. 병합 커밋을 자동으로 만들지 않습니다. \(outputBranch)에서 \(branch.name)를 직접 병합한 뒤 다시 시도하세요.")
         }
-        // A pre-existing local branch is kept (moved only to what was pushed); one created here is removed.
-        var finalLocalTip = localTip
-        defer {
-            _ = try? git(["worktree", "remove", "--force", workspace], at: path)
-            if let finalLocalTip {
-                _ = try? git(["update-ref", outputRef, finalLocalTip], at: path)
-            } else {
-                _ = try? git(["branch", "-D", outputBranch], at: path)
-            }
-        }
-        if let remoteTip, let localTip, localTip != remoteTip,
-           (try? git(["merge", "--ff-only", remoteTip], at: workspace)) == nil {
-            throw failure("로컬 \(outputBranch)와 원격 브랜치가 갈라졌습니다. 한쪽으로 정리한 뒤 다시 시도하세요.")
-        }
-        if (try? git(["merge-base", "--is-ancestor", head, "HEAD"], at: workspace)) == nil {
-            progress("선택한 커밋을 UnitTest 브랜치에 병합하는 중입니다.")
+        if current != outputBranch {
+            progress(localTip == nil && remoteTip == nil ? "선택한 커밋에서 로컬 UnitTest 브랜치 \(outputBranch)를 만드는 중입니다." : "기존 UnitTest 브랜치 \(outputBranch)를 체크아웃하는 중입니다.")
             do {
-                try git(["merge", "--no-edit", "-m", "[개발 - \(developerName)] \(branch.name) 변경 병합", head], at: workspace)
-            } catch {
-                _ = try? git(["merge", "--abort"], at: workspace)
-                throw failure("선택한 커밋을 UnitTest 브랜치 \(outputBranch)에 병합하지 못했습니다. 충돌을 정리한 뒤 다시 시도하세요.")
+                if localTip != nil {
+                    try git(["switch", outputBranch], at: path)
+                } else if remoteTip != nil {
+                    try git(["switch", "-c", outputBranch, "--track", "\(repository.remoteName)/\(outputBranch)"], at: path)
+                } else {
+                    try git(["switch", "-c", outputBranch, head], at: path)
+                }
+            } catch CommandError.failed(let result) {
+                throw failure("UnitTest 브랜치 \(outputBranch)를 체크아웃하지 못했습니다. 다른 작업 폴더에서 체크아웃 중인지 확인하세요.\n\(result.error)")
             }
         }
-        let base = try git(["rev-parse", "HEAD"], at: workspace)
-        // Tests this UnitTest branch added on top of the selected commit; only these may be changed or deleted.
+        if !containsHead {
+            progress("UnitTest 브랜치 \(outputBranch)를 선택한 커밋으로 옮기는 중입니다.")
+            do {
+                try git(["merge", "--ff-only", head], at: path)
+            } catch CommandError.failed(let result) {
+                throw failure("UnitTest 브랜치 \(outputBranch)를 선택한 커밋으로 옮기지 못했습니다. 추적하지 않는 파일이 겹치는지 확인하세요.\n\(result.error)")
+            }
+        }
+        let base = try git(["rev-parse", "HEAD"], at: path)
+        // Tests this UnitTest branch added on top of the selected commit (committed or left uncommitted by an earlier run); only these may be changed or deleted.
         let ownedTests = Set(try gitList(["diff", "--name-only", "-z", "--diff-filter=AMR", head, base, "--", "*.cs"], at: path).filter(Self.isTestPath))
+            .union(current == outputBranch ? dirty.map(\.path).filter { $0.hasSuffix(".cs") && Self.isTestPath($0) } : [])
+        // The user's untracked files from another branch are never overwritten by generated tests.
+        let untracked = current == outputBranch ? [] : Set(dirty.filter(\.untracked).map(\.path))
 
         var candidates: [(candidate: Candidate, paths: [String])] = []
         for start in stride(from: 0, to: changed.count, by: Self.selectionBatchSize) {
@@ -319,11 +347,12 @@ struct UnitTestVerifier: Sendable {
             let changes = try batch.map { entry in
                 let diff = try git(["--literal-pathspecs", "diff", "--find-renames", "--no-ext-diff", "--no-textconv", "-U2", mergeBase, head, "--"] + entry.paths, at: path, trim: false)
                 let excerpt = diff.count > 3000 ? String(diff.prefix(3000)) + "\n(이후 diff 생략)" : diff
-                return Change(sourcePath: entry.source, diff: excerpt)
+                let commits = Array(Set(entry.paths.flatMap { ownCommits[$0] ?? [] })).sorted().prefix(5).map { String($0.prefix(160)) }
+                return Change(sourcePath: entry.source, diff: excerpt, commits: Array(commits))
             }
             let pathsBySource = Dictionary(uniqueKeysWithValues: batch.map { ($0.source, $0.paths) })
             var seen: Set<String> = []
-            for candidate in try select(workspace, mergeBase, changes) {
+            for candidate in try select(path, mergeBase, changes) {
                 guard let paths = pathsBySource[candidate.sourcePath], seen.insert(candidate.sourcePath).inserted,
                       (1...3).contains(candidate.priority), !candidate.behavior.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                       candidate.behavior.count <= 1000 else {
@@ -338,6 +367,7 @@ struct UnitTestVerifier: Sendable {
 
         let allFiles = Set(try gitList(["ls-tree", "-r", "--name-only", "-z", head], at: path))
         let testFiles = allFiles.filter { $0.hasSuffix(".cs") && Self.isTestPath($0) }.sorted()
+        let isUnityProject = allFiles.contains { $0 == "ProjectSettings/ProjectVersion.txt" || $0.hasSuffix("/ProjectSettings/ProjectVersion.txt") }
         let prioritized = candidates.sorted {
             if $0.candidate.priority != $1.candidate.priority { return $0.candidate.priority > $1.candidate.priority }
             return $0.candidate.sourcePath < $1.candidate.sourcePath
@@ -358,29 +388,24 @@ struct UnitTestVerifier: Sendable {
                 stylePath: style,
                 styleSample: try style.map { String(try git(["show", "\(head):\($0)"], at: path, trim: false).prefix(6000)) },
                 behavior: entry.candidate.behavior,
-                existingTests: ownedTests.subtracting(deleted).sorted()
+                existingTests: ownedTests.subtracting(deleted).sorted(),
+                isUnityProject: isUnityProject
             )
             results.append(try validateTarget(
-                target, folder: work.appendingPathComponent("t\(index)").path, workspace: workspace,
-                repositoryPath: path, head: head, tracked: allFiles, owned: ownedTests, generate: generate,
+                target, folder: work.appendingPathComponent("t\(index)").path, workspace: path,
+                repositoryPath: path, head: head, tracked: allFiles, untracked: untracked, owned: ownedTests, generate: generate,
                 accepted: &accepted, deleted: &deleted
             ))
         }
 
-        var pushed = false
-        var resultSHA = head
         if !accepted.isEmpty || !deleted.isEmpty {
-            progress("통과한 테스트 \(accepted.count)개와 삭제 \(deleted.count)개를 UnitTest 브랜치에 커밋·푸시하는 중입니다.")
-            if branch.isRemote { try verifyRemoteHead(repository: repository, branch: branch, expected: head) }
-            let currentHead = try git(["rev-parse", "--verify", "--end-of-options", "\(branch.reference)^{commit}"], at: path)
-            guard currentHead == head else { throw failure("검증 중 원본 브랜치가 변경되었습니다. 다시 시도하세요.") }
-            func names(_ paths: [String]) -> String { paths.map { (($0 as NSString).lastPathComponent as NSString).deletingPathExtension }.joined(separator: ", ") }
-            let updatesExisting = !deleted.isEmpty || accepted.contains { ownedTests.contains($0.path) }
-            let message = "[개발 - \(developerName)] UnitTest \(updatesExisting ? "갱신" : "추가"): " + names(accepted.map(\.path))
-                + (deleted.isEmpty ? "" : (accepted.isEmpty ? "" : " / ") + "삭제 " + names(deleted))
-            resultSHA = try commitAndPush(accepted, deleting: deleted, parent: base, expectedRemote: remoteTip, message: message, repository: repository, branchName: outputBranch, workFolder: work.path)
-            if localTip != nil { finalLocalTip = resultSHA }
-            pushed = true
+            progress("통과한 테스트 \(accepted.count)개와 삭제 \(deleted.count)개를 로컬 \(outputBranch) 작업 트리에 반영하는 중입니다.")
+            guard (try? git(["symbolic-ref", "--quiet", "--short", "HEAD"], at: path)) == outputBranch,
+                  try git(["rev-parse", "HEAD"], at: path) == base else {
+                throw failure("검증 중 등록 폴더의 브랜치가 바뀌어 테스트 파일을 쓰지 않았습니다. 다시 시도하세요.")
+            }
+            for file in accepted { try write(file.content, to: (path as NSString).appendingPathComponent(file.path)) }
+            for deletion in deleted { try? FileManager.default.removeItem(atPath: (path as NSString).appendingPathComponent(deletion)) }
         }
 
         let failed = results.filter { $0.status == .failed }.count
@@ -388,18 +413,19 @@ struct UnitTestVerifier: Sendable {
         let outcome: UnitTestVerification.Outcome = failed > 0 ? .failed : (passed > 0 ? .passed : .notApplicable)
         let excluded = changed.count - candidates.count
         let deferred = candidates.count - targets.count
-        let summary = "통과 \(passed)개 · 실패 \(failed)개 · 건너뜀 \(results.count - passed - failed)개 · 범위 밖 \(excluded)개 · 상한 초과 미처리 \(deferred)개" + (pushed ? " — 통과한 테스트를 \(repository.remoteName)/\(outputBranch)에 푸시했습니다." : "")
-        return UnitTestVerification(outcome: outcome, verifiedSHA: head, resultSHA: resultSHA, pushed: pushed, summary: summary, files: results)
+        let summary = "기준 \(baseName) · 통과 \(passed)개 · 실패 \(failed)개 · 건너뜀 \(results.count - passed - failed)개 · 범위 밖 \(excluded)개 · 병합 유입 제외 \(mergedOnly)개 · 상한 초과 미처리 \(deferred)개" + (accepted.isEmpty && deleted.isEmpty ? "" : " — 로컬 \(outputBranch) 브랜치에 테스트 \(accepted.count)개 추가·수정, \(deleted.count)개 삭제 (커밋하지 않음).")
+        return UnitTestVerification(outcome: outcome, verifiedSHA: head, resultSHA: head, pushed: false, summary: summary, files: results)
     }
 
     /// Up to `maxAttempts` generate → guard → validate rounds; failures feed the next prompt.
     private func validateTarget(
         _ target: Target, folder: String, workspace: String,
-        repositoryPath: String, head: String, tracked: Set<String>, owned: Set<String>,
+        repositoryPath: String, head: String, tracked: Set<String>, untracked: Set<String>, owned: Set<String>,
         generate: Generator, accepted: inout [UnitTestProposal.File], deleted: inout [String]
     ) throws -> UnitTestVerification.FileResult {
+        var rules: [String]?
         func result(_ status: UnitTestVerification.FileResult.Status, _ detail: String, test: String? = nil) -> UnitTestVerification.FileResult {
-            .init(sourcePath: target.sourcePath, testPath: test, status: status, detail: detail)
+            .init(sourcePath: target.sourcePath, testPath: test, status: status, detail: detail, rules: rules)
         }
         var previousError: String?
         for _ in 1...Self.maxAttempts {
@@ -410,6 +436,7 @@ struct UnitTestVerifier: Sendable {
                 previousError = error.localizedDescription
                 continue
             }
+            if let extracted = proposal.businessRules, !extracted.isEmpty { rules = extracted.map(\.summary) }
             guard proposal.status == UnitTestProposal.generated else {
                 return result(.skipped, proposal.reason.isEmpty ? "Agent가 UnitTest를 만들 수 없다고 판단했습니다 (\(proposal.status))." : proposal.reason)
             }
@@ -425,7 +452,7 @@ struct UnitTestVerifier: Sendable {
                 return result(.passed, "기존 UnitTest 삭제: " + (proposal.reason.isEmpty ? "변경 동작에 맞지 않음" : proposal.reason), test: deletions.joined(separator: ", "))
             }
             // Tests owned by this UnitTest branch are not in the selected commit, so they may be rewritten.
-            let violations = Self.violations(of: proposal.files, existingPaths: tracked.union(accepted.map(\.path)).union(deleted))
+            let violations = Self.violations(of: proposal.files, existingPaths: tracked.union(untracked).union(accepted.map(\.path)).union(deleted), allowsUnityEngine: target.isUnityProject)
             if !violations.isEmpty { return result(.failed, "정책 위반으로 폐기: " + violations.joined(separator: "; ")) }
 
             let dependencies = proposal.dependencies ?? []
@@ -434,14 +461,29 @@ struct UnitTestVerifier: Sendable {
                 previousError = "의존 소스는 선택 커밋에 추적된 별도 C# 소스 최대 \(Self.maxDependencies)개여야 합니다."
                 continue
             }
+            // A replica test compiles without the target source, so it must name the source it copies.
+            let isReplica = proposal.verification == Self.replicaVerification
+            let marker = "원본: \(target.sourcePath)"
+            if isReplica, !proposal.files.allSatisfy({ $0.content.contains(marker) }) {
+                previousError = "replica 테스트 파일에는 옮긴 로직 위에 `// \(marker)` 주석이 있어야 합니다."
+                continue
+            }
 
             let fileManager = FileManager.default
             try? fileManager.removeItem(atPath: folder)
             try fileManager.createDirectory(atPath: folder, withIntermediateDirectories: true)
-            let sourceFile = "Source/" + (target.sourcePath as NSString).lastPathComponent
-            var sourceFiles = [sourceFile]
+            var sourceFiles: [String] = []
             var testFiles: [String] = []
-            try write(target.source, to: "\(folder)/\(sourceFile)")
+            if !isReplica {
+                let sourceFile = "Source/" + (target.sourcePath as NSString).lastPathComponent
+                try write(target.source, to: "\(folder)/\(sourceFile)")
+                sourceFiles.append(sourceFile)
+            }
+            if target.isUnityProject {
+                try write(UnityEngineShim.source, to: "\(folder)/\(UnityEngineShim.path)")
+                try write(UnityEngineShim.buildProps, to: "\(folder)/Directory.Build.props")
+                sourceFiles.append(UnityEngineShim.path)
+            }
             for (index, dependency) in dependencies.enumerated() {
                 let relative = "Source/Dependencies/\(index).cs"
                 let contents = try git(["show", "\(head):\(dependency)"], at: repositoryPath, trim: false)
@@ -458,7 +500,9 @@ struct UnitTestVerifier: Sendable {
             if outcome.success {
                 accepted += proposal.files
                 deleted += deletions
-                return result(.passed, outcome.log.isEmpty ? "검증 통과" : outcome.log, test: proposal.files.map(\.path).joined(separator: ", "))
+                let log = outcome.log.isEmpty ? "검증 통과" : outcome.log
+                let detail = isReplica ? "원본 로직 복제 검증: 원본을 컴파일할 수 없어 규칙을 테스트 안에 옮겨 검증했습니다. 원본이 바뀌면 이 테스트도 함께 고쳐야 합니다.\n" + log : log
+                return result(.passed, detail, test: proposal.files.map(\.path).joined(separator: ", "))
             }
             previousError = outcome.log
         }
@@ -471,30 +515,16 @@ struct UnitTestVerifier: Sendable {
     }
 
     /// Builds the commit from a temporary index so the work folder, its index and HEAD stay untouched.
-    private func commitAndPush(
-        _ files: [UnitTestProposal.File], deleting deletions: [String], parent: String, expectedRemote: String?, message: String,
-        repository: RegisteredRepository, branchName: String, workFolder: String
-    ) throws -> String {
-        let path = repository.localPath
-        let index = (workFolder as NSString).appendingPathComponent("index")
-        _ = try git(["read-tree", parent], at: path, indexFile: index)
-        for file in files {
-            let blob = try runner.run("git", arguments: ["hash-object", "-w", "--stdin"], workingDirectory: path, input: file.content)
-                .output.trimmingCharacters(in: .whitespacesAndNewlines)
-            _ = try git(["update-index", "--add", "--cacheinfo", "100644,\(blob),\(file.path)"], at: path, indexFile: index)
+    /// Paths with uncommitted changes, including untracked files (`git status --porcelain -z`).
+    private func dirtyPaths(at path: String) throws -> [(path: String, untracked: Bool)] {
+        var entries = try gitList(["status", "--porcelain=v1", "-z", "--untracked-files=all"], at: path).makeIterator()
+        var paths: [(path: String, untracked: Bool)] = []
+        while let entry = entries.next() {
+            guard entry.count > 3 else { continue }
+            paths.append((String(entry.dropFirst(3)), entry.hasPrefix("??")))
+            if entry.first == "R" || entry.first == "C" { _ = entries.next() }
         }
-        for deletion in deletions {
-            _ = try git(["update-index", "--force-remove", "--", deletion], at: path, indexFile: index)
-        }
-        let tree = try git(["write-tree"], at: path, indexFile: index)
-        let commit = try git(["commit-tree", tree, "-p", parent, "-m", message], at: path)
-        // The lease pins the remote to what was checked out (empty: the branch must not exist yet).
-        _ = try git(["push", "--force-with-lease=refs/heads/\(branchName):\(expectedRemote ?? "")", repository.remoteName, "\(commit):refs/heads/\(branchName)"], at: path)
-        let pushedHead = try git(["ls-remote", repository.remoteName, "refs/heads/\(branchName)"], at: path).split(whereSeparator: { $0 == "\t" || $0 == " " }).first.map(String.init)
-        guard pushedHead == commit else {
-            throw failure("푸시 후 원격 브랜치 SHA를 확인하지 못했습니다.")
-        }
-        return commit
+        return paths
     }
 
     private func verifyRemoteHead(repository: RegisteredRepository, branch: RepositoryBranch, expected: String) throws {
@@ -509,13 +539,8 @@ struct UnitTestVerifier: Sendable {
     }
 
     @discardableResult
-    private func git(_ arguments: [String], at path: String, indexFile: String? = nil, trim: Bool = true) throws -> String {
-        let result: CommandResult
-        if let indexFile {
-            result = try runner.run("/usr/bin/env", arguments: ["GIT_INDEX_FILE=\(indexFile)", "/usr/bin/git"] + arguments, workingDirectory: path)
-        } else {
-            result = try runner.run("git", arguments: arguments, workingDirectory: path)
-        }
+    private func git(_ arguments: [String], at path: String, trim: Bool = true) throws -> String {
+        let result = try runner.run("git", arguments: arguments, workingDirectory: path)
         return trim ? result.output.trimmingCharacters(in: .whitespacesAndNewlines) : result.output
     }
 

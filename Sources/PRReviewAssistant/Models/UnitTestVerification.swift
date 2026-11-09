@@ -11,6 +11,8 @@ struct UnitTestVerification: Hashable, Codable, Sendable {
         var testPath: String?
         var status: Status
         var detail: String
+        /// Business rules the agent extracted from the change, shown even when no test was made.
+        var rules: [String]? = nil
         var id: String { sourcePath }
     }
 
@@ -45,6 +47,18 @@ struct UnitTestProposal: Decodable, Sendable {
     let dependencies: [String]?
     /// Tests previously added on the UnitTest branch that should be removed.
     let deletions: [String]?
+    /// Business model extracted before writing tests; the expected values come from these rules.
+    let businessRules: [BusinessRule]?
+    /// `replica` when the source cannot compile and the test carries a copy of its rules.
+    let verification: String?
+
+    struct BusinessRule: Decodable, Hashable, Sendable {
+        let id: String
+        let rule: String
+        /// Where the expected value comes from: spec, diff or code.
+        let source: String
+        var summary: String { "\(id) [\(source)] \(rule)" }
+    }
 
     static let generated = "generated"
 
@@ -59,12 +73,14 @@ struct UnitTestProposal: Decodable, Sendable {
         }
     }
 
-    init(status: String, reason: String = "", files: [File] = [], dependencies: [String]? = nil, deletions: [String]? = nil) {
+    init(status: String, reason: String = "", files: [File] = [], dependencies: [String]? = nil, deletions: [String]? = nil, businessRules: [BusinessRule]? = nil, verification: String? = nil) {
         self.status = status
         self.reason = reason
         self.files = files
         self.dependencies = dependencies
         self.deletions = deletions
+        self.businessRules = businessRules
+        self.verification = verification
     }
 
     /// Reads the first `{` to the last `}` so code fences or a sentence around the JSON are tolerated.
