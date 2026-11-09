@@ -2099,6 +2099,11 @@ final class ReviewStore {
             return
         }
         guard plan.status != .inProgress else { return }
+        // Snapshots can only attribute changes to one card at a time.
+        guard !implementationPlans(for: pullRequest).contains(where: { $0.status == .inProgress }) else {
+            statusMessage = "이 PR에서 다른 카드의 구현이 진행 중입니다. 완료된 뒤 다시 시작하세요."
+            return
+        }
         if let prompt {
             let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmedPrompt.isEmpty else {
@@ -2113,11 +2118,6 @@ final class ReviewStore {
         plan.result = "PR 소스 브랜치 \(pullRequest.headBranch)를 체크아웃하고 에이전트 구현을 시작하는 중입니다."
         plan.startedAt = .now
         plan.completedAt = nil
-        // Snapshots can only attribute changes to one card at a time.
-        guard !implementationPlans(for: pullRequest).contains(where: { $0.status == .inProgress }) else {
-            statusMessage = "이 PR에서 다른 카드의 구현이 진행 중입니다. 완료된 뒤 다시 시작하세요."
-            return
-        }
         implementationPlans[key] = plan
         statusMessage = "PR 소스 브랜치에서 에이전트 구현을 시작했습니다."
         persist()
