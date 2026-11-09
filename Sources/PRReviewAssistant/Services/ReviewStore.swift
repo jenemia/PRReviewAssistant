@@ -1515,14 +1515,25 @@ final class ReviewStore {
             }
             let changedFiles = plan.changedFiles ?? []
             guard !changedFiles.isEmpty else { statusMessage = "이 작업 카드에 기록된 변경 파일이 없습니다."; return }
-            let scopedDiffStat = try await background { try workspace.changes(at: path, files: changedFiles) }
+            let baselineTree = plan.baselineTree
+            let resultTree = plan.resultTree
+            let scopedDiffStat = try await background {
+                if let baselineTree, let resultTree {
+                    return try workspace.changes(at: path, from: baselineTree, to: resultTree)
+                }
+                return try workspace.changes(at: path, files: changedFiles)
+            }
             let diffStat = ([scopedDiffStat.trimmingCharacters(in: .whitespacesAndNewlines), "작업 카드 파일:\n\(changedFiles.joined(separator: "\n"))"]
                 .filter { !$0.isEmpty }
                 .joined(separator: "\n\n"))
             let developerName = try await background { try workspace.developerName(at: path) }
             let message = commitMessage(for: pullRequest, card: card, plan: plan, developerName: developerName)
             let committedSHA = try await background {
-                try workspace.commit(at: path, message: message, files: changedFiles, branch: pullRequest.headBranch, expectedSHA: pullRequest.headSHA)
+                if let baselineTree, let resultTree {
+                    return try workspace.commit(at: path, message: message, baselineTree: baselineTree, resultTree: resultTree, branch: pullRequest.headBranch, expectedSHA: pullRequest.headSHA)
+                }
+                // Plans saved before snapshots existed only recorded file paths.
+                return try workspace.commit(at: path, message: message, files: changedFiles, branch: pullRequest.headBranch, expectedSHA: pullRequest.headSHA)
             }
             committedHeads[pullRequestKey] = committedSHA
             diffStats[pullRequestKey] = diffStat
@@ -1533,9 +1544,9 @@ final class ReviewStore {
             persist()
             statusMessage = "로컬 커밋이 완료되었습니다. 추천 메시지를 만든 뒤 재리뷰를 요청하세요."
         } catch {
-            let result = "커밋에 실패했습니다: \(error.localizedDescription)"
+            // The card's snapshots are still valid, so the commit can be retried
+            // once the cause is resolved without running the agent again.
             statusMessage = "커밋 실패: \(error.localizedDescription)"
-            updateImplementationResult(for: card, pullRequest: pullRequest, status: .failed, result: result)
         }
     }
 
@@ -2102,6 +2113,11 @@ final class ReviewStore {
         plan.result = "PR 소스 브랜치 \(pullRequest.headBranch)를 체크아웃하고 에이전트 구현을 시작하는 중입니다."
         plan.startedAt = .now
         plan.completedAt = nil
+        // Snapshots can only attribute changes to one card at a time.
+        guard !implementationPlans(for: pullRequest).contains(where: { $0.status == .inProgress }) else {
+            statusMessage = "이 PR에서 다른 카드의 구현이 진행 중입니다. 완료된 뒤 다시 시작하세요."
+            return
+        }
         implementationPlans[key] = plan
         statusMessage = "PR 소스 브랜치에서 에이전트 구현을 시작했습니다."
         persist()
@@ -2111,8 +2127,9 @@ final class ReviewStore {
             let path = try await background { try self.workspaces.prepareRepositoryWorkspace(repository: repository, pullRequest: pullRequest) }
             let workspaceSHA = try await background { try self.workspaces.verifiedHead(path, expectedSHA: pullRequest.headSHA, expectedBranch: pullRequest.headBranch) }
             setActiveWorkspace(path, for: pullRequest)
-            let baselineFiles = try await background { try self.workspaces.changedFiles(at: path) }
-            plan.baselineChangedFiles = baselineFiles
+            let baselineTree = try await background { try self.workspaces.snapshotTree(at: path) }
+            plan.baselineTree = baselineTree
+            plan.resultTree = nil
             implementationPlans[key] = plan
             persist()
             let agent = selectedAgent
@@ -2120,8 +2137,9 @@ final class ReviewStore {
             let implementationPlan = plan
             let implementationPullRequest = pullRequestWithCurrentWorkspaceSHA(pullRequest, sha: workspaceSHA)
             let result = try await background { try agent.implement(worktreePath: path, pullRequest: implementationPullRequest, plan: implementationPlan, model: model) }
-            let changedFiles = try await background { try self.workspaces.changedFiles(at: path) }
-            let cardChangedFiles = changedFiles.filter { !baselineFiles.contains($0) }
+            let resultTree = try await background { try self.workspaces.snapshotTree(at: path) }
+            let cardChangedFiles = try await background { try self.workspaces.changedFiles(at: path, from: baselineTree, to: resultTree) }
+            implementationPlans[key]?.resultTree = resultTree
             diffStats[worktreeKey(pullRequest)] = (try? await background { try self.workspaces.changes(at: path) }) ?? ""
             let summary = result.isEmpty ? "에이전트 구현이 종료되었습니다. 변경 사항과 테스트 결과를 확인하세요." : result
             updateImplementationResult(for: card, pullRequest: pullRequest, status: .completed, result: summary, changedFiles: cardChangedFiles)

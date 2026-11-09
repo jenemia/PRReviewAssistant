@@ -67,7 +67,7 @@ final class ProcessRunner: @unchecked Sendable {
         self.defaultTimeout = defaultTimeout
     }
 
-    func run(_ executable: String, arguments: [String], workingDirectory: String? = nil, input: String? = nil, timeout: TimeInterval? = nil, onOutputLine: (@Sendable (Data) -> Void)? = nil) throws -> CommandResult {
+    func run(_ executable: String, arguments: [String], workingDirectory: String? = nil, input: String? = nil, timeout: TimeInterval? = nil, environment: [String: String] = [:], onOutputLine: (@Sendable (Data) -> Void)? = nil) throws -> CommandResult {
         try Task.checkCancellation()
         let timeout = timeout ?? defaultTimeout
         let process = Process()
@@ -84,6 +84,9 @@ final class ProcessRunner: @unchecked Sendable {
         process.executableURL = resolvedURL
         process.arguments = arguments
         process.currentDirectoryURL = workingDirectory.map(URL.init(fileURLWithPath:))
+        if !environment.isEmpty {
+            process.environment = ProcessInfo.processInfo.environment.merging(environment) { $1 }
+        }
         process.standardOutput = outputPipe
         process.standardError = errorPipe
 

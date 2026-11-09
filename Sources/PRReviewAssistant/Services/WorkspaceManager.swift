@@ -142,6 +142,40 @@ struct WorkspaceManager: Sendable {
             .flatMap { $0.split(whereSeparator: \.isNewline).map(String.init) })
             .sorted()
     }
+
+    /// Records the whole working tree, including untracked files, as a Git tree
+    /// without touching the real index. Comparing two snapshots tells a card's
+    /// own work apart from changes that were already in the folder.
+    func snapshotTree(at path: String) throws -> String {
+        let realIndex = try runner.run("git", arguments: ["rev-parse", "--git-path", "index"], workingDirectory: path)
+            .output.trimmingCharacters(in: .whitespacesAndNewlines)
+        return try withTemporaryIndex { index, environment in
+            // Reusing the real index's stat cache avoids rehashing a large repository.
+            try FileManager.default.copyItem(
+                at: URL(fileURLWithPath: realIndex, relativeTo: URL(fileURLWithPath: path, isDirectory: true)),
+                to: index
+            )
+            _ = try runner.run("git", arguments: ["add", "-A"], workingDirectory: path, environment: environment)
+            return try runner.run("git", arguments: ["write-tree"], workingDirectory: path, environment: environment)
+                .output.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+    }
+
+    func changedFiles(at path: String, from baselineTree: String, to resultTree: String) throws -> [String] {
+        try runner.run("git", arguments: ["diff", "--name-only", "-z", "--no-renames", baselineTree, resultTree], workingDirectory: path)
+            .output.split(separator: "\0").map(String.init)
+    }
+
+    func changes(at path: String, from baselineTree: String, to resultTree: String) throws -> String {
+        try runner.run("git", arguments: ["diff", "--stat", baselineTree, resultTree], workingDirectory: path).output
+    }
+
+    private func withTemporaryIndex<Value>(_ body: (URL, [String: String]) throws -> Value) throws -> Value {
+        let index = FileManager.default.temporaryDirectory.appending(path: "pr-review-index-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: index) }
+        return try body(index, ["GIT_INDEX_FILE": index.path])
+    }
+
     /// Reads only committed review work after the PR snapshot, never drafts or
     /// commits from unrelated branches. Full bodies retain multi-line summaries.
     func reviewCommits(at path: String, branch: String, baseSHA: String, committedSHA: String) throws -> [(sha: String, message: String)] {
@@ -209,6 +243,39 @@ struct WorkspaceManager: Sendable {
         // paths so unrelated staged work is never included.
         _ = try runner.run("git", arguments: ["add", "--"] + files, workingDirectory: path)
         _ = try runner.run("git", arguments: ["commit", "--only", "-m", message, "--"] + files, workingDirectory: path)
+        return try runner.run("git", arguments: ["rev-parse", "HEAD"], workingDirectory: path)
+            .output.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Commits exactly what changed between two snapshots of a card's run.
+    /// Earlier uncommitted work and edits made after the run stay in the working
+    /// tree, even when they are in the same file as the card's work.
+    func commit(at path: String, message: String, baselineTree: String, resultTree: String, branch: String, expectedSHA: String, remote: String = "origin") throws -> String {
+        try verifyHead(path, expectedSHA: expectedSHA, expectedBranch: branch)
+        try verifyRemoteHead(remote, branch: branch, expectedSHA: expectedSHA, at: path)
+        let files = try changedFiles(at: path, from: baselineTree, to: resultTree)
+        guard !files.isEmpty else {
+            throw CommandError.failed(.init(output: "", error: "이 작업 카드에서 변경된 내용을 찾을 수 없습니다.", status: 1))
+        }
+        // A file keeps the patch byte-exact for non-UTF-8 sources, and explicit
+        // options keep user diff settings from producing an unappliable patch.
+        let patch = FileManager.default.temporaryDirectory.appending(path: "pr-review-patch-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: patch) }
+        _ = try runner.run("git", arguments: [
+            "diff", "--binary", "--full-index", "--no-renames", "--no-color", "--no-ext-diff", "--no-textconv",
+            "--src-prefix=a/", "--dst-prefix=b/", "--output=\(patch.path)", baselineTree, resultTree
+        ], workingDirectory: path)
+        try withTemporaryIndex { _, environment in
+            _ = try runner.run("git", arguments: ["read-tree", "HEAD"], workingDirectory: path, environment: environment)
+            do {
+                _ = try runner.run("git", arguments: ["apply", "--cached", "--whitespace=nowarn", patch.path], workingDirectory: path, environment: environment)
+            } catch CommandError.failed(let result) {
+                throw CommandError.failed(.init(output: "", error: "이 코멘트의 변경을 현재 HEAD에 적용할 수 없습니다. 같은 부분을 수정한 미커밋 작업이 있으면 먼저 커밋하세요.\n\(result.error)", status: result.status))
+            }
+            _ = try runner.run("git", arguments: ["commit", "-m", message], workingDirectory: path, environment: environment)
+        }
+        // The commit used a temporary index, so realign the real one for these paths.
+        _ = try runner.run("git", arguments: ["--literal-pathspecs", "reset", "-q", "--"] + files, workingDirectory: path)
         return try runner.run("git", arguments: ["rev-parse", "HEAD"], workingDirectory: path)
             .output.trimmingCharacters(in: .whitespacesAndNewlines)
     }

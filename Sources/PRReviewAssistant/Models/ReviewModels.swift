@@ -584,9 +584,11 @@ struct ImplementationPlan: Codable, Hashable {
     var completedAt: Date?
     /// Local commit created for this individual review work card.
     var committedSHA: String?
-    /// Files already changed before this card's implementation began.
-    var baselineChangedFiles: [String]?
-    /// Files newly changed by this card's implementation, used for scoped commits.
+    /// Working-tree snapshots taken right before and after this card's run.
+    /// Their difference is the only content its commit may contain.
+    var baselineTree: String?
+    var resultTree: String?
+    /// Files changed by this card's implementation.
     var changedFiles: [String]?
 }
 

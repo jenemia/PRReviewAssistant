@@ -76,6 +76,106 @@ struct LocalPracticeRepositoryTests {
         #expect(!verifiedSHA.hasPrefix(fixture.pullRequest.headSHA))
     }
 
+    @Test("작업 카드 커밋은 실행 전후 달라진 내용만 포함하고 같은 파일의 다른 변경은 남긴다")
+    func commitsOnlyContentChangedDuringCardRun() throws {
+        let practice = LocalPracticeRepository.isolatedForTesting()
+        let fixture = try practice.create()
+        defer { try? practice.remove(at: fixture.repository.localPath) }
+
+        let workspace = WorkspaceManager()
+        let runner = ProcessRunner()
+        let branch = fixture.pullRequest.headBranch
+        let sha = fixture.pullRequest.headSHA
+        let path = try workspace.prepareRepositoryWorkspace(repository: fixture.repository, pullRequest: fixture.pullRequest)
+        func git(_ arguments: String...) throws -> String {
+            try runner.run("git", arguments: arguments, workingDirectory: path).output
+        }
+        func write(_ content: String, to file: String) throws {
+            try content.write(toFile: "\(path)/\(file)", atomically: true, encoding: .utf8)
+        }
+        var lines = (1...30).map { "line \($0)" }
+        func writeShared() throws { try write(lines.joined(separator: "\n") + "\n", to: "shared.txt") }
+
+        try writeShared()
+        try write("지울 파일\n", to: "removed.txt")
+        _ = try workspace.commit(at: path, message: "test: base", files: ["shared.txt", "removed.txt"], branch: branch, expectedSHA: sha)
+
+        // Work that exists before the card, including something already staged.
+        lines[0] = "user edit before run"
+        try writeShared()
+        try write("다른 작업\n", to: "unrelated.txt")
+        try write("스테이징된 작업\n", to: "staged.txt")
+        _ = try git("add", "--", "staged.txt")
+        let baselineTree = try workspace.snapshotTree(at: path)
+
+        // The agent's run: another part of a dirty file, a new file and a deletion.
+        lines[29] = "agent edit"
+        try writeShared()
+        try write("에이전트 작업\n", to: "카드 작업.txt")
+        try FileManager.default.removeItem(atPath: "\(path)/removed.txt")
+        let resultTree = try workspace.snapshotTree(at: path)
+
+        let files = try workspace.changedFiles(at: path, from: baselineTree, to: resultTree)
+        #expect(files == ["removed.txt", "shared.txt", "카드 작업.txt"])
+
+        // A user edit after the run must not ride along either.
+        lines[14] = "user edit after run"
+        try writeShared()
+
+        _ = try workspace.commit(at: path, message: "test: card", baselineTree: baselineTree, resultTree: resultTree, branch: branch, expectedSHA: sha)
+
+        let committed = try git("-c", "core.quotepath=off", "show", "--format=", "--name-only", "HEAD")
+            .split(whereSeparator: \.isNewline).map(String.init).sorted()
+        #expect(committed == files)
+        let committedShared = try git("show", "HEAD:shared.txt")
+        #expect(committedShared.contains("agent edit"))
+        #expect(!committedShared.contains("user edit before run"))
+        #expect(!committedShared.contains("user edit after run"))
+
+        // Everything else stays exactly as it was in the working tree.
+        let working = try String(contentsOfFile: "\(path)/shared.txt", encoding: .utf8)
+        #expect(working.contains("user edit before run") && working.contains("agent edit") && working.contains("user edit after run"))
+        let status = try git("-c", "core.quotepath=off", "status", "--porcelain=v1")
+            .split(whereSeparator: \.isNewline).map(String.init).sorted()
+        #expect(status == [" M shared.txt", "?? unrelated.txt", "A  staged.txt"].sorted())
+    }
+
+    @Test("같은 부분을 고친 카드는 먼저 커밋할 수 없고 선행 카드 커밋 후에는 커밋된다")
+    func overlappingCardCommitsAreOrderedWithoutPartialCommit() throws {
+        let practice = LocalPracticeRepository.isolatedForTesting()
+        let fixture = try practice.create()
+        defer { try? practice.remove(at: fixture.repository.localPath) }
+
+        let workspace = WorkspaceManager()
+        let branch = fixture.pullRequest.headBranch
+        let sha = fixture.pullRequest.headSHA
+        let path = try workspace.prepareRepositoryWorkspace(repository: fixture.repository, pullRequest: fixture.pullRequest)
+        func head() throws -> String {
+            try ProcessRunner().run("git", arguments: ["rev-parse", "HEAD"], workingDirectory: path).output
+        }
+        func write(_ content: String) throws { try content.write(toFile: "\(path)/shared.txt", atomically: true, encoding: .utf8) }
+
+        try write("원본\n")
+        _ = try workspace.commit(at: path, message: "test: base", files: ["shared.txt"], branch: branch, expectedSHA: sha)
+
+        let start = try workspace.snapshotTree(at: path)
+        try write("카드 A\n")
+        let afterA = try workspace.snapshotTree(at: path)
+        try write("카드 B\n")
+        let afterB = try workspace.snapshotTree(at: path)
+
+        let before = try head()
+        #expect(throws: (any Error).self) {
+            try workspace.commit(at: path, message: "test: B", baselineTree: afterA, resultTree: afterB, branch: branch, expectedSHA: sha)
+        }
+        #expect(try head() == before)
+
+        _ = try workspace.commit(at: path, message: "test: A", baselineTree: start, resultTree: afterA, branch: branch, expectedSHA: sha)
+        _ = try workspace.commit(at: path, message: "test: B", baselineTree: afterA, resultTree: afterB, branch: branch, expectedSHA: sha)
+        let status = try ProcessRunner().run("git", arguments: ["status", "--porcelain=v1"], workingDirectory: path).output
+        #expect(status.isEmpty)
+    }
+
     @Test("저장된 PR SHA가 오래되어도 현재 원격 브랜치로 작업 폴더를 준비한다")
     func preparesCurrentBranchWhenStoredPRSHAIsStale() throws {
         let practice = LocalPracticeRepository.isolatedForTesting()

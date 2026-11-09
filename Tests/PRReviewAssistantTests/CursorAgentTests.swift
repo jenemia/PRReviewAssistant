@@ -158,6 +158,8 @@ struct CursorAgentTests {
         #expect(!prompt.contains("이전 작업 계획"))
         #expect(prompt.contains("## 작업내용"))
         #expect(prompt.contains("코드 위치는 설명 문단 끝의 별도 `출처:`"))
+        #expect(prompt.contains("이 코멘트 처리에 필요한 파일과 내용만 수정"))
+        #expect(prompt.contains("미커밋 변경은 이 작업이 아니므로"))
     }
 
     @Test("답변 형식은 전역 지침의 설명 절만 읽고 없으면 기본 형식을 적용한다")
