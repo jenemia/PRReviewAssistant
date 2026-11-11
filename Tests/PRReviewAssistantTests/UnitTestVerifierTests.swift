@@ -475,18 +475,33 @@ struct UnitTestWorkflowTests {
         #expect(try fixture.remoteUnitTestRefs().isEmpty)
     }
 
-    @Test("커밋하지 않은 사용자 변경이 있으면 브랜치를 바꾸지 않는다")
-    func refusesDirtyCheckout() throws {
+    @Test("커밋하지 않은 사용자 변경은 stash로 보관했다가 테스트 생성 후 다시 적용한다")
+    func stashesDirtyCheckout() throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        let source = (fixture.repository.localPath as NSString).appendingPathComponent("Assets/Scripts/Item/ItemPrice.cs")
+        try "namespace Demo { public static class ItemPrice { } } // wip".write(toFile: source, atomically: true, encoding: .utf8)
+        let verifier = UnitTestVerifier { _, _, _ in .init(success: true, log: "") }
+        let result = try verifier.verify(repository: fixture.repository, branch: fixture.branch, baseReference: "origin/main", select: Self.selectShopDiscount, generate: { _ in proposal }, progress: { _ in })
+        #expect(result.outcome == .passed)
+        #expect(result.summary.contains("다시 적용함"))
+        #expect(try fixture.git(["branch", "--show-current"]) == "unittest/x")
+        #expect(try String(contentsOfFile: source, encoding: .utf8).hasSuffix("// wip"))
+        #expect(try fixture.git(["stash", "list"]).isEmpty)
+    }
+
+    @Test("실패로 끝나도 stash한 사용자 변경을 다시 적용한다")
+    func restoresStashOnFailure() throws {
         let fixture = try makeFixture()
         defer { fixture.cleanup() }
         let source = (fixture.repository.localPath as NSString).appendingPathComponent("Assets/Scripts/Item/ItemPrice.cs")
         try "namespace Demo { public static class ItemPrice { } } // wip".write(toFile: source, atomically: true, encoding: .utf8)
         let verifier = UnitTestVerifier { _, _, _ in .init(success: true, log: "") }
         #expect(throws: CommandError.self) {
-            try verifier.verify(repository: fixture.repository, branch: fixture.branch, baseReference: "origin/main", select: Self.selectShopDiscount, generate: { _ in proposal }, progress: { _ in })
+            try verifier.verify(repository: fixture.repository, branch: fixture.branch, baseReference: "origin/main", select: { _, _, _ in throw CommandError.failed(.init(output: "", error: "select", status: 1)) }, generate: { _ in proposal }, progress: { _ in })
         }
-        #expect(try fixture.git(["branch", "--show-current"]) == "feature/x")
         #expect(try String(contentsOfFile: source, encoding: .utf8).hasSuffix("// wip"))
+        #expect(try fixture.git(["stash", "list"]).isEmpty)
     }
 
     @Test("추적하지 않는 파일은 전환을 막지 않고, 같은 경로의 사용자 파일은 덮어쓰지 않는다")

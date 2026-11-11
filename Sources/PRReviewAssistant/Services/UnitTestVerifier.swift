@@ -292,11 +292,32 @@ struct UnitTestVerifier: Sendable {
         let outputRef = "refs/heads/\(outputBranch)"
         let current = try? git(["symbolic-ref", "--quiet", "--short", "HEAD"], at: path)
         // Switching must not touch the user's work. Untracked files survive a switch (git refuses one that would
-        // overwrite them); tracked changes may remain only as tests of an earlier run on this UnitTest branch.
+        // overwrite them); other tracked changes are stashed and re-applied after the tests are written, except
+        // tests of an earlier run on this UnitTest branch, which stay in place.
         let dirty = try dirtyPaths(at: path)
         let blocking = dirty.filter { !$0.untracked && !(current == outputBranch && Self.isTestPath($0.path)) }.map(\.path)
-        guard blocking.isEmpty else {
-            throw failure("등록 폴더에 커밋하지 않은 변경이 있어 UnitTest 브랜치 \(outputBranch)로 전환할 수 없습니다. 변경을 커밋하거나 정리한 뒤 다시 시도하세요.\n" + blocking.prefix(10).joined(separator: "\n"))
+        var stashPending = false
+        // A failed run still re-applies the stash; a conflict keeps the entry in `git stash list`.
+        defer { if stashPending { _ = try? git(["stash", "pop"], at: path) } }
+        func restoreStash() -> String {
+            guard stashPending else { return "" }
+            stashPending = false
+            do {
+                try git(["stash", "pop"], at: path)
+                return " · 임시 보관한 변경을 다시 적용함"
+            } catch {
+                return " · 임시 보관한 변경을 다시 적용하지 못했습니다. git stash list에서 확인하세요."
+            }
+        }
+        if !blocking.isEmpty {
+            progress("커밋하지 않은 변경 \(blocking.count)개를 stash에 임시 보관하는 중입니다.")
+            let before = try? git(["rev-parse", "--verify", "--quiet", "refs/stash"], at: path)
+            do {
+                try git(["--literal-pathspecs", "stash", "push", "-m", "PRReviewAssistant UnitTest \(outputBranch)", "--"] + blocking, at: path)
+            } catch CommandError.failed(let result) {
+                throw failure("등록 폴더의 커밋하지 않은 변경을 stash에 보관하지 못해 UnitTest 브랜치 \(outputBranch)로 전환할 수 없습니다.\n\(result.error)")
+            }
+            stashPending = (try? git(["rev-parse", "--verify", "--quiet", "refs/stash"], at: path)) != before
         }
         let localTip = current == outputBranch ? nil : try? git(["rev-parse", "--verify", "--quiet", "\(outputRef)^{commit}"], at: path)
         let remoteTip = current == outputBranch || localTip != nil ? nil : try git(["ls-remote", repository.remoteName, outputRef], at: path)
@@ -362,7 +383,7 @@ struct UnitTestVerifier: Sendable {
             }
         }
         guard !candidates.isEmpty else {
-            return noTargets("변경된 C# 소스 \(changed.count)개에서 새 UnitTest가 필요한 비즈니스 로직을 찾지 못했습니다.")
+            return noTargets("변경된 C# 소스 \(changed.count)개에서 새 UnitTest가 필요한 비즈니스 로직을 찾지 못했습니다." + restoreStash())
         }
 
         let allFiles = Set(try gitList(["ls-tree", "-r", "--name-only", "-z", head], at: path))
@@ -413,7 +434,7 @@ struct UnitTestVerifier: Sendable {
         let outcome: UnitTestVerification.Outcome = failed > 0 ? .failed : (passed > 0 ? .passed : .notApplicable)
         let excluded = changed.count - candidates.count
         let deferred = candidates.count - targets.count
-        let summary = "기준 \(baseName) · 통과 \(passed)개 · 실패 \(failed)개 · 건너뜀 \(results.count - passed - failed)개 · 범위 밖 \(excluded)개 · 병합 유입 제외 \(mergedOnly)개 · 상한 초과 미처리 \(deferred)개" + (accepted.isEmpty && deleted.isEmpty ? "" : " — 로컬 \(outputBranch) 브랜치에 테스트 \(accepted.count)개 추가·수정, \(deleted.count)개 삭제 (커밋하지 않음).")
+        let summary = "기준 \(baseName) · 통과 \(passed)개 · 실패 \(failed)개 · 건너뜀 \(results.count - passed - failed)개 · 범위 밖 \(excluded)개 · 병합 유입 제외 \(mergedOnly)개 · 상한 초과 미처리 \(deferred)개" + (accepted.isEmpty && deleted.isEmpty ? "" : " — 로컬 \(outputBranch) 브랜치에 테스트 \(accepted.count)개 추가·수정, \(deleted.count)개 삭제 (커밋하지 않음).") + restoreStash()
         return UnitTestVerification(outcome: outcome, verifiedSHA: head, resultSHA: head, pushed: false, summary: summary, files: results)
     }
 
