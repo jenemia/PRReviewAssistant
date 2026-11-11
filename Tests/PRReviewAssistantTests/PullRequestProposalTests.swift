@@ -30,6 +30,25 @@ struct PullRequestProposalTests {
         }
     }
 
+    @Test("프롬프트는 앱이 조회한 비교 자료를 담고 셸 조회를 금지한다")
+    func promptCarriesGitContextInsteadOfShellLookups() {
+        let branch = RepositoryBranch(
+            repositoryID: UUID(), repositoryName: "owner/repo", name: "sprint/s26/fix/mask",
+            reference: "origin/sprint/s26/fix/mask", sha: "abc1234", subject: "Mask 수정",
+            updatedAt: nil, isCurrent: false, isRemote: true
+        )
+
+        let prompt = CursorAgent.pullRequestProposalPrompt(
+            repositoryPath: "/tmp/repo", branch: branch, defaultBranch: "main",
+            comparisonBase: "refs/remotes/origin/sprint/s26/main", gitContext: "abc1234 Mask 수정"
+        )
+
+        #expect(prompt.contains("abc1234 Mask 수정"))
+        #expect(prompt.contains("refs/remotes/origin/sprint/s26/main"))
+        #expect(prompt.contains("셸 명령이 거절되므로"))
+        #expect(!prompt.contains("반드시 로컬"))
+    }
+
     @Test("비정상 커밋 차단 기준을 고정한다")
     func keepsSuspiciousCommitLimit() {
         #expect(PullRequestProposalVerifier.suspiciousCommitLimit == 500)

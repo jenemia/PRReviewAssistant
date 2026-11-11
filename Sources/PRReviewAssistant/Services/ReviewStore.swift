@@ -651,11 +651,13 @@ final class ReviewStore {
         }
     }
 
+            let comparisonBase = branchBaseReference(for: branch, repository: repository)
     func requestPullRequest(
         for branch: RepositoryBranch,
         proposal: PullRequestProposal,
         title: String,
         body: String
+                    comparisonBase: comparisonBase,
     ) async -> String? {
         guard let repository = repositories.first(where: { $0.id == branch.repositoryID }) else { return nil }
         do {
@@ -786,7 +788,8 @@ final class ReviewStore {
             let model = effectiveAgentModel
             let agent = selectedAgent
             let isTrusted = trustedBranchReviewIDs.contains(branch.id)
-            let generation = try await background { try agent.makeBranchQuiz(repositoryPath: repository.localPath, branch: branch, reviewCards: cards, trustWorkspace: isTrusted, model: model) }
+            let comparisonBase = branchBaseReference(for: branch, repository: repository)
+            let generation = try await background { try agent.makeBranchQuiz(repositoryPath: repository.localPath, branch: branch, comparisonBase: comparisonBase, reviewCards: cards, trustWorkspace: isTrusted, model: model) }
             branchQuizErrors[branch.id] = nil
             if generation.needsQuiz {
                 branchQuizNotices[branch.id] = nil
