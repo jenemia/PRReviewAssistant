@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 
 struct ContentView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @Bindable var store: ReviewStore
     @State private var selection: SidebarItem? = .inbox
     @State private var cursorHistorySearch = ""
@@ -33,31 +34,37 @@ struct ContentView: View {
                             .foregroundStyle(.secondary)
                     } else {
                         ForEach(store.pullRequests) { pullRequest in
-                            Button {
-                                selection = .inbox
-                                store.selectedID = pullRequest.id
-                            } label: {
-                                PRBranchSidebarRow(
-                                    branch: pullRequest.headBranch,
-                                    subtitle: "\(pullRequest.repository) #\(pullRequest.number)",
-                                    isUnread: store.isUnread(pullRequest)
-                                )
+                            HStack {
+                                Button {
+                                    selection = .inbox
+                                    store.selectedID = pullRequest.id
+                                } label: {
+                                    PRBranchSidebarRow(branch: pullRequest.headBranch, subtitle: "\(pullRequest.repository) #\(pullRequest.number)", isUnread: store.isUnread(pullRequest), reviewState: pullRequest.reviewState)
+                                }
+                                .buttonStyle(.plain)
+                                .help("PR #\(pullRequest.number) · \(pullRequest.headBranch) 코멘트 분류 보기")
+                                if let repository = store.repositories.first(where: { $0.fullName == pullRequest.repository }) {
+                                    checkoutButton(branch: pullRequest.headBranch, repository: repository)
+                                }
                             }
-                            .buttonStyle(.plain)
-                            .help("PR #\(pullRequest.number) · \(pullRequest.headBranch) 코멘트 분류 보기")
                         }
                     }
                 }
                 Section {
                     ForEach(store.requestedBranches) { branch in
-                        Button {
-                            selection = .prRequest
-                            store.selectedBranchID = branch.id
-                        } label: {
-                            PRBranchSidebarRow(branch: branch.name, subtitle: branch.repositoryName, isUnread: false)
+                        HStack {
+                            Button {
+                                selection = .prRequest
+                                store.selectedBranchID = branch.id
+                            } label: {
+                                PRBranchSidebarRow(branch: branch.name, subtitle: branch.repositoryName, isUnread: false)
+                            }
+                            .buttonStyle(.plain)
+                            .help("PR 요청 브랜치 \(branch.name) 보기")
+                            if let repository = store.repositories.first(where: { $0.id == branch.repositoryID }) {
+                                checkoutButton(branch: branch.name, repository: repository)
+                            }
                         }
-                        .buttonStyle(.plain)
-                        .help("PR 요청 브랜치 \(branch.name) 보기")
                         .contextMenu {
                             Button("PR 요청 삭제", systemImage: "trash", role: .destructive) {
                                 store.removeRequestedBranch(branch)
@@ -249,6 +256,35 @@ struct ContentView: View {
             UnitTestBranchPickerSheet(store: store)
         }
         .task { await store.loadCursorHistory() }
+        .task {
+            while !Task.isCancelled {
+                await store.refreshCheckedOutBranches()
+                try? await Task.sleep(for: .seconds(10))
+            }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { Task { await store.refreshCheckedOutBranches() } }
+        }
+        .alert("체크아웃 실패", isPresented: Binding(
+            get: { store.checkoutError != nil },
+            set: { if !$0 { store.checkoutError = nil } }
+        )) {
+            Button("확인") { store.checkoutError = nil }
+        } message: {
+            Text(store.checkoutError ?? "")
+        }
+    }
+    @ViewBuilder
+    private func checkoutButton(branch: String, repository: RegisteredRepository) -> some View {
+        if let current = store.checkedOutBranches[repository.id], current != branch {
+            Button("체크아웃") {
+                Task { await store.checkout(branch: branch, repository: repository) }
+            }
+            .buttonStyle(.borderless)
+            .font(.caption2)
+            .disabled(store.checkingOutRepositoryIDs.contains(repository.id))
+            .help("\(branch) 브랜치 체크아웃")
+        }
     }
 }
 
@@ -256,15 +292,36 @@ private struct PRBranchSidebarRow: View {
     let branch: String
     let subtitle: String
     let isUnread: Bool
+    var reviewState: ReviewState? = nil
+
+    private var status: (title: String, color: Color)? {
+        switch reviewState {
+        case .commented: ("리뷰 중", .blue)
+        case .changesRequested: ("검토 중", .orange)
+        case .approved: ("승인", .green)
+        case nil: nil
+        }
+    }
 
     var body: some View {
         HStack(spacing: 7) {
             Image(systemName: "arrow.triangle.branch")
                 .foregroundStyle(BrandColor.prPurple)
             VStack(alignment: .leading, spacing: 2) {
-                Text(branch)
-                    .font(.caption.weight(.medium))
-                    .lineLimit(1)
+                HStack(spacing: 5) {
+                    Text(branch)
+                        .font(.caption.weight(.medium))
+                        .lineLimit(1)
+                    if let status {
+                        Text(status.title)
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(status.color)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(status.color.opacity(0.15), in: Capsule())
+                            .fixedSize()
+                    }
+                }
                 Text(subtitle)
                     .font(.caption2)
                     .foregroundStyle(.secondary)

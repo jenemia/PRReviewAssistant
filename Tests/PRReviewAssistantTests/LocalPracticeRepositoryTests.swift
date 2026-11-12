@@ -301,6 +301,36 @@ struct LocalPracticeRepositoryTests {
         #expect(!currentSHA.hasPrefix(stalePullRequest.headSHA))
     }
 
+    @Test("수동 체크아웃은 원격 브랜치를 추적하고 로컬 커밋을 보존하며 미커밋 변경을 보호한다")
+    func manualCheckoutPreservesLocalWork() throws {
+        let practice = LocalPracticeRepository.isolatedForTesting()
+        let fixture = try practice.create()
+        defer { try? practice.remove(at: fixture.repository.localPath) }
+        let manager = WorkspaceManager()
+        let runner = ProcessRunner()
+        let path = fixture.repository.localPath
+        func git(_ arguments: [String]) throws -> String {
+            try runner.run("git", arguments: arguments, workingDirectory: path).output.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        let original = try manager.currentBranch(in: fixture.repository)
+        let target = fixture.pullRequest.headBranch
+        try manager.checkout(branch: target, in: fixture.repository)
+        #expect(try manager.currentBranch(in: fixture.repository) == target)
+        #expect(try git(["rev-parse", "--abbrev-ref", "@{upstream}"]) == "origin/\(target)")
+        _ = try git(["config", "user.name", "Test"])
+        _ = try git(["config", "user.email", "test@example.com"])
+        _ = try git(["commit", "--allow-empty", "-m", "local work"])
+        let localHead = try git(["rev-parse", "HEAD"])
+        try manager.checkout(branch: original, in: fixture.repository)
+        try manager.checkout(branch: target, in: fixture.repository)
+        #expect(try git(["rev-parse", "HEAD"]) == localHead)
+        let draft = URL(fileURLWithPath: path).appendingPathComponent("draft.txt")
+        try "work".write(to: draft, atomically: true, encoding: .utf8)
+        #expect(throws: (any Error).self) { try manager.checkout(branch: original, in: fixture.repository) }
+        #expect(try manager.currentBranch(in: fixture.repository) == target)
+        #expect(try String(contentsOf: draft, encoding: .utf8) == "work")
+    }
+
     @Test("PR 요청 브랜치 목록은 origin 추적 브랜치만 읽고 체크아웃하지 않는다")
     func readsOriginBranchesForPullRequestRequests() async throws {
         let practice = LocalPracticeRepository.isolatedForTesting()

@@ -4,6 +4,25 @@ struct WorkspaceManager: Sendable {
     /// Generous because fetch and push on a large repository can be slow.
     private let runner = ProcessRunner(defaultTimeout: 600)
 
+    func currentBranch(in repository: RegisteredRepository) throws -> String {
+        try runner.run("git", arguments: ["branch", "--show-current"], workingDirectory: repository.localPath)
+            .output.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func checkout(branch: String, in repository: RegisteredRepository) throws {
+        let path = repository.localPath
+        let changes = try runner.run("git", arguments: ["status", "--porcelain=v1"], workingDirectory: path).output
+        guard changes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw CommandError.failed(.init(output: "", error: "미커밋 변경 사항이 있습니다. 변경 사항을 커밋하거나 보관한 뒤 다시 시도하세요.", status: 1))
+        }
+        let local = try? runner.run("git", arguments: ["show-ref", "--verify", "--quiet", "refs/heads/\(branch)"], workingDirectory: path)
+        if local != nil {
+            _ = try runner.run("git", arguments: ["switch", "--", branch], workingDirectory: path)
+        } else {
+            _ = try runner.run("git", arguments: ["switch", "-c", branch, "--track", "\(repository.remoteName)/\(branch)"], workingDirectory: path)
+        }
+    }
+
     func localBranches(in repository: RegisteredRepository) throws -> [RepositoryBranch] {
         let output = try runner.run("git", arguments: ["for-each-ref", "--format=%(refname:short)%00%(objectname:short)%00%(subject)", "refs/heads/"], workingDirectory: repository.localPath).output
         return output.split(whereSeparator: \.isNewline).compactMap { line in

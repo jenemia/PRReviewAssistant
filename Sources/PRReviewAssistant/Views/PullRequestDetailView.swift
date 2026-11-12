@@ -715,6 +715,7 @@ struct PullRequestDetailView: View {
             ReReviewRequestSheet(
                 pullRequest: pullRequest,
                 generateMessage: { await store.generateReReviewMessage(for: pullRequest) },
+                failureMessage: { store.statusMessage },
                 submit: { comment in
                     Task { await store.requestReReview(for: pullRequest, comment: comment) }
                 }
@@ -893,11 +894,13 @@ private struct ManualCommitSheet: View {
 private struct ReReviewRequestSheet: View {
     let pullRequest: PullRequest
     let generateMessage: () async -> String?
+    let failureMessage: () -> String
     let submit: (String) -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var comment = ""
     @State private var isGenerating = false
+    @State private var generationError = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -914,9 +917,12 @@ private struct ReReviewRequestSheet: View {
                     Button {
                         Task {
                             isGenerating = true
+                            generationError = ""
                             defer { isGenerating = false }
                             if let recommendation = await generateMessage() {
                                 comment = recommendation
+                            } else {
+                                generationError = failureMessage()
                             }
                         }
                     } label: {
@@ -926,6 +932,13 @@ private struct ReReviewRequestSheet: View {
                         )
                     }
                     .disabled(isGenerating)
+                }
+
+                if !generationError.isEmpty {
+                    Text(generationError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .textSelection(.enabled)
                 }
 
                 TextEditor(text: $comment)
@@ -1168,8 +1181,7 @@ private struct WorkAreaSheet: View {
 
             GroupBox("마지막 검토 및 구현 계획") {
                 ScrollView {
-                    MarkdownContentView(plan.content)
-                        .textSelection(.enabled)
+                    MarkdownContentView(plan.content, nativeSelection: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(maxHeight: 180)
@@ -1275,8 +1287,7 @@ private struct WorkReviewSidePanel: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     GroupBox("구현 요청") {
-                        MarkdownContentView(plan.implementationRequest ?? plan.content)
-                            .textSelection(.enabled)
+                        MarkdownContentView(plan.implementationRequest ?? plan.content, nativeSelection: true)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     GroupBox("작업 결과") {
@@ -1609,7 +1620,7 @@ private struct AgentChatSidePanel: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
 
-                            MarkdownContentView(sourceSection?.body ?? card.sectionBody ?? sourceComment?.body ?? card.commentBody)
+                            MarkdownContentView(sourceSection?.body ?? card.sectionBody ?? sourceComment?.body ?? card.commentBody, nativeSelection: true)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .textSelection(.enabled)
                         }
@@ -1786,9 +1797,9 @@ private struct ChatBubble: View {
                     .accessibilityLabel("메시지 복사")
                 }
                 if message.role == .agent {
-                    MarkdownContentView(ReviewResponseReferenceFormatter.format(message.body))
+                    MarkdownContentView(ReviewResponseReferenceFormatter.format(message.body), nativeSelection: true)
                 } else {
-                    Text(message.body)
+                    MarkdownContentView(message.body, nativeSelection: true, plainText: true)
                 }
             }
             .padding(10)

@@ -134,6 +134,9 @@ final class ReviewStore {
     var automaticReviewAnalysis = true { didSet { persist() } }
     var isClassifyingCursorSessions = false
     var cursorSpecClassificationStatus = ""
+    var checkedOutBranches: [UUID: String] = [:]
+    var checkingOutRepositoryIDs: Set<UUID> = []
+    var checkoutError: String?
     var repositoryBranches: [RepositoryBranch] = []
     var requestedBranches: [RepositoryBranch] = []
     var selectedBranchID: String?
@@ -396,6 +399,30 @@ final class ReviewStore {
             result.0.first(where: { $0.id == requested.id }) ?? requested
         }
         if selectedBranch == nil { selectedBranchID = requestedBranches.first?.id }
+    }
+
+    func refreshCheckedOutBranches() async {
+        let repositories = repositories
+        let manager = workspaces
+        let branches = (try? await background {
+            Dictionary(uniqueKeysWithValues: repositories.compactMap { repository in
+                (try? manager.currentBranch(in: repository)).map { (repository.id, $0) }
+            })
+        }) ?? [:]
+        checkedOutBranches = branches
+    }
+
+    func checkout(branch: String, repository: RegisteredRepository) async {
+        guard checkingOutRepositoryIDs.insert(repository.id).inserted else { return }
+        defer { checkingOutRepositoryIDs.remove(repository.id) }
+        do {
+            let manager = workspaces
+            try await background { try manager.checkout(branch: branch, in: repository) }
+            statusMessage = "\(branch) 브랜치를 체크아웃했습니다."
+        } catch {
+            checkoutError = "\(branch) 체크아웃 실패: \(error.localizedDescription)"
+        }
+        await refreshCheckedOutBranches()
     }
 
     func addRequestedBranch(_ branch: RepositoryBranch) {
@@ -1708,12 +1735,15 @@ final class ReviewStore {
 
     func generateReReviewMessage(for pullRequest: PullRequest) async -> String? {
         let key = worktreeKey(pullRequest)
-        guard let path = worktreePaths[key] else {
-            statusMessage = "추천 메시지를 만들려면 먼저 이 PR에서 에이전트 작업을 실행하세요."
-            return nil
-        }
         guard let committedSHA = committedHeads[key] else {
             statusMessage = "추천 메시지를 만들기 전에 작업 영역에서 변경 사항을 커밋하세요."
+            return nil
+        }
+        // Working on another PR in the same repository drops this PR's active
+        // path while its local commit remains; reviewCommits verifies the branch
+        // and HEAD, so the registered checkout is a safe fallback.
+        guard let path = worktreePaths[key] ?? repositories.first(where: { $0.fullName == pullRequest.repository })?.localPath else {
+            statusMessage = "추천 메시지를 만들려면 먼저 이 PR에서 에이전트 작업을 실행하세요."
             return nil
         }
 
