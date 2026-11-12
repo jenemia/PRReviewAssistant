@@ -280,6 +280,68 @@ struct WorkspaceManager: Sendable {
             .output.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// Gives one work card its own detached checkout of `sha`, so several cards
+    /// can be implemented at once without mixing edits. Large binary files are
+    /// left as LFS pointers because the agent only edits text sources.
+    func createCardWorktree(at path: String, sha: String, root: URL = WorkspaceManager.cardWorktreeRoot) throws -> String {
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let worktree = root.appending(path: UUID().uuidString).path
+        _ = try runner.run("git", arguments: ["worktree", "add", "--detach", worktree, sha], workingDirectory: path, environment: ["GIT_LFS_SKIP_SMUDGE": "1"])
+        return worktree
+    }
+
+    func removeCardWorktree(_ worktree: String, from path: String) {
+        if (try? runner.run("git", arguments: ["worktree", "remove", "--force", worktree], workingDirectory: path)) == nil {
+            try? FileManager.default.removeItem(atPath: worktree)
+            _ = try? runner.run("git", arguments: ["worktree", "prune"], workingDirectory: path)
+        }
+    }
+
+    static var cardWorktreeRoot: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appending(path: "PRReviewAssistant/CardWorktrees", directoryHint: .isDirectory)
+    }
+
+    /// Commits a card worked in its own worktree on top of the branch's current
+    /// HEAD. A 3-way merge keeps commits other cards made since the card started,
+    /// and the commit holds only this card's change. The checkout's files are
+    /// updated afterward, so they must have no uncommitted edits of their own.
+    func commitCardWork(at path: String, message: String, baselineTree: String, resultTree: String, branch: String, remote: String = "origin") throws -> String {
+        let head = try verifiedHead(path, expectedSHA: "", expectedBranch: branch)
+        try verifyRemoteHead(remote, branch: branch, expectedSHA: "", at: path)
+        let files = try changedFiles(at: path, from: baselineTree, to: resultTree)
+        guard !files.isEmpty else {
+            throw CommandError.failed(.init(output: "", error: "이 작업 카드에서 변경된 내용을 찾을 수 없습니다.", status: 1))
+        }
+        let dirty = try runner.run("git", arguments: ["--literal-pathspecs", "status", "--porcelain=v1", "--untracked-files=all", "--"] + files, workingDirectory: path).output
+        guard dirty.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw CommandError.failed(.init(output: "", error: "작업 폴더에 이 카드가 수정한 파일의 미커밋 변경이 있습니다. 먼저 커밋하거나 보관한 뒤 다시 커밋하세요.\n\(dirty)", status: 1))
+        }
+        func git(_ arguments: [String]) throws -> String {
+            try runner.run("git", arguments: arguments, workingDirectory: path).output.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        let baseCommit = try git(["commit-tree", baselineTree, "-m", "PR Review Assistant card base"])
+        let resultCommit = try git(["commit-tree", resultTree, "-p", baseCommit, "-m", "PR Review Assistant card result"])
+        let mergedTree: String
+        do {
+            mergedTree = try git(["merge-tree", "--write-tree", "--name-only", "--merge-base=\(baseCommit)", head, resultCommit])
+        } catch CommandError.failed(let result) {
+            let conflicted = result.output.split(separator: "\n", omittingEmptySubsequences: false).dropFirst()
+                .prefix(while: { !$0.isEmpty }).joined(separator: "\n")
+            throw CommandError.failed(.init(output: "", error: "다른 커밋과 같은 부분을 수정해 이 카드를 커밋할 수 없습니다. 최신 HEAD에서 다시 구현하세요.\n충돌 파일:\n\(conflicted)", status: result.status))
+        }
+        guard mergedTree != (try git(["rev-parse", "\(head)^{tree}"])) else {
+            throw CommandError.failed(.init(output: "", error: "이 카드의 변경이 이미 현재 HEAD에 모두 들어 있습니다.", status: 1))
+        }
+        let commit = try git(["commit-tree", mergedTree, "-p", head, "-m", message])
+        // Compare-and-swap: fails instead of dropping a commit made meanwhile.
+        let committedFiles = try runner.run("git", arguments: ["diff", "--name-only", "-z", "--no-renames", head, commit], workingDirectory: path)
+            .output.split(separator: "\0").map(String.init)
+        _ = try git(["update-ref", "-m", "PR Review Assistant: card commit", "refs/heads/\(branch)", commit, head])
+        _ = try git(["--literal-pathspecs", "restore", "--source=HEAD", "--staged", "--worktree", "--"] + committedFiles)
+        return commit
+    }
+
     func pushCommittedChanges(at path: String, branch: String, expectedRemoteSHA: String, committedSHA: String, remote: String = "origin") throws {
         _ = expectedRemoteSHA
         let localSHA = try runner.run("git", arguments: ["rev-parse", "HEAD"], workingDirectory: path)

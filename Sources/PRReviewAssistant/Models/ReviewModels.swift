@@ -590,6 +590,11 @@ struct ImplementationPlan: Codable, Hashable {
     var resultTree: String?
     /// Files changed by this card's implementation.
     var changedFiles: [String]?
+    /// True when the card ran in its own worktree, so its change is not in the
+    /// PR checkout until the card's commit puts it there.
+    var usesCardWorktree: Bool?
+    /// The card's worktree while it runs, kept so an interrupted run can be cleaned up.
+    var worktreePath: String?
 }
 
 enum ImplementationWorkStatus: String, Codable {

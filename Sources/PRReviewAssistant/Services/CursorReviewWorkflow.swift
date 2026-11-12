@@ -306,7 +306,11 @@ struct CursorReviewWorkflow: Sendable {
         let output = try await execute(summaryPrompt, role: "리뷰 통합", directory: directory, trustWorkspace: trustWorkspace, model: model, progress: progress)
         try Task.checkCancellation()
         try await runCancellable {
-            guard try resolve(headReference, directory: directory) == snapshot.headSHA else {
+            let currentHead = try resolve(headReference, directory: directory)
+            // Comment cards read the fixed SHA, so commits other cards add on top
+            // of it do not invalidate the result. Rewritten history still does.
+            guard currentHead == snapshot.headSHA || (preset == .comments &&
+                (try? runCommand("git", ["merge-base", "--is-ancestor", snapshot.headSHA, currentHead], directory, 30)) != nil) else {
                 throw failure("검토 중 head가 변경되어 결과를 저장하지 않았습니다. 다시 검토하세요.")
             }
             if let baseReference, let baseSHA = snapshot.baseSHA,

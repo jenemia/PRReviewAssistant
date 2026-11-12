@@ -176,6 +176,112 @@ struct LocalPracticeRepositoryTests {
         #expect(status.isEmpty)
     }
 
+    @Test("카드별 워크트리 작업은 다른 카드 커밋 위에 자기 변경만 커밋하고 작업 폴더에 반영한다")
+    func cardWorktreeCommitsOnlyItsOwnChangeOnTopOfOtherCards() throws {
+        let practice = LocalPracticeRepository.isolatedForTesting()
+        let fixture = try practice.create()
+        defer { try? practice.remove(at: fixture.repository.localPath) }
+        let root = FileManager.default.temporaryDirectory.appending(path: "card-worktrees-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let workspace = WorkspaceManager()
+        let runner = ProcessRunner()
+        let branch = fixture.pullRequest.headBranch
+        let path = try workspace.prepareRepositoryWorkspace(repository: fixture.repository, pullRequest: fixture.pullRequest)
+        func git(_ arguments: String...) throws -> String {
+            try runner.run("git", arguments: arguments, workingDirectory: path).output.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        var lines = (1...30).map { "line \($0)" }
+        try (lines.joined(separator: "\n") + "\n").write(toFile: "\(path)/shared.txt", atomically: true, encoding: .utf8)
+        try "지울 파일\n".write(toFile: "\(path)/removed.txt", atomically: true, encoding: .utf8)
+        _ = try workspace.commit(at: path, message: "test: base", files: ["shared.txt", "removed.txt"], branch: branch, expectedSHA: "")
+        let start = try git("rev-parse", "HEAD")
+
+        // Both cards start from the same HEAD and run at the same time.
+        let worktreeA = try workspace.createCardWorktree(at: path, sha: start, root: root)
+        let worktreeB = try workspace.createCardWorktree(at: path, sha: start, root: root)
+        let baseA = try workspace.snapshotTree(at: worktreeA)
+        let baseB = try workspace.snapshotTree(at: worktreeB)
+        lines[0] = "card A"
+        try (lines.joined(separator: "\n") + "\n").write(toFile: "\(worktreeA)/shared.txt", atomically: true, encoding: .utf8)
+        lines[0] = "line 1"
+        lines[29] = "card B"
+        try (lines.joined(separator: "\n") + "\n").write(toFile: "\(worktreeB)/shared.txt", atomically: true, encoding: .utf8)
+        try "카드 B 새 파일\n".write(toFile: "\(worktreeB)/new.txt", atomically: true, encoding: .utf8)
+        try FileManager.default.removeItem(atPath: "\(worktreeB)/removed.txt")
+        let resultA = try workspace.snapshotTree(at: worktreeA)
+        let resultB = try workspace.snapshotTree(at: worktreeB)
+        workspace.removeCardWorktree(worktreeA, from: path)
+        workspace.removeCardWorktree(worktreeB, from: path)
+        #expect(!FileManager.default.fileExists(atPath: worktreeA))
+        #expect(!(try git("worktree", "list")).contains(worktreeB))
+
+        // Unrelated uncommitted work in the checkout stays as it is.
+        try "사용자 작업\n".write(toFile: "\(path)/user.txt", atomically: true, encoding: .utf8)
+
+        let commitA = try workspace.commitCardWork(at: path, message: "test: A", baselineTree: baseA, resultTree: resultA, branch: branch)
+        let commitB = try workspace.commitCardWork(at: path, message: "test: B", baselineTree: baseB, resultTree: resultB, branch: branch)
+
+        #expect(try git("rev-parse", "HEAD") == commitB)
+        #expect(try git("rev-parse", "\(commitB)^") == commitA)
+        #expect(try git("show", "--format=", "--name-only", commitA) == "shared.txt")
+        #expect(try git("show", "--format=", "--name-only", commitB).split(separator: "\n").sorted() == ["new.txt", "removed.txt", "shared.txt"])
+        let diffB = try git("show", "--format=", commitB, "--", "shared.txt")
+        #expect(diffB.contains("+card B") && !diffB.contains("card A"))
+        let working = try String(contentsOfFile: "\(path)/shared.txt", encoding: .utf8)
+        #expect(working.contains("card A") && working.contains("card B"))
+        #expect(FileManager.default.fileExists(atPath: "\(path)/new.txt"))
+        #expect(!FileManager.default.fileExists(atPath: "\(path)/removed.txt"))
+        #expect(try git("status", "--porcelain=v1") == "?? user.txt")
+    }
+
+    @Test("같은 줄을 고친 카드나 작업 폴더에 같은 파일의 미커밋 변경이 있으면 커밋하지 않는다")
+    func cardWorktreeCommitStopsOnConflictOrDirtyCheckout() throws {
+        let practice = LocalPracticeRepository.isolatedForTesting()
+        let fixture = try practice.create()
+        defer { try? practice.remove(at: fixture.repository.localPath) }
+        let root = FileManager.default.temporaryDirectory.appending(path: "card-worktrees-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let workspace = WorkspaceManager()
+        let runner = ProcessRunner()
+        let branch = fixture.pullRequest.headBranch
+        let path = try workspace.prepareRepositoryWorkspace(repository: fixture.repository, pullRequest: fixture.pullRequest)
+        func git(_ arguments: String...) throws -> String {
+            try runner.run("git", arguments: arguments, workingDirectory: path).output.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        try "원본\n".write(toFile: "\(path)/shared.txt", atomically: true, encoding: .utf8)
+        _ = try workspace.commit(at: path, message: "test: base", files: ["shared.txt"], branch: branch, expectedSHA: "")
+        let start = try git("rev-parse", "HEAD")
+
+        func cardTrees(_ content: String) throws -> (String, String) {
+            let worktree = try workspace.createCardWorktree(at: path, sha: start, root: root)
+            defer { workspace.removeCardWorktree(worktree, from: path) }
+            let base = try workspace.snapshotTree(at: worktree)
+            try content.write(toFile: "\(worktree)/shared.txt", atomically: true, encoding: .utf8)
+            return (base, try workspace.snapshotTree(at: worktree))
+        }
+        let (baseA, resultA) = try cardTrees("카드 A\n")
+        let (baseB, resultB) = try cardTrees("카드 B\n")
+
+        // A user edit to the same file blocks the commit and is kept.
+        try "사용자 수정\n".write(toFile: "\(path)/shared.txt", atomically: true, encoding: .utf8)
+        #expect(throws: (any Error).self) {
+            try workspace.commitCardWork(at: path, message: "test: A", baselineTree: baseA, resultTree: resultA, branch: branch)
+        }
+        #expect(try git("rev-parse", "HEAD") == start)
+        #expect(try String(contentsOfFile: "\(path)/shared.txt", encoding: .utf8) == "사용자 수정\n")
+        _ = try git("checkout", "--", "shared.txt")
+
+        _ = try workspace.commitCardWork(at: path, message: "test: A", baselineTree: baseA, resultTree: resultA, branch: branch)
+        let afterA = try git("rev-parse", "HEAD")
+        #expect(throws: (any Error).self) {
+            try workspace.commitCardWork(at: path, message: "test: B", baselineTree: baseB, resultTree: resultB, branch: branch)
+        }
+        #expect(try git("rev-parse", "HEAD") == afterA)
+        #expect(try git("status", "--porcelain=v1").isEmpty)
+    }
+
     @Test("저장된 PR SHA가 오래되어도 현재 원격 브랜치로 작업 폴더를 준비한다")
     func preparesCurrentBranchWhenStoredPRSHAIsStale() throws {
         let practice = LocalPracticeRepository.isolatedForTesting()

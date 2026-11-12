@@ -14,6 +14,7 @@ struct CursorReviewWorkflowTests {
         var warning = ""
         var responseOverride: String?
         var changesHeadAfterSummary = false
+        var changedHeadIsDescendant = false
         var baseSHA = "base-sha"
 
         var calls: [[String]] {
@@ -43,6 +44,10 @@ struct CursorReviewWorkflowTests {
             defer { lock.unlock() }
             recorded.append([executable] + arguments)
             if executable == "git" {
+                if arguments.starts(with: ["merge-base", "--is-ancestor"]) {
+                    guard changedHeadIsDescendant else { throw CommandError.failed(.init(output: "", error: "", status: 1)) }
+                    return ""
+                }
                 if arguments.first == "merge-base" { return "merge-sha\n" }
                 if arguments.last == "main^{commit}" { return "\(baseSHA)\n" }
                 if changesHeadAfterSummary, recorded.contains(where: { $0.last?.contains("담당: 리뷰 통합.") == true }) { return "changed-sha\n" }
@@ -357,6 +362,26 @@ struct CursorReviewWorkflowTests {
             try await workflow.run(preset: .comments, directory: "/repo", headReference: "HEAD", expectedSHA: "head-sha", context: "", outputInstructions: "", trustWorkspace: false, model: "")
         }
         #expect(commands.calls.filter { $0.first == "cursor" }.count == 3)
+    }
+
+    @Test("코멘트 검토 중 다른 카드 커밋으로 head가 앞으로만 이동하면 결과를 반환하고 브랜치 리뷰는 거부한다")
+    func descendantHeadKeepsCommentReviewOnly() async throws {
+        let directory = try rolesDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let comments = Commands()
+        comments.changesHeadAfterSummary = true
+        comments.changedHeadIsDescendant = true
+        let commentWorkflow = CursorReviewWorkflow(agentsDirectory: directory, runCommand: comments.run)
+        let output = try await commentWorkflow.run(preset: .comments, directory: "/repo", headReference: "HEAD", expectedSHA: "head-sha", context: "", outputInstructions: "", trustWorkspace: false, model: "")
+        #expect(output == "evidence-from-summary")
+
+        let branch = Commands()
+        branch.changesHeadAfterSummary = true
+        branch.changedHeadIsDescendant = true
+        let branchWorkflow = CursorReviewWorkflow(agentsDirectory: directory, runCommand: branch.run)
+        await #expect(throws: (any Error).self) {
+            try await branchWorkflow.run(preset: .branch, directory: "/repo", headReference: "HEAD", expectedSHA: "head-sha", baseReference: "main", context: "", outputInstructions: "", trustWorkspace: false, model: "")
+        }
     }
 
     @Test("빈 담당 응답은 완료로 처리하지 않는다")
