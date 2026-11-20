@@ -6,19 +6,65 @@
 
 - GitHub CLI 인증 상태 확인 및 로컬 GitHub 저장소 등록
 - 등록 저장소의 열린 PR·라인 코멘트 폴링과 macOS 알림
-- PR의 `head`/`base`/SHA 표시 및 댓글별 검토
+- PR의 `head`/`base`/SHA 표시 및 코멘트별 검토, **전체 검토**(검토하지 않은 카드 일괄 실행)
 - PR 브랜치 체크아웃, 최신 SHA·브랜치 연결 상태 검증, Cursor 읽기 전용 분석
 - 사용자 승인 후 테스트 실행, 커밋·일반 푸시, 재리뷰 요청
+- **머지 충돌 감지와 충돌해결하기:** 기준 브랜치를 머지하며 에이전트가 충돌을 해결하고 성공 시 푸시합니다(방향이 다르면 머지를 취소하고 질문).
+- **안전 머지:** 승인된 PR을 Create a merge commit 방식으로 머지하며 `--match-head-commit`으로 검토한 SHA와 다르면 머지하지 않습니다.
+- **UnitTest 생성:** 브랜치 diff의 비즈니스 로직 또는 **Spec 탭**에서 고른 spec 문서를 기준으로 NUnit 테스트를 생성·검증합니다(`unittest/` 로컬 브랜치에서 작업, 커밋·푸시 없음).
 - 등록 저장소·처리한 코멘트·분석 결과의 로컬 보관
 - macOS 기본 UI와 기본/다크 테마
 
-## 실행
+## 설치
 
-배포본은 `dist/PR Review Assistant.app`입니다. Finder에서 열거나 아래 명령으로 실행할 수 있습니다.
+### 1. 사전 조건 설치
+
+- macOS 14 이상
+- Git
+- GitHub CLI 설치 및 로그인
 
 ```zsh
+brew install gh
+gh auth login
+```
+
+- Cursor Agent 로그인(분석·UnitTest 기능)
+
+```zsh
+cursor agent login
+```
+
+### 2. 앱 설치 (릴리스 다운로드, 권장)
+
+1. [Releases](https://github.com/jenemia/PRReviewAssistant/releases/latest)에서 `PR.Review.Assistant-v<버전>.zip`을 내려받습니다.
+2. zip을 풀고 `PR Review Assistant.app`을 `/Applications`로 옮깁니다.
+3. 공증되지 않은 빌드라 처음 열 때 "확인되지 않은 개발자" 경고가 나올 수 있습니다. 아래 명령으로 격리 속성을 제거한 뒤 실행하세요(또는 앱을 우클릭 → 열기).
+
+```zsh
+xattr -dr com.apple.quarantine "/Applications/PR Review Assistant.app"
+open "/Applications/PR Review Assistant.app"
+```
+
+### 3. 소스에서 빌드
+
+Xcode 또는 Swift 툴체인이 필요합니다.
+
+```zsh
+git clone https://github.com/jenemia/PRReviewAssistant.git
+cd PRReviewAssistant
+scripts/package-app.sh
 open "dist/PR Review Assistant.app"
 ```
+
+### 4. 첫 실행
+
+1. 앱에서 GitHub 인증 상태를 확인합니다.
+2. 저장소 관리에서 PR을 검토할 로컬 GitHub 저장소 폴더를 등록합니다.
+3. 설정에서 사용할 모델을 고릅니다.
+
+앱은 GitHub 토큰을 저장하지 않고 `gh` 인증을 사용합니다. 분석은 기본적으로 읽기 전용이며, 푸시와 재리뷰 요청은 앱에서 각각 승인해야 합니다.
+
+## 개발
 
 개발 실행:
 
@@ -32,20 +78,13 @@ swift run PRReviewAssistant
 scripts/test.sh
 ```
 
-배포본 재생성:
+배포본 재생성(`dist/PR Review Assistant.app`과 버전 zip):
 
 ```zsh
 scripts/package-app.sh
 ```
 
-## 사전 조건
-
-- macOS 14 이상
-- GitHub CLI 설치 및 로그인: `gh auth login`
-- Git 설치
-- Cursor Agent 로그인(분석 기능): `cursor agent login`
-
-앱은 GitHub 토큰을 저장하지 않고 `gh` 인증을 사용합니다. 분석은 기본적으로 읽기 전용이며, 푸시와 재리뷰 요청은 앱에서 각각 승인해야 합니다.
+`v*` 태그를 푸시하면 GitHub Actions(`release.yml`)가 빌드해 GitHub Release에 zip을 올립니다. 태그는 `Resources/Info.plist`의 버전과 같아야 합니다.
 
 ## 역할별 리뷰
 
