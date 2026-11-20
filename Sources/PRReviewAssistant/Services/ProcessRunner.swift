@@ -213,6 +213,9 @@ final class ProcessRunner: @unchecked Sendable {
         try process.run()
     }
 
+    /// Login shells opened in Terminal may not have the user's CLI folders on PATH yet.
+    static let terminalPathExport = "export PATH=\"$HOME/.local/bin:$HOME/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH\""
+
     /// Cursor login can require a browser and interactive terminal feedback.
     /// Running it in Terminal keeps that feedback visible to the user.
     func launchInTerminal(command: String) throws {

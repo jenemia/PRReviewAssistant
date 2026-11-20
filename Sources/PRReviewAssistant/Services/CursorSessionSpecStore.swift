@@ -38,7 +38,10 @@ struct CursorSessionSpecStore: Sendable {
 }
 
 struct WorkspaceSpecCatalog: Sendable {
-    func documents(in workspacePath: String?) -> [WorkspaceSpecDocument] {
+    static let defaultFolders = ["specs", ".specs"]
+
+    func documents(in workspacePath: String?, folders: [String] = WorkspaceSpecCatalog.defaultFolders) -> [WorkspaceSpecDocument] {
+        let folders = Set(folders.map { $0.lowercased() })
         guard let workspacePath else { return [] }
         let root = URL(fileURLWithPath: workspacePath, isDirectory: true)
         guard FileManager.default.fileExists(atPath: root.path) else { return [] }
@@ -63,7 +66,7 @@ struct WorkspaceSpecCatalog: Sendable {
             // so derive the relative path from its depth instead of the root prefix.
             let relative = fileURL.pathComponents.suffix(enumerator.level).joined(separator: "/")
             let components = relative.lowercased().split(separator: "/")
-            guard components.contains(where: { $0 == "specs" || $0 == ".specs" }) else { continue }
+            guard components.contains(where: { folders.contains(String($0)) }) else { continue }
             let name = fileURL.deletingLastPathComponent().lastPathComponent
             documents.append(.init(name: name, relativePath: relative))
             if documents.count == 200 { break }

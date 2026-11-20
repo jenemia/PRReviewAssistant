@@ -174,6 +174,7 @@ struct BranchRequestDetailView: View {
             }
         }
         .navigationTitle("PR 요청")
+        .task(id: branch.repositoryID) { await store.checkUnitTestSupport(for: branch.repositoryID) }
         .sheet(isPresented: $showingRequestSheet) {
             PullRequestRequestSheet(branch: branch, store: store, isPresented: $showingRequestSheet)
         }
@@ -187,7 +188,7 @@ struct BranchRequestDetailView: View {
             Button("취소", role: .cancel) {}
             Button("시작") { Task { await store.verifyUnitTests(for: branch) } }
         } message: {
-            Text("등록 폴더를 \(UnitTestVerifier.unitTestBranchName(for: branch.name)) 로컬 브랜치로 전환합니다. 통과한 테스트 파일은 커밋하지 않고 작업 트리에 둡니다. 커밋하지 않은 변경이 있으면 전환하지 않습니다.")
+            Text("등록 폴더를 \(store.unitTestBranchName(for: branch.name, repositoryID: branch.repositoryID)) 로컬 브랜치로 전환합니다. 통과한 테스트 파일은 커밋하지 않고 작업 트리에 둡니다. 커밋하지 않은 변경이 있으면 전환하지 않습니다.")
         }
         .alert("UnitTest 검증이 통과되지 않았습니다", isPresented: $showingUnitTestWarning) {
             Button("취소", role: .cancel) {}
@@ -278,12 +279,15 @@ struct BranchRequestDetailView: View {
                                 showingUnitTestConfirmation = true
                             }
                             .buttonStyle(.borderedProminent)
-                            .disabled(isVerifyingUnitTests || store.implementingBranchRepositoryIDs.contains(branch.repositoryID))
+                            .disabled(isVerifyingUnitTests || store.implementingBranchRepositoryIDs.contains(branch.repositoryID) || !store.supportsUnitTests(branch.repositoryID))
                             .help("UnitTest를 생성하고 검증합니다.")
                             Button("다른 브랜치 선택") { showingUnitTestBranchPicker = true }
                             if isVerifyingUnitTests { ProgressView().controlSize(.small) }
                             Spacer()
                             if let result = unitTestResult { UnitTestBadge(result: result, isCurrent: store.isUnitTestPassed(for: branch)) }
+                        }
+                        if !store.supportsUnitTests(branch.repositoryID) {
+                            Label(UnitTestVerifier.unsupportedMessage, systemImage: "info.circle").font(.caption).foregroundStyle(.orange)
                         }
                         if let message = store.branchUnitTestMessages[branch.id] {
                             Text(message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)

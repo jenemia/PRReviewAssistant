@@ -1,6 +1,6 @@
 # spec 문서 기반 UnitTest 생성 진행 상황
 
-> 스펙 [spec.md](./spec.md) · 최종 갱신 2026-11-13
+> 스펙 [spec.md](./spec.md) · 최종 갱신 2026-11-20
 
 ## 개발 Work Breakdown
 
@@ -39,5 +39,6 @@
 
 | 날짜 | 내용 |
 |---|---|
+| 2026-11-20 | spec 폴더를 저장소별로 지정하게 하고(기본 `specs`, `.specs`), UnitTest 브랜치 이름이 저장소의 부모 브랜치 규칙을 따르게 했다. C# 소스가 없는 저장소는 생성 버튼을 끈다. |
 | 2026-11-13 | 구현. Spec 탭과 상세 화면, `UnitTestVerifier.verifySpec`·공통 `runOnUnitTestBranch`, spec 선별 프롬프트와 spec 모드 생성 프롬프트, `specMismatch` 상태, spec 결과 저장을 추가했다. |
 | 2026-11-13 | 기획 작성. Spec 목록·선택 탭, spec만으로 대상 선정, 현재 브랜치 HEAD 기준 `unittest/` 로컬 브랜치 작업으로 확정했다. |

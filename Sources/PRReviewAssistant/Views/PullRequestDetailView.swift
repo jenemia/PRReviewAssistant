@@ -652,8 +652,8 @@ struct PullRequestDetailView: View {
                 Label("이 PR은 승인되었습니다.", systemImage: "checkmark.seal.fill")
                     .foregroundStyle(.green)
                     .font(.headline)
-                if !pullRequest.hasExpectedMergeBase {
-                    Label("머지 대상 불일치: PR은 \(pullRequest.baseBranch), 예상 대상은 \(pullRequest.expectedMergeBase)입니다.", systemImage: "exclamationmark.triangle.fill")
+                if !store.hasExpectedMergeBase(pullRequest) {
+                    Label("머지 대상 불일치: PR은 \(pullRequest.baseBranch), 예상 대상은 \(store.expectedMergeBase(for: pullRequest))입니다.", systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
                 } else if pullRequest.mergeability == .conflicting {
                     HStack {
@@ -686,7 +686,7 @@ struct PullRequestDetailView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(.green)
-                    .disabled(store.isMerging(pullRequest) || !pullRequest.hasExpectedMergeBase || pullRequest.mergeability != .mergeable)
+                    .disabled(store.isMerging(pullRequest) || !store.hasExpectedMergeBase(pullRequest) || pullRequest.mergeability != .mergeable)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)

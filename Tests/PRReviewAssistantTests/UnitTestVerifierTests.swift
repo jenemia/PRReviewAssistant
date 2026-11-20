@@ -13,9 +13,12 @@ struct UnitTestVerifierTests {
 
     @Test("선택 브랜치와 같은 sprint 아래 unittest 브랜치 이름을 만든다")
     func namesUnitTestBranch() {
-        #expect(UnitTestVerifier.unitTestBranchName(for: "sprint/s29/feature/christmas2026") == "sprint/s29/unittest/christmas2026")
-        #expect(UnitTestVerifier.unitTestBranchName(for: "feature/x") == "unittest/x")
-        #expect(UnitTestVerifier.unitTestBranchName(for: "main") == "unittest/main")
+        let rules = ParentBranchRules.sprintDefault
+        #expect(ParentBranchRules.unitTestBranchName(for: "sprint/s29/feature/christmas2026", rules: rules) == "sprint/s29/unittest/christmas2026")
+        #expect(ParentBranchRules.unitTestBranchName(for: "feature/x", rules: rules) == "unittest/x")
+        #expect(ParentBranchRules.unitTestBranchName(for: "main", rules: rules) == "unittest/main")
+        #expect(ParentBranchRules.unitTestBranchName(for: "release/2.0/feature/x", rules: "release/*/** -> release/$1") == "release/2.0/unittest/x")
+        #expect(ParentBranchRules.unitTestBranchName(for: "sprint/s29/feature/x", rules: "") == "unittest/s29/feature/x")
     }
 
     @Test("patch guard가 테스트 경로 밖 파일·덮어쓰기·금지 토큰을 거부한다")
@@ -117,13 +120,6 @@ struct UnitTestVerifierTests {
         var unityTarget = target
         unityTarget.isUnityProject = true
         #expect(CursorAgent.unitTestPrompt(for: .init(target: unityTarget, previousError: nil)).contains("Unity 프로젝트다"))
-    }
-
-    @Test("sprint 브랜치의 기본 비교 기준은 같은 sprint의 main이다")
-    func sprintParent() {
-        #expect(ReviewStore.sprintParentBranch(of: "sprint/s29/feature/christmas2026") == "sprint/s29/main")
-        #expect(ReviewStore.sprintParentBranch(of: "sprint/s29/main") == nil)
-        #expect(ReviewStore.sprintParentBranch(of: "feature/x") == nil)
     }
 
     @Test("선별 프롬프트에 파일별 이 브랜치 커밋과 결정 로직 기준을 담는다")

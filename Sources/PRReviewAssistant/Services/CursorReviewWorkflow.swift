@@ -194,12 +194,13 @@ struct CursorReviewWorkflow: Sendable {
     private let provider: AgentProvider
     private let limiter: AgentCallLimiter
     private let researchCache: ReviewResearchCache
+    static let defaultAgentsDirectory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cursor/agents")
 
     init(
         provider: AgentProvider = .cursor,
         limiter: AgentCallLimiter = .shared,
         researchCache: ReviewResearchCache = .shared,
-        agentsDirectory: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cursor/agents"),
+        agentsDirectory: URL = CursorReviewWorkflow.defaultAgentsDirectory,
         runCommand: RunCommand? = nil
     ) {
         self.provider = provider
@@ -499,7 +500,7 @@ struct CursorReviewWorkflow: Sendable {
         "maintenance-reviewer": "기존 동작 검토"
     ]
 
-    private static let defaultRoleGuidance: [String: String] = [
+    static let defaultRoleGuidance: [String: String] = [
         "spec-search-agent": "유효한 스펙과 이전 변경 이력을 구분하고, 요구사항별 근거와 확인 공백을 명시하라.",
         "structure-agent": "진입점에서 실제 호출 순서를 따라가며 조건, 공유 상태의 소유권, 기존 예외 처리와 테스트를 확인하라.",
         "code-reviewer": "요청의 수용 기준을 실제 실행 경로와 대조하고, 결함은 재현 조건과 근거가 있는 경우에만 보고하라.",

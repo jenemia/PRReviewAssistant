@@ -46,7 +46,7 @@ struct ContentView: View {
                                     selection = .inbox
                                     store.selectedID = pullRequest.id
                                 } label: {
-                                    PRBranchSidebarRow(branch: pullRequest.headBranch, subtitle: "\(pullRequest.repository) #\(pullRequest.number)", isUnread: store.isUnread(pullRequest), reviewState: pullRequest.reviewState, hasConflict: pullRequest.hasExpectedMergeBase && pullRequest.mergeability == .conflicting)
+                                    PRBranchSidebarRow(branch: pullRequest.headBranch, subtitle: "\(pullRequest.repository) #\(pullRequest.number)", isUnread: store.isUnread(pullRequest), reviewState: pullRequest.reviewState, hasConflict: store.hasExpectedMergeBase(pullRequest) && pullRequest.mergeability == .conflicting)
                                 }
                                 .buttonStyle(.plain)
                                 .help("PR #\(pullRequest.number) · \(pullRequest.headBranch) 코멘트 분류 보기")

@@ -1,6 +1,6 @@
 # spec 문서 기반 UnitTest 생성
 
-> 상태 🟢 구현 완료, QA 대기 · 최종 갱신 2026-11-13
+> 상태 🟢 구현 완료, QA 대기 · 최종 갱신 2026-11-20
 > 진행 [PROGRESS.md](./PROGRESS.md) · 관련 [브랜치 변경의 비즈니스 로직 UnitTest](../spec_branch_business_unit_tests/spec.md)
 
 ---
@@ -35,9 +35,9 @@
 
 ## 구현부
 
-- **Spec 탭.** `ContentView.swift`의 `SidebarItem`에 `spec` 케이스를 추가하고 사이드바 "UnitTest" 섹션에 "Spec 문서로 생성" 항목을 둔다. 화면은 `Views/SpecUnitTestView.swift`다. 등록 저장소마다 `WorkspaceSpecCatalog.documents(in:)`(`CursorSessionSpecStore.swift`)로 `specs/`·`.specs/` 아래 `spec.md`를 찾아 저장소별로 묶는다. 표시 이름은 폴더 이름이고, 문서 첫 제목과 헤더의 상태·최종 갱신 줄을 읽을 수 있으면 함께 보여 준다(읽지 못하면 생략). 목록은 탭을 열 때와 새로 고침 버튼으로 다시 읽는다.
+- **Spec 탭.** `ContentView.swift`의 `SidebarItem`에 `spec` 케이스를 추가하고 사이드바 "UnitTest" 섹션에 "Spec 문서로 생성" 항목을 둔다. 화면은 `Views/SpecUnitTestView.swift`다. 등록 저장소마다 `WorkspaceSpecCatalog.documents(in:folders:)`(`CursorSessionSpecStore.swift`)로 저장소별 spec 폴더(프로젝트 규칙에서 지정, 기본 `specs/`·`.specs/`) 아래 `spec.md`를 찾아 저장소별로 묶는다. 문서가 없으면 찾은 폴더와 설정 위치를 안내한다. 표시 이름은 폴더 이름이고, 문서 첫 제목과 헤더의 상태·최종 갱신 줄을 읽을 수 있으면 함께 보여 준다(읽지 못하면 생략). 목록은 탭을 열 때와 새로 고침 버튼으로 다시 읽는다.
 - **Spec 상세 화면.** 선택한 문서 본문을 `MarkdownContentView`로 렌더링하고, 위쪽에 작업 기준(저장소, 현재 브랜치, 만들 UnitTest 브랜치 이름)과 "UnitTest 생성" 버튼, 진행 메시지, 직전 결과를 둔다. 결과 표시는 브랜치 UnitTest 결과 화면의 파일별 결과·추출 규칙 표시를 `UnitTestFileResultsView`(`BranchRequestView.swift`)로 분리해 함께 쓴다. 같은 저장소에서 브랜치 UnitTest, spec UnitTest, 구현 작업 중 하나가 진행 중이면 `ReviewStore.isUnitTestBlocked(in:)`로 버튼을 막고, 브랜치 UnitTest도 spec UnitTest가 진행 중이면 시작하지 않는다. 작업 공간 신뢰·로그인 요청은 브랜치 모드의 권한 요청(`BranchAgentPermissionRequest.Action.specUnitTest`)을 현재 브랜치 기준으로 재사용한다.
-- **작업 기준 브랜치.** 등록 폴더의 현재 로컬 브랜치(`git symbolic-ref --short HEAD`)와 그 HEAD SHA를 기준으로 한다. detached HEAD여서 브랜치 이름을 정할 수 없으면 실행 전에 중단하고 사유를 보여 준다. `unitTestBranchName(for:)`는 `unittest/` 브랜치에 다시 적용해도 같은 이름을 돌려주므로, 현재 브랜치가 이미 UnitTest 브랜치면 그 브랜치에서 이어서 진행한다. 브랜치 전환, stash 보관·재적용, fast-forward·갈라짐 중단, 기존 테스트 보호 규칙은 관련 스펙 구현부를 그대로 따른다.
+- **작업 기준 브랜치.** 등록 폴더의 현재 로컬 브랜치(`git symbolic-ref --short HEAD`)와 그 HEAD SHA를 기준으로 한다. detached HEAD여서 브랜치 이름을 정할 수 없으면 실행 전에 중단하고 사유를 보여 준다. UnitTest 브랜치 이름은 저장소의 부모 브랜치 규칙을 따르는 `ParentBranchRules.unitTestBranchName(for:rules:)`로 정하며, `unittest/` 브랜치에 다시 적용해도 같은 이름을 돌려주므로, 현재 브랜치가 이미 UnitTest 브랜치면 그 브랜치에서 이어서 진행한다. 브랜치 전환, stash 보관·재적용, fast-forward·갈라짐 중단, 기존 테스트 보호 규칙은 관련 스펙 구현부를 그대로 따른다.
 - **spec 기반 대상 선정.** `UnitTestVerifier.verifySpec`이 diff 수집 대신 다음 순서로 `Candidate`를 만든다. 브랜치 전환부터 생성·검증·반영까지는 브랜치 모드와 공통인 `runOnUnitTestBranch`를 쓴다.
   1. 앱이 등록 폴더 작업 트리의 spec 본문(앞 20,000자)과 spec이 참조한 C# 경로를 모은다. 참조 경로는 본문 백틱 안의 `.cs` 경로 또는 파일 이름을 기준 SHA의 추적 파일(`git ls-files '*.cs'`, 테스트 경로 제외)과 대조해 확정한다.
   2. 새 에이전트 호출(`CursorAgent.selectSpecUnitTestTargets`)이 spec의 `구현부`·`테스트 시나리오`에서 `진입점: 조건 → 결과` 규칙을 뽑고, 각 규칙을 구현한 소스 경로를 반환한다. 후보는 1의 참조 경로를 우선하고, 그 밖의 경로는 추적 C# 파일 목록에 있을 때만 받는다(앱 검증). 목록에 없는 경로, 테스트 경로, 범위 밖 판정은 제외하고 집계한다.

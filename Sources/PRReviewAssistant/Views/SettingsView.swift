@@ -130,6 +130,9 @@ struct SettingsView: View {
 
             SkillSettingsView(store: store)
                 .tabItem { Label("스킬", systemImage: "doc.text") }
+
+            TeamRulesSettingsView(store: store)
+                .tabItem { Label("팀 규칙", systemImage: "list.bullet.rectangle") }
         }
         .frame(width: 640, height: 460)
     }
@@ -283,7 +286,7 @@ private struct ExternalAgentSettings: View {
                 .disabled(checking)
                 Button("Terminal에서 로그인", systemImage: "person.badge.key") {
                     do {
-                        let command = ([provider.rawValue] + provider.loginArguments).joined(separator: " ")
+                        let command = ProcessRunner.terminalPathExport + "; " + ([provider.rawValue] + provider.loginArguments).joined(separator: " ")
                         try ProcessRunner().launchInTerminal(command: command)
                         connection = .init(state: .needsLogin, detail: "로그인을 마친 뒤 연결 상태를 다시 확인하세요.")
                     } catch {
@@ -332,5 +335,58 @@ private struct ExternalAgentSettings: View {
         let provider = provider
         connection = await Task.detached(priority: .userInitiated) { provider.connection() }.value
         checking = false
+    }
+}
+
+/// Team conventions shared by all repositories: the review role files.
+private struct TeamRulesSettingsView: View {
+    @Bindable var store: ReviewStore
+
+    var body: some View {
+        Form {
+            Section("부모 브랜치 규칙") {
+                Text("부모 브랜치 규칙과 spec 폴더, 원격은 저장소마다 다릅니다. 설정 → 저장소에서 각 저장소의 ‘프로젝트 규칙’을 여세요.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section("리뷰 역할 지침") {
+                LabeledContent("폴더") {
+                    Text(store.reviewRolesDirectoryURL.path).textSelection(.enabled).lineLimit(1).truncationMode(.middle)
+                }
+                HStack {
+                    Button("폴더 선택…") { selectRolesDirectory() }
+                    Button("기본 폴더로") { store.reviewRolesDirectory = "" }
+                        .disabled(store.reviewRolesDirectory.isEmpty)
+                }
+                ForEach(CursorReviewWorkflow.defaultRoleGuidance.keys.sorted(), id: \.self) { role in
+                    let file = store.reviewRolesDirectoryURL.appendingPathComponent("\(role).md")
+                    let hasFile = !((try? String(contentsOf: file, encoding: .utf8)) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    LabeledContent(role) {
+                        if hasFile {
+                            Button("파일 열기") { NSWorkspace.shared.open(file) }
+                        } else {
+                            Text("기본 지침 사용").foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                Text("역할별 리뷰가 폴더의 `<역할>.md`를 읽습니다. 파일이 없거나 비어 있으면 앱의 기본 지침을 씁니다. 다음 리뷰부터 적용됩니다.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
+    }
+
+    private func selectRolesDirectory() {
+        let panel = NSOpenPanel()
+        panel.title = "리뷰 역할 지침 폴더 선택"
+        panel.message = "`<역할>.md` 파일이 들어 있는 폴더를 선택하세요."
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.showsHiddenFiles = true
+        panel.directoryURL = store.reviewRolesDirectoryURL
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        store.reviewRolesDirectory = url.path
     }
 }

@@ -60,15 +60,22 @@ struct GitHubClient: Sendable {
     }
 
     func startLogin() throws {
-        try runner.launchInTerminal(command: "export PATH=\"/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH\"; gh auth login --web --git-protocol https; echo; echo \"인증 완료 후 PR Review Assistant에서 다시 확인하세요.\"; exec $SHELL -l")
+        try runner.launchInTerminal(command: ProcessRunner.terminalPathExport + "; gh auth login --web --git-protocol https; echo; echo \"인증 완료 후 PR Review Assistant에서 다시 확인하세요.\"; exec $SHELL -l")
     }
 
-    func inspectRepository(at path: String) throws -> RegisteredRepository {
-        let remote = try runner.run("git", arguments: ["remote", "get-url", "origin"], workingDirectory: path).output.trimmingCharacters(in: .whitespacesAndNewlines)
+    /// `remoteName` is the remote the app fetches PR branches from and pushes to; the GitHub
+    /// repository whose PRs are watched is read from its URL.
+    func inspectRepository(at path: String, remoteName: String = "origin") throws -> RegisteredRepository {
+        let remote = try runner.run("git", arguments: ["remote", "get-url", "--", remoteName], workingDirectory: path).output.trimmingCharacters(in: .whitespacesAndNewlines)
         let name = try repositoryName(from: remote)
-        let defaultBranch = try runner.run("git", arguments: ["symbolic-ref", "refs/remotes/origin/HEAD", "--short"], workingDirectory: path)
-            .output.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "/").dropFirst().joined(separator: "/")
-        return RegisteredRepository(localPath: path, fullName: name, defaultBranch: defaultBranch.isEmpty ? "main" : defaultBranch)
+        let defaultBranch = (try? runner.run("git", arguments: ["symbolic-ref", "refs/remotes/\(remoteName)/HEAD", "--short"], workingDirectory: path))?
+            .output.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "/").dropFirst().joined(separator: "/") ?? ""
+        return RegisteredRepository(localPath: path, fullName: name, remoteName: remoteName, defaultBranch: defaultBranch.isEmpty ? "main" : defaultBranch)
+    }
+
+    func remoteNames(at path: String) throws -> [String] {
+        try runner.run("git", arguments: ["remote"], workingDirectory: path).output
+            .split(whereSeparator: \.isNewline).map(String.init)
     }
 
     func pullRequests(for repository: RegisteredRepository) throws -> [PullRequest] {

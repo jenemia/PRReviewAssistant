@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import AppKit
+import CryptoKit
 
 @MainActor @Observable
 final class ReviewStore {
@@ -182,8 +183,15 @@ final class ReviewStore {
     private let github = GitHubClient()
     private let workspaces = WorkspaceManager()
     private let localPractice = LocalPracticeRepository()
-    private var selectedAgent: CursorAgent { CursorAgent(provider: agentProvider) }
+    private var selectedAgent: CursorAgent {
+        CursorAgent(provider: agentProvider, reviewWorkflow: CursorReviewWorkflow(provider: agentProvider, agentsDirectory: reviewRolesDirectoryURL))
+    }
     var agentProvider: AgentProvider = .cursor { didSet { persist() } }
+    /// Folder with `<role>.md` review role files. Empty means `~/.cursor/agents`.
+    var reviewRolesDirectory = "" { didSet { persist() } }
+    var reviewRolesDirectoryURL: URL {
+        reviewRolesDirectory.isEmpty ? CursorReviewWorkflow.defaultAgentsDirectory : URL(fileURLWithPath: reviewRolesDirectory)
+    }
     var reviewSkillPaths: [String: String] = [:] { didSet { persist() } }
     func reviewSkillPath(for provider: AgentProvider) -> String? {
         if let path = reviewSkillPaths[provider.rawValue] {
@@ -251,6 +259,7 @@ final class ReviewStore {
         }
         agentProvider = state.agentProvider
         reviewSkillPaths = state.reviewSkillPaths
+        reviewRolesDirectory = state.reviewRolesDirectory
         codexModel = state.codexModel
         claudeModel = state.claudeModel
         agentModel = state.agentModel
@@ -744,22 +753,30 @@ final class ReviewStore {
         }
     }
 
-    /// PR proposal base first; otherwise a sprint branch compares with its sprint `main`
-    /// (`sprint/s29/feature/x` → `sprint/s29/main`) so other sprint work is not counted as this branch's change.
+    /// PR proposal base first; otherwise the parent from the repository's rules
+    /// (`sprint/s29/feature/x` → `sprint/s29/main`) so sibling work is not counted as this branch's change.
     private func branchBaseReference(for branch: RepositoryBranch, repository: RegisteredRepository) -> String {
         func reference(_ base: String) -> String { repository.isLocalPractice == true ? base : "refs/remotes/\(repository.remoteName)/\(base)" }
         if let base = branchPullRequestProposals[branch.id]?.base { return reference(base) }
-        if let parent = Self.sprintParentBranch(of: branch.name),
+        if let parent = ParentBranchRules.parent(of: branch.name, rules: repository.effectiveParentBranchRules),
            (try? ProcessRunner().run("git", arguments: ["rev-parse", "--verify", "--quiet", "\(reference(parent))^{commit}"], workingDirectory: repository.localPath, timeout: 30)) != nil {
             return reference(parent)
         }
         return reference(repository.defaultBranch)
     }
 
-    nonisolated static func sprintParentBranch(of name: String) -> String? {
-        let parts = name.split(separator: "/").map(String.init)
-        guard parts.count >= 3, parts[0] == "sprint", parts[2] != "main" else { return nil }
-        return "sprint/\(parts[1])/main"
+    func expectedMergeBase(for pullRequest: PullRequest) -> String {
+        let rules = repositories.first { $0.fullName == pullRequest.repository }?.effectiveParentBranchRules ?? ParentBranchRules.sprintDefault
+        return ParentBranchRules.parent(of: pullRequest.headBranch, rules: rules) ?? pullRequest.baseBranch
+    }
+
+    func hasExpectedMergeBase(_ pullRequest: PullRequest) -> Bool {
+        pullRequest.baseBranch == expectedMergeBase(for: pullRequest)
+    }
+
+    func unitTestBranchName(for branchName: String, repositoryID: UUID) -> String {
+        let rules = repositories.first { $0.id == repositoryID }?.effectiveParentBranchRules ?? ParentBranchRules.sprintDefault
+        return ParentBranchRules.unitTestBranchName(for: branchName, rules: rules)
     }
 
     func isVerifyingUnitTests(for branch: RepositoryBranch) -> Bool {
@@ -878,7 +895,7 @@ final class ReviewStore {
     func specDocuments() async -> [(repository: RegisteredRepository, documents: [WorkspaceSpecDocument])] {
         let repositories = repositories
         return (try? await background {
-            repositories.map { (repository: $0, documents: WorkspaceSpecCatalog().documents(in: $0.localPath)) }
+            repositories.map { (repository: $0, documents: WorkspaceSpecCatalog().documents(in: $0.localPath, folders: $0.effectiveSpecFolders)) }
         }) ?? []
     }
 
@@ -1350,15 +1367,105 @@ final class ReviewStore {
         statusMessage = "브라우저에서 Cursor를 설치한 뒤 ‘Cursor CLI 설치 상태 확인’을 선택하세요."
     }
 
-    func registerRepository(at path: String) async {
+    /// Returns the new repository's id so its project rules can be set up right away.
+    @discardableResult
+    func registerRepository(at path: String) async -> UUID? {
         do {
-            let repository = try await background { try self.github.inspectRepository(at: path) }
-            guard !repositories.contains(where: { $0.localPath == repository.localPath }) else { statusMessage = "이미 등록된 저장소입니다."; return }
+            let github = github
+            var repository = try await background {
+                let remotes = try github.remoteNames(at: path)
+                guard let remote = remotes.contains("origin") ? "origin" : remotes.first else {
+                    throw CommandError.failed(.init(output: "", error: "Git 원격이 없는 폴더입니다.", status: 1))
+                }
+                return try github.inspectRepository(at: path, remoteName: remote)
+            }
+            guard !repositories.contains(where: { $0.localPath == repository.localPath }) else { statusMessage = "이미 등록된 저장소입니다."; return nil }
+            // New repositories start without a team rule; the project rules sheet defines one.
+            repository.parentBranchRules = ""
             repositories.append(repository)
             persist()
             statusMessage = "\(repository.fullName)을 등록했습니다."
+            Task { await refresh() }
+            return repository.id
+        } catch {
+            statusMessage = "저장소 등록 실패: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    func updateRepository(_ repository: RegisteredRepository) {
+        guard let index = repositories.firstIndex(where: { $0.id == repository.id }) else { return }
+        repositories[index] = repository
+        persist()
+    }
+
+    func remoteNames(of repository: RegisteredRepository) async -> [String] {
+        let path = repository.localPath, github = github
+        return (try? await background { try github.remoteNames(at: path) }) ?? [repository.remoteName]
+    }
+
+    /// The watched GitHub repository is read from the remote's URL, so it changes with the remote.
+    func changeRemote(of repositoryID: UUID, to remoteName: String) async {
+        guard var repository = repositories.first(where: { $0.id == repositoryID }), repository.remoteName != remoteName else { return }
+        do {
+            let path = repository.localPath, github = github
+            let inspected = try await background { try github.inspectRepository(at: path, remoteName: remoteName) }
+            repository.remoteName = remoteName
+            repository.fullName = inspected.fullName
+            repository.defaultBranch = inspected.defaultBranch
+            updateRepository(repository)
+            statusMessage = "\(repository.fullName)의 원격을 \(remoteName)(으)로 바꿨습니다."
             await refresh()
-        } catch { statusMessage = "저장소 등록 실패: \(error.localizedDescription)" }
+        } catch {
+            statusMessage = "원격 변경 실패: \(error.localizedDescription)"
+        }
+    }
+
+    func branchNames(of repository: RegisteredRepository) async -> [String] {
+        let workspace = workspaces
+        return (try? await background { try workspace.branches(in: repository, fetch: false).map(\.name) }) ?? []
+    }
+
+    /// Has the agent turn a branch-rule skill into rule text. Nothing is saved until the user approves.
+    func proposeParentBranchRules(for repository: RegisteredRepository, skillPath: String) async throws -> ParentBranchRuleProposal {
+        let skill = try String(contentsOfFile: skillPath, encoding: .utf8)
+        let branches = await branchNames(of: repository)
+        let agent = selectedAgent, model = effectiveAgentModel, defaultBranch = repository.defaultBranch
+        return try await background {
+            try agent.proposeParentBranchRules(skill: skill, branches: branches, defaultBranch: defaultBranch, model: model)
+        }
+    }
+
+    func saveParentBranchRules(_ rules: String, for repositoryID: UUID, skillPath: String?) {
+        guard var repository = repositories.first(where: { $0.id == repositoryID }) else { return }
+        repository.parentBranchRules = rules
+        repository.parentBranchRuleSkillPath = skillPath
+        repository.parentBranchRuleSkillHash = skillPath.flatMap(Self.fileHash(atPath:))
+        updateRepository(repository)
+    }
+
+    /// True when the skill the rules were approved from has changed since; the rules are not changed automatically.
+    func hasChangedRuleSkill(_ repository: RegisteredRepository) -> Bool {
+        guard let path = repository.parentBranchRuleSkillPath, let hash = repository.parentBranchRuleSkillHash else { return false }
+        return Self.fileHash(atPath: path) != hash
+    }
+
+    nonisolated static func fileHash(atPath path: String) -> String? {
+        guard let data = FileManager.default.contents(atPath: path) else { return nil }
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// UnitTest generation writes NUnit tests, so it needs C# sources. Unknown counts as supported.
+    private(set) var unitTestSupport: [UUID: Bool] = [:]
+
+    func supportsUnitTests(_ repositoryID: UUID) -> Bool { unitTestSupport[repositoryID] ?? true }
+
+    func checkUnitTestSupport(for repositoryID: UUID) async {
+        guard unitTestSupport[repositoryID] == nil, let path = repositories.first(where: { $0.id == repositoryID })?.localPath else { return }
+        let files = try? await background {
+            try ProcessRunner().run("git", arguments: ["ls-files", "--", "*.cs"], workingDirectory: path, timeout: 60).output
+        }
+        unitTestSupport[repositoryID] = files.map { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? true
     }
 
     var hasLocalPracticePullRequest: Bool {
@@ -1678,6 +1785,7 @@ final class ReviewStore {
         guard reserveActiveWorkspace(for: pullRequest) else { return }
         do {
             let workspace = workspaces
+            let remote = repositories.first { $0.fullName == pullRequest.repository }?.remoteName ?? "origin"
             let path: String
             if let activePath = worktreePaths[pullRequestKey] {
                 try await background { try workspace.verifyHead(activePath, expectedSHA: pullRequest.headSHA, expectedBranch: pullRequest.headBranch) }
@@ -1707,13 +1815,13 @@ final class ReviewStore {
             let usesCardWorktree = plan.usesCardWorktree == true
             let committedSHA = try await background {
                 if usesCardWorktree, let baselineTree, let resultTree {
-                    return try workspace.commitCardWork(at: path, message: message, baselineTree: baselineTree, resultTree: resultTree, branch: pullRequest.headBranch)
+                    return try workspace.commitCardWork(at: path, message: message, baselineTree: baselineTree, resultTree: resultTree, branch: pullRequest.headBranch, remote: remote)
                 }
                 if let baselineTree, let resultTree {
-                    return try workspace.commit(at: path, message: message, baselineTree: baselineTree, resultTree: resultTree, branch: pullRequest.headBranch, expectedSHA: pullRequest.headSHA)
+                    return try workspace.commit(at: path, message: message, baselineTree: baselineTree, resultTree: resultTree, branch: pullRequest.headBranch, expectedSHA: pullRequest.headSHA, remote: remote)
                 }
                 // Plans saved before snapshots existed only recorded file paths.
-                return try workspace.commit(at: path, message: message, files: changedFiles, branch: pullRequest.headBranch, expectedSHA: pullRequest.headSHA)
+                return try workspace.commit(at: path, message: message, files: changedFiles, branch: pullRequest.headBranch, expectedSHA: pullRequest.headSHA, remote: remote)
             }
             committedHeads[pullRequestKey] = committedSHA
             diffStats[pullRequestKey] = diffStat
@@ -1775,8 +1883,9 @@ final class ReviewStore {
                 return false
             }
             let diff = try await background { try self.workspaces.changes(at: path, files: files) }
+            let remote = repository.remoteName
             let committedSHA = try await background {
-                try self.workspaces.commit(at: path, message: trimmedMessage, files: files, branch: pullRequest.headBranch, expectedSHA: pullRequest.headSHA)
+                try self.workspaces.commit(at: path, message: trimmedMessage, files: files, branch: pullRequest.headBranch, expectedSHA: pullRequest.headSHA, remote: remote)
             }
             let key = worktreeKey(pullRequest)
             committedHeads[key] = committedSHA
@@ -1944,7 +2053,8 @@ final class ReviewStore {
                     at: path,
                     branch: pullRequest.headBranch,
                     expectedRemoteSHA: pullRequest.headSHA,
-                    committedSHA: committedSHA
+                    committedSHA: committedSHA,
+                    remote: repository.remoteName
                 )
             }
             pushCompleted = true
@@ -1999,7 +2109,7 @@ final class ReviewStore {
     func resolveConflicts(for pullRequest: PullRequest, userAnswer: String? = nil) async {
         let key = worktreeKey(pullRequest)
         guard !resolvingConflictIDs.contains(key) else { return }
-        guard pullRequest.hasExpectedMergeBase else {
+        guard hasExpectedMergeBase(pullRequest) else {
             statusMessage = "머지 대상 브랜치가 예상과 달라 충돌을 해결하지 않았습니다."
             return
         }
@@ -2085,7 +2195,7 @@ final class ReviewStore {
         do {
             let repository = try registeredRepository(for: pullRequest)
             let latest = try await background { try self.github.mergeStatus(repository: pullRequest.repository, number: pullRequest.number) }
-            guard latest.base == pullRequest.expectedMergeBase, latest.approved,
+            guard latest.base == expectedMergeBase(for: pullRequest), latest.approved,
                   latest.head.hasPrefix(pullRequest.headSHA), latest.mergeability == .mergeable else {
                 await refresh()
                 statusMessage = "머지 상태가 변경되었거나 충돌 여부를 확인할 수 없습니다. 대상 브랜치와 승인·충돌 상태를 다시 확인하세요."
@@ -3195,6 +3305,7 @@ final class ReviewStore {
         state.appPostedCommentIDs = appPostedCommentIDs
         state.agentProvider = agentProvider
         state.reviewSkillPaths = reviewSkillPaths
+        state.reviewRolesDirectory = reviewRolesDirectory
         state.codexModel = codexModel
         state.claudeModel = claudeModel
         state.branchReviewCards = branchReviewCards

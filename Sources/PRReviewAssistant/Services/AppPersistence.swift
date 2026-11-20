@@ -31,6 +31,7 @@ struct PersistedState: Codable {
     var customAgentModel = ""
     var agentProvider: AgentProvider = .cursor
     var reviewSkillPaths: [String: String] = [:]
+    var reviewRolesDirectory = ""
     var codexModel = ""
     var claudeModel = ""
     /// The GitHub login (or the local Git author name as a fallback) whose PRs
@@ -70,7 +71,7 @@ struct PersistedState: Codable {
         case repositories, processedCommentIDs, knownPullRequestIDs, unreadPullRequestIDs, unreadCommentIDs
         case hasEstablishedNotificationBaseline, approvedPullRequestIDs, hasEstablishedApprovalBaseline
         case agentProvider, reviewSkillPaths, codexModel, claudeModel, monitoringEnabled, monitoringInterval, analyses, agentReviewCards, hiddenReviewCommentIDsByPullRequest, reviewHistoryRoundsByPullRequest, implementationPlans, committedHeads, postedReReviewCommentTokens, agentModel, customAgentModel, reviewAuthorFilter, petVisible, petSize, petReduceMotion, latestPetNotification, hasCompletedOnboarding, skippedOnboardingSteps, projectCopyFolder, updateRepository, updatesEnabled, lastNotifiedUpdateTag, requestedBranches, cursorSpecSidebarCache, automaticCursorSessionClassification, automaticReviewAnalysis
-        case appPostedCommentIDs
+        case appPostedCommentIDs, reviewRolesDirectory
         case branchReviewCards, branchCardReviewed, branchImplementationResults, branchImplementationInProgress, branchUnitTestResults, specUnitTestResults
     }
     init(repositories: [RegisteredRepository] = [], processedCommentIDs: Set<String> = [], knownPullRequestIDs: Set<String> = [], unreadPullRequestIDs: Set<String> = [], unreadCommentIDs: Set<String> = [], hasEstablishedNotificationBaseline: Bool = false, approvedPullRequestIDs: Set<String> = [], hasEstablishedApprovalBaseline: Bool = false, monitoringEnabled: Bool = true, monitoringInterval: Int = 60, analyses: [String: AgentAnalysis] = [:], agentReviewCards: [AgentReviewCard] = [], hiddenReviewCommentIDsByPullRequest: [String: Set<String>] = [:], reviewHistoryRoundsByPullRequest: [String: [Set<String>]] = [:], implementationPlans: [String: ImplementationPlan] = [:], committedHeads: [String: String] = [:], postedReReviewCommentTokens: Set<String> = [], agentModel: String = "composer-2.5", customAgentModel: String = "", reviewAuthorFilter: String = "", petVisible: Bool = true, petSize: Double = 190.0, petReduceMotion: Bool = false, latestPetNotification: PetBubbleContent? = nil, hasCompletedOnboarding: Bool = false, skippedOnboardingSteps: Set<String> = [], projectCopyFolder: String = "", updateRepository: String = "", updatesEnabled: Bool = true, lastNotifiedUpdateTag: String = "", requestedBranches: [RepositoryBranch] = [], cursorSpecSidebarCache: CursorSpecSidebarCache = CursorSpecSidebarCache(), automaticCursorSessionClassification: Bool = false, automaticReviewAnalysis: Bool = true) {
@@ -132,6 +133,7 @@ struct PersistedState: Codable {
         agentModel = try container.decodeIfPresent(String.self, forKey: .agentModel) ?? "composer-2.5"
         agentProvider = (try? container.decode(AgentProvider.self, forKey: .agentProvider)) ?? .cursor
         reviewSkillPaths = try container.decodeIfPresent([String: String].self, forKey: .reviewSkillPaths) ?? [:]
+        reviewRolesDirectory = try container.decodeIfPresent(String.self, forKey: .reviewRolesDirectory) ?? ""
         codexModel = try container.decodeIfPresent(String.self, forKey: .codexModel) ?? ""
         claudeModel = try container.decodeIfPresent(String.self, forKey: .claudeModel) ?? ""
         customAgentModel = try container.decodeIfPresent(String.self, forKey: .customAgentModel) ?? ""

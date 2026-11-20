@@ -5,6 +5,7 @@ import AppKit
 struct RepositoryManagementView: View {
     @Bindable var store: ReviewStore
     @State private var repositoryPendingRemoval: RegisteredRepository?
+    @State private var rulesRepositoryID: UUID?
 
     var body: some View {
         List {
@@ -87,6 +88,15 @@ struct RepositoryManagementView: View {
                                         store.repositoryMonitoringChanged()
                                     }
                             }
+                            HStack {
+                                Button("프로젝트 규칙", systemImage: "list.bullet.rectangle") { rulesRepositoryID = repository.id }
+                                if store.hasChangedRuleSkill(repository) {
+                                    Label("규칙 스킬이 바뀌었습니다", systemImage: "exclamationmark.triangle")
+                                        .font(.caption).foregroundStyle(.orange)
+                                } else if repository.parentBranchRules?.isEmpty == true {
+                                    Text("부모 브랜치 규칙 없음 · 기본 브랜치 기준").font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
                         }
                         .padding(.vertical, 5)
                     }
@@ -94,6 +104,9 @@ struct RepositoryManagementView: View {
             }
         }
         .navigationTitle("저장소 관리")
+        .sheet(isPresented: Binding(get: { rulesRepositoryID != nil }, set: { if !$0 { rulesRepositoryID = nil } })) {
+            if let rulesRepositoryID { RepositoryRulesView(store: store, repositoryID: rulesRepositoryID) }
+        }
         .confirmationDialog(
             "등록된 저장소를 삭제할까요?",
             isPresented: Binding(
@@ -118,6 +131,7 @@ struct RepositoryManagementView: View {
         panel.allowsMultipleSelection = false
         panel.prompt = "저장소 등록"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        Task { await store.registerRepository(at: url.path) }
+        // Project rules differ per team, so set them up right after registering.
+        Task { rulesRepositoryID = await store.registerRepository(at: url.path) }
     }
 }

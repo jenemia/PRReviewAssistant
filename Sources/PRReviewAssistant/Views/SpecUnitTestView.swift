@@ -15,7 +15,8 @@ struct SpecUnitTestView: View {
                 ForEach(groups) { group in
                     Section(group.repository.fullName) {
                         if group.entries.isEmpty {
-                            Text("spec 문서가 없습니다").font(.caption).foregroundStyle(.secondary)
+                            Text("\(group.repository.effectiveSpecFolders.map { "\($0)/" }.joined(separator: ", ")) 아래 spec.md가 없습니다. 설정 → 저장소 → 프로젝트 규칙에서 spec 폴더를 지정할 수 있습니다.")
+                                .font(.caption).foregroundStyle(.secondary)
                         }
                         ForEach(group.entries) { entry in
                             VStack(alignment: .leading, spacing: 2) {
@@ -32,7 +33,7 @@ struct SpecUnitTestView: View {
                 if isLoading && groups.isEmpty {
                     ProgressView()
                 } else if groups.allSatisfy(\.entries.isEmpty) && !isLoading {
-                    ContentUnavailableView("spec 문서가 없습니다", systemImage: "doc.text", description: Text("등록한 저장소의 specs/ 또는 .specs/ 아래 spec.md를 찾습니다."))
+                    ContentUnavailableView("spec 문서가 없습니다", systemImage: "doc.text", description: Text("저장소마다 지정한 spec 폴더(기본 specs/, .specs/) 아래 spec.md를 찾습니다. 설정 → 저장소 → 프로젝트 규칙에서 바꿀 수 있습니다."))
                 }
             }
             .frame(minWidth: 300, idealWidth: 360, maxWidth: .infinity)
@@ -107,7 +108,7 @@ private struct SpecUnitTestDetailView: View {
 
     private var isRunning: Bool { store.verifyingSpecUnitTestIDs.contains(entry.id) }
     private var currentBranch: String? { store.checkedOutBranches[repository.id] }
-    private var outputBranch: String? { currentBranch.map(UnitTestVerifier.unitTestBranchName(for:)) }
+    private var outputBranch: String? { currentBranch.map { store.unitTestBranchName(for: $0, repositoryID: repository.id) } }
 
     var body: some View {
         ScrollView {
@@ -135,11 +136,14 @@ private struct SpecUnitTestDetailView: View {
                                 showingConfirmation = true
                             }
                             .buttonStyle(.borderedProminent)
-                            .disabled(isRunning || store.isUnitTestBlocked(in: repository.id))
+                            .disabled(isRunning || store.isUnitTestBlocked(in: repository.id) || !store.supportsUnitTests(repository.id))
                             .help(store.isUnitTestBlocked(in: repository.id) && !isRunning ? "이 저장소에서 다른 UnitTest 또는 구현 작업이 진행 중입니다." : "spec 기준으로 UnitTest를 생성하고 검증합니다.")
                             if isRunning { ProgressView().controlSize(.small) }
                             Spacer()
                             if let result = store.specUnitTestResults[entry.id] { outcomeLabel(result) }
+                        }
+                        if !store.supportsUnitTests(repository.id) {
+                            Label(UnitTestVerifier.unsupportedMessage, systemImage: "info.circle").font(.caption).foregroundStyle(.orange)
                         }
                         if let message = store.specUnitTestMessages[entry.id] {
                             Text(message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
@@ -164,6 +168,7 @@ private struct SpecUnitTestDetailView: View {
             .padding(20)
         }
         .task(id: entry.id) {
+            await store.checkUnitTestSupport(for: repository.id)
             let file = (repository.localPath as NSString).appendingPathComponent(entry.path)
             text = (try? String(contentsOfFile: file, encoding: .utf8)) ?? "spec 문서를 읽을 수 없습니다."
         }

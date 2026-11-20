@@ -79,6 +79,8 @@ struct UnitTestVerifier: Sendable {
         self.validator = validator
     }
 
+    static let unsupportedMessage = "이 저장소에 C# 소스가 없어 UnitTest 생성을 쓸 수 없습니다. 현재 C#(NUnit, dotnet test) 프로젝트만 지원합니다."
+
     // MARK: - Pure rules (unit tested)
 
     static func isTestPath(_ path: String) -> Bool {
@@ -86,14 +88,6 @@ struct UnitTestVerifier: Sendable {
         let file = parts.last ?? path
         return parts.dropLast().contains { ["Tests", "Test", "EditModeTests", "PlayModeTests"].contains($0) }
             || file.hasSuffix("Tests.cs") || file.hasSuffix("Test.cs")
-    }
-
-    /// `sprint/s29/feature/christmas2026` → `sprint/s29/unittest/christmas2026`, `feature/x` → `unittest/x`.
-    static func unitTestBranchName(for branchName: String) -> String {
-        let parts = branchName.split(separator: "/").map(String.init)
-        let prefix = parts.count >= 3 && parts[0] == "sprint" ? Array(parts.prefix(2)) : []
-        let rest = Array(parts.dropFirst(prefix.count))
-        return (prefix + ["unittest"] + (rest.count > 1 ? Array(rest.dropFirst()) : rest)).joined(separator: "/")
     }
 
     /// Test-only patch guard (SpecGuard `PatchGuard.CheckProposal`).
@@ -436,7 +430,7 @@ struct UnitTestVerifier: Sendable {
         let work = FileManager.default.temporaryDirectory.appendingPathComponent("PRReviewAssistant-unittest-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: work) }
-        let outputBranch = Self.unitTestBranchName(for: sourceBranch)
+        let outputBranch = ParentBranchRules.unitTestBranchName(for: sourceBranch, rules: repository.effectiveParentBranchRules)
         let outputRef = "refs/heads/\(outputBranch)"
         let current = try? git(["symbolic-ref", "--quiet", "--short", "HEAD"], at: path)
         // Switching must not touch the user's work. Untracked files survive a switch (git refuses one that would
