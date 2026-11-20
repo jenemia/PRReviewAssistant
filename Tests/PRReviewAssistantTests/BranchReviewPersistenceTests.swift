@@ -4,6 +4,26 @@ import Testing
 
 @Suite("PR request review persistence")
 struct BranchReviewPersistenceTests {
+    @Test("리뷰 스킬 선택은 AI별로 저장되고 이전 설정은 빈 선택으로 읽는다")
+    func reviewSkillPathsPersist() throws {
+        let old = try JSONDecoder().decode(PersistedState.self, from: Data("{}".utf8))
+        #expect(old.reviewSkillPaths.isEmpty)
+        var state = PersistedState()
+        state.reviewSkillPaths = ["cursor": "/cursor/SKILL.md", "claude": "/claude/SKILL.md", "codex": "/codex/SKILL.md"]
+        let restored = try JSONDecoder().decode(PersistedState.self, from: JSONEncoder().encode(state))
+        #expect(restored.reviewSkillPaths == state.reviewSkillPaths)
+    }
+
+    @Test("특이사항 없음 뒤의 구분선은 발견 사항을 만들지 않는다")
+    @MainActor
+    func noFindingsWithSeparator() {
+        let cards = ReviewStore.makeBranchReviewCards(from: "## 차단\n특이사항 없음\n\n---\n## 개선\n### 항목\n설명", reviewedSHA: "abc")
+        let blocker = cards.filter { $0.category == .blocker }
+        #expect(blocker.count == 1)
+        #expect(blocker.first?.details == BranchReviewCard.noFindings)
+        #expect(blocker.first?.isReference == true)
+    }
+
     @Test("위험도 아래의 리뷰를 코드 블록과 하위 제목을 유지하며 분리한다")
     @MainActor
     func splitsFindingsUnderSeverity() {

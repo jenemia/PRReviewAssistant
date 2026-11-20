@@ -27,6 +27,13 @@ struct ContentView: View {
                     Button("브랜치 선택·검증", systemImage: "checkmark.shield") {
                         showingUnitTestBranchPicker = true
                     }.buttonStyle(.plain)
+                    Button {
+                        selection = .spec
+                    } label: {
+                        Label("Spec 문서로 생성", systemImage: "doc.text.magnifyingglass")
+                    }
+                    .buttonStyle(.plain)
+                    .help("spec 문서를 골라 그 규칙을 기준으로 UnitTest를 생성합니다")
                 }
                 Section("PR 리뷰 대응") {
                     if store.pullRequests.isEmpty {
@@ -39,7 +46,7 @@ struct ContentView: View {
                                     selection = .inbox
                                     store.selectedID = pullRequest.id
                                 } label: {
-                                    PRBranchSidebarRow(branch: pullRequest.headBranch, subtitle: "\(pullRequest.repository) #\(pullRequest.number)", isUnread: store.isUnread(pullRequest), reviewState: pullRequest.reviewState)
+                                    PRBranchSidebarRow(branch: pullRequest.headBranch, subtitle: "\(pullRequest.repository) #\(pullRequest.number)", isUnread: store.isUnread(pullRequest), reviewState: pullRequest.reviewState, hasConflict: pullRequest.hasExpectedMergeBase && pullRequest.mergeability == .conflicting)
                                 }
                                 .buttonStyle(.plain)
                                 .help("PR #\(pullRequest.number) · \(pullRequest.headBranch) 코멘트 분류 보기")
@@ -199,6 +206,8 @@ struct ContentView: View {
         } detail: {
             if store.isInitialLoadInProgress {
                 InitialLoadingView()
+            } else if selection == .spec {
+                SpecUnitTestView(store: store)
             } else if selection == .agentHistory {
                 HSplitView {
                     CursorSessionListView(store: store)
@@ -293,9 +302,11 @@ private struct PRBranchSidebarRow: View {
     let subtitle: String
     let isUnread: Bool
     var reviewState: ReviewState? = nil
+    var hasConflict = false
 
     private var status: (title: String, color: Color)? {
-        switch reviewState {
+        if hasConflict { return ("충돌", .red) }
+        return switch reviewState {
         case .commented: ("리뷰 중", .blue)
         case .changesRequested: ("검토 중", .orange)
         case .approved: ("승인", .green)
@@ -523,7 +534,7 @@ private struct StatusRow: View {
     }
 }
 
-private enum SidebarItem: Hashable { case inbox, prRequest, agentHistory }
+private enum SidebarItem: Hashable { case inbox, prRequest, agentHistory, spec }
 
 private struct InitialLoadingView: View {
     var body: some View {

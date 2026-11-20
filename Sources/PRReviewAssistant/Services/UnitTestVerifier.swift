@@ -24,6 +24,15 @@ struct UnitTestVerifier: Sendable {
         var existingTests: [String] = []
         /// Unity repositories validate against `UnityEngineShim` and may use UnityEngine in tests.
         var isUnityProject = false
+        /// Spec mode: the spec the user picked is the primary source of expected values.
+        var spec: SpecDocument?
+    }
+
+    /// A spec document chosen in the Spec tab, read from the registered folder.
+    struct SpecDocument: Sendable {
+        let path: String
+        let text: String
+        let truncated: Bool
     }
 
     struct Change: Sendable {
@@ -55,6 +64,10 @@ struct UnitTestVerifier: Sendable {
     }
 
     typealias Selector = @Sendable (String, String, [Change]) throws -> [Candidate]
+    /// (workspace, spec, C# sources the spec names) → candidates; paths outside the tracked sources are dropped.
+    typealias SpecSelector = @Sendable (String, SpecDocument, [String]) throws -> [Candidate]
+    static let maxSpecCharacters = 20_000
+    private static let maxReferencedSources = 40
     typealias Generator = @Sendable (GenerationRequest) throws -> UnitTestProposal
     /// (temp folder, source files, test files) → outcome. Replaceable so tests need no .NET SDK.
     typealias Validator = @Sendable (String, [String], [String]) throws -> ValidationOutcome
@@ -122,6 +135,21 @@ struct UnitTestVerifier: Sendable {
             }
         }
         return standard
+    }
+
+    /// C# sources a spec names in backticks, as a full path or a path/file-name suffix of a tracked source.
+    static func referencedSources(in spec: String, sources: [String]) -> [String] {
+        let tokens = spec.split(separator: "`", omittingEmptySubsequences: false).enumerated()
+            .compactMap { $0.offset.isMultiple(of: 2) ? nil : $0.element.trimmingCharacters(in: .whitespaces) }
+            .map { $0.hasPrefix("./") ? String($0.dropFirst(2)) : $0 }
+            .filter { $0.hasSuffix(".cs") && !$0.contains(" ") }
+        var result: [String] = []
+        for token in tokens {
+            for source in sources where (source == token || source.hasSuffix("/" + token)) && !result.contains(source) {
+                result.append(source)
+            }
+        }
+        return result.filter { !isTestPath($0) }
     }
 
     static func closestTestFile(to sourcePath: String, in testFiles: [String]) -> String? {
@@ -284,11 +312,131 @@ struct UnitTestVerifier: Sendable {
         changed.removeAll { entry in entry.paths.allSatisfy { ownCommits[$0] == nil } }
         guard !changed.isEmpty else { return noTargets("변경된 C# 소스 \(mergedOnly)개가 모두 다른 브랜치 병합으로 들어와 이 브랜치의 UnitTest 대상이 없습니다.") }
 
+        let run = try runOnUnitTestBranch(
+            repository: repository, sourceBranch: branch.name, head: head, mergeBase: mergeBase, spec: nil,
+            generate: generate, progress: progress
+        ) { path in
+            var planned: [Planned] = []
+            for start in stride(from: 0, to: changed.count, by: Self.selectionBatchSize) {
+                let batch = changed[start..<min(start + Self.selectionBatchSize, changed.count)]
+                progress("변경된 비즈니스 로직을 선별하는 중입니다 (\(batch.endIndex)/\(changed.count)).")
+                let changes = try batch.map { entry in
+                    let diff = try git(["--literal-pathspecs", "diff", "--find-renames", "--no-ext-diff", "--no-textconv", "-U2", mergeBase, head, "--"] + entry.paths, at: path, trim: false)
+                    let excerpt = diff.count > 3000 ? String(diff.prefix(3000)) + "\n(이후 diff 생략)" : diff
+                    let commits = Array(Set(entry.paths.flatMap { ownCommits[$0] ?? [] })).sorted().prefix(5).map { String($0.prefix(160)) }
+                    return Change(sourcePath: entry.source, diff: excerpt, commits: Array(commits))
+                }
+                let pathsBySource = Dictionary(uniqueKeysWithValues: batch.map { ($0.source, $0.paths) })
+                var seen: Set<String> = []
+                for candidate in try select(path, mergeBase, changes) {
+                    guard let paths = pathsBySource[candidate.sourcePath], seen.insert(candidate.sourcePath).inserted,
+                          Self.isValid(candidate) else {
+                        throw failure("UnitTest 대상 선별 응답에 잘못된 경로, 동작 또는 우선순위가 있습니다.")
+                    }
+                    planned.append(.init(candidate: candidate, paths: paths))
+                }
+            }
+            return planned
+        }
+        guard run.planned > 0 else {
+            return noTargets("변경된 C# 소스 \(changed.count)개에서 새 UnitTest가 필요한 비즈니스 로직을 찾지 못했습니다." + run.note)
+        }
+        let failed = run.results.filter { $0.status == .failed }.count
+        let passed = run.results.filter { $0.status == .passed }.count
+        let outcome: UnitTestVerification.Outcome = failed > 0 ? .failed : (passed > 0 ? .passed : .notApplicable)
+        let excluded = changed.count - run.planned
+        let deferred = run.planned - run.results.count
+        let summary = "기준 \(baseName) · 통과 \(passed)개 · 실패 \(failed)개 · 건너뜀 \(run.results.count - passed - failed)개 · 범위 밖 \(excluded)개 · 병합 유입 제외 \(mergedOnly)개 · 상한 초과 미처리 \(deferred)개" + run.note
+        return UnitTestVerification(outcome: outcome, verifiedSHA: head, resultSHA: head, pushed: false, summary: summary, files: run.results)
+    }
+
+    /// Spec mode: the rules of one spec document pick the targets instead of a branch diff.
+    /// The registered folder's current branch HEAD is the base of the local UnitTest branch.
+    func verifySpec(
+        repository: RegisteredRepository,
+        specPath: String,
+        select: SpecSelector,
+        generate: Generator,
+        progress: @Sendable (String) -> Void
+    ) throws -> UnitTestVerification {
+        let path = repository.localPath
+        guard let current = try? git(["symbolic-ref", "--quiet", "--short", "HEAD"], at: path), !current.isEmpty else {
+            throw failure("등록 폴더가 브랜치가 아닌 커밋(detached HEAD)에 있어 UnitTest 브랜치 이름을 정할 수 없습니다. 브랜치를 체크아웃한 뒤 다시 시도하세요.")
+        }
+        let head = try git(["rev-parse", "HEAD"], at: path)
+        let parts = specPath.split(separator: "/", omittingEmptySubsequences: false)
+        guard !specPath.hasPrefix("/"), !parts.contains(".."), specPath.hasSuffix(".md"),
+              let raw = try? String(contentsOfFile: (path as NSString).appendingPathComponent(specPath), encoding: .utf8) else {
+            throw failure("spec 문서 `\(specPath)`를 읽을 수 없습니다. 목록을 새로 고친 뒤 다시 시도하세요.")
+        }
+        let spec = SpecDocument(path: specPath, text: String(raw.prefix(Self.maxSpecCharacters)), truncated: raw.count > Self.maxSpecCharacters)
+        let sources = try gitList(["ls-tree", "-r", "--name-only", "-z", head], at: path).filter { $0.hasSuffix(".cs") && !Self.isTestPath($0) }
+        let sourceSet = Set(sources)
+        let referenced = Array(Self.referencedSources(in: raw, sources: sources).prefix(Self.maxReferencedSources))
+        func noTargets(_ summary: String) -> UnitTestVerification {
+            .init(outcome: .notApplicable, verifiedSHA: head, resultSHA: head, pushed: false, summary: "기준 \(current) · spec \(specPath) · " + summary, files: [])
+        }
+
+        // Selection reads the current branch as it is, so a spec without rules never switches the folder.
+        progress("spec에서 테스트할 규칙과 구현 소스를 찾는 중입니다.")
+        var planned: [Planned] = []
+        var outside = 0
+        for candidate in try select(path, spec, referenced) {
+            guard Self.isValid(candidate) else { throw failure("UnitTest 대상 선별 응답에 잘못된 동작 또는 우선순위가 있습니다.") }
+            guard sourceSet.contains(candidate.sourcePath), !planned.contains(where: { $0.candidate.sourcePath == candidate.sourcePath }) else {
+                outside += 1
+                continue
+            }
+            planned.append(.init(candidate: candidate, paths: []))
+        }
+        guard !planned.isEmpty else {
+            return noTargets("규칙 부족: spec에서 구현 소스와 연결할 테스트 규칙을 찾지 못했습니다." + (outside > 0 ? " 저장소에 없는 경로 \(outside)개 제외." : ""))
+        }
+
+        let run = try runOnUnitTestBranch(
+            repository: repository, sourceBranch: current, head: head, mergeBase: nil, spec: spec,
+            generate: generate, progress: progress
+        ) { _ in planned }
+        let count = { (status: UnitTestVerification.FileResult.Status) in run.results.filter { $0.status == status }.count }
+        let passed = count(.passed), failed = count(.failed), mismatched = count(.specMismatch)
+        let outcome: UnitTestVerification.Outcome = failed + mismatched > 0 ? .failed : (passed > 0 ? .passed : .notApplicable)
+        let rules = run.results.reduce(0) { $0 + ($1.rules?.count ?? 0) }
+        let covered = run.results.filter { $0.status == .passed }.reduce(0) { $0 + ($1.rules?.count ?? 0) }
+        let summary = "기준 \(current) · spec \(specPath) · 추출 규칙 \(rules)개 중 테스트 \(covered)개 · 통과 \(passed)개 · 실패 \(failed)개 · spec과 구현 불일치 \(mismatched)개 · 건너뜀 \(run.results.count - passed - failed - mismatched)개 · 저장소에 없는 경로 제외 \(outside)개 · 상한 초과 미처리 \(run.planned - run.results.count)개"
+            + (spec.truncated ? " · spec이 길어 앞부분 \(Self.maxSpecCharacters)자만 사용" : "") + run.note
+        return UnitTestVerification(outcome: outcome, verifiedSHA: head, resultSHA: head, pushed: false, summary: summary, files: run.results)
+    }
+
+    private struct Planned: Sendable {
+        let candidate: Candidate
+        /// Diff paths in branch mode; empty in spec mode, where the target gets no diff.
+        let paths: [String]
+    }
+
+    private struct BranchRun {
+        let planned: Int
+        let results: [UnitTestVerification.FileResult]
+        /// What was written to the UnitTest branch and whether the stash was re-applied.
+        let note: String
+    }
+
+    private static func isValid(_ candidate: Candidate) -> Bool {
+        (1...3).contains(candidate.priority) && !candidate.behavior.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && candidate.behavior.count <= 1000
+    }
+
+    /// Switches the registered folder to the local UnitTest branch of `sourceBranch` at `head`,
+    /// plans targets there, then generates, validates and writes the passing tests (uncommitted).
+    private func runOnUnitTestBranch(
+        repository: RegisteredRepository, sourceBranch: String, head: String, mergeBase: String?, spec: SpecDocument?,
+        generate: Generator, progress: @Sendable (String) -> Void,
+        plan: (String) throws -> [Planned]
+    ) throws -> BranchRun {
+        let path = repository.localPath
         // Validation projects only; the tests themselves are written into the registered checkout.
         let work = FileManager.default.temporaryDirectory.appendingPathComponent("PRReviewAssistant-unittest-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: work) }
-        let outputBranch = Self.unitTestBranchName(for: branch.name)
+        let outputBranch = Self.unitTestBranchName(for: sourceBranch)
         let outputRef = "refs/heads/\(outputBranch)"
         let current = try? git(["symbolic-ref", "--quiet", "--short", "HEAD"], at: path)
         // Switching must not touch the user's work. Untracked files survive a switch (git refuses one that would
@@ -330,7 +478,7 @@ struct UnitTestVerifier: Sendable {
         let tip = current == outputBranch ? "HEAD" : (localTip ?? remoteTip ?? head)
         let containsHead = (try? git(["merge-base", "--is-ancestor", head, tip], at: path)) != nil
         guard containsHead || (try? git(["merge-base", "--is-ancestor", tip, head], at: path)) != nil else {
-            throw failure("UnitTest 브랜치 \(outputBranch)에 \(branch.name)에 없는 커밋이 있어 최신으로 옮길 수 없습니다. 병합 커밋을 자동으로 만들지 않습니다. \(outputBranch)에서 \(branch.name)를 직접 병합한 뒤 다시 시도하세요.")
+            throw failure("UnitTest 브랜치 \(outputBranch)에 \(sourceBranch)에 없는 커밋이 있어 최신으로 옮길 수 없습니다. 병합 커밋을 자동으로 만들지 않습니다. \(outputBranch)에서 \(sourceBranch)를 직접 병합한 뒤 다시 시도하세요.")
         }
         if current != outputBranch {
             progress(localTip == nil && remoteTip == nil ? "선택한 커밋에서 로컬 UnitTest 브랜치 \(outputBranch)를 만드는 중입니다." : "기존 UnitTest 브랜치 \(outputBranch)를 체크아웃하는 중입니다.")
@@ -361,35 +509,13 @@ struct UnitTestVerifier: Sendable {
         // The user's untracked files from another branch are never overwritten by generated tests.
         let untracked = current == outputBranch ? [] : Set(dirty.filter(\.untracked).map(\.path))
 
-        var candidates: [(candidate: Candidate, paths: [String])] = []
-        for start in stride(from: 0, to: changed.count, by: Self.selectionBatchSize) {
-            let batch = changed[start..<min(start + Self.selectionBatchSize, changed.count)]
-            progress("변경된 비즈니스 로직을 선별하는 중입니다 (\(batch.endIndex)/\(changed.count)).")
-            let changes = try batch.map { entry in
-                let diff = try git(["--literal-pathspecs", "diff", "--find-renames", "--no-ext-diff", "--no-textconv", "-U2", mergeBase, head, "--"] + entry.paths, at: path, trim: false)
-                let excerpt = diff.count > 3000 ? String(diff.prefix(3000)) + "\n(이후 diff 생략)" : diff
-                let commits = Array(Set(entry.paths.flatMap { ownCommits[$0] ?? [] })).sorted().prefix(5).map { String($0.prefix(160)) }
-                return Change(sourcePath: entry.source, diff: excerpt, commits: Array(commits))
-            }
-            let pathsBySource = Dictionary(uniqueKeysWithValues: batch.map { ($0.source, $0.paths) })
-            var seen: Set<String> = []
-            for candidate in try select(path, mergeBase, changes) {
-                guard let paths = pathsBySource[candidate.sourcePath], seen.insert(candidate.sourcePath).inserted,
-                      (1...3).contains(candidate.priority), !candidate.behavior.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                      candidate.behavior.count <= 1000 else {
-                    throw failure("UnitTest 대상 선별 응답에 잘못된 경로, 동작 또는 우선순위가 있습니다.")
-                }
-                candidates.append((candidate, paths))
-            }
-        }
-        guard !candidates.isEmpty else {
-            return noTargets("변경된 C# 소스 \(changed.count)개에서 새 UnitTest가 필요한 비즈니스 로직을 찾지 못했습니다." + restoreStash())
-        }
+        let planned = try plan(path)
+        guard !planned.isEmpty else { return BranchRun(planned: 0, results: [], note: restoreStash()) }
 
         let allFiles = Set(try gitList(["ls-tree", "-r", "--name-only", "-z", head], at: path))
         let testFiles = allFiles.filter { $0.hasSuffix(".cs") && Self.isTestPath($0) }.sorted()
         let isUnityProject = allFiles.contains { $0 == "ProjectSettings/ProjectVersion.txt" || $0.hasSuffix("/ProjectSettings/ProjectVersion.txt") }
-        let prioritized = candidates.sorted {
+        let prioritized = planned.sorted {
             if $0.candidate.priority != $1.candidate.priority { return $0.candidate.priority > $1.candidate.priority }
             return $0.candidate.sourcePath < $1.candidate.sourcePath
         }
@@ -401,7 +527,9 @@ struct UnitTestVerifier: Sendable {
             let source = entry.candidate.sourcePath
             progress("\(index + 1)/\(targets.count) \(source) 테스트를 생성·검증하는 중입니다.")
             let text = try git(["show", "\(head):\(source)"], at: path, trim: false)
-            let diff = try git(["--literal-pathspecs", "diff", "--find-renames", "--no-ext-diff", "--no-textconv", mergeBase, head, "--"] + entry.paths, at: path, trim: false)
+            let diff = try mergeBase.map { mergeBase in
+                try git(["--literal-pathspecs", "diff", "--find-renames", "--no-ext-diff", "--no-textconv", mergeBase, head, "--"] + entry.paths, at: path, trim: false)
+            } ?? ""
             let style = Self.closestTestFile(to: source, in: testFiles)
             let target = Target(
                 sourcePath: source, source: text, diff: String(diff.prefix(Self.maxSourceCharacters)),
@@ -410,7 +538,8 @@ struct UnitTestVerifier: Sendable {
                 styleSample: try style.map { String(try git(["show", "\(head):\($0)"], at: path, trim: false).prefix(6000)) },
                 behavior: entry.candidate.behavior,
                 existingTests: ownedTests.subtracting(deleted).sorted(),
-                isUnityProject: isUnityProject
+                isUnityProject: isUnityProject,
+                spec: spec
             )
             results.append(try validateTarget(
                 target, folder: work.appendingPathComponent("t\(index)").path, workspace: path,
@@ -428,14 +557,8 @@ struct UnitTestVerifier: Sendable {
             for file in accepted { try write(file.content, to: (path as NSString).appendingPathComponent(file.path)) }
             for deletion in deleted { try? FileManager.default.removeItem(atPath: (path as NSString).appendingPathComponent(deletion)) }
         }
-
-        let failed = results.filter { $0.status == .failed }.count
-        let passed = results.filter { $0.status == .passed }.count
-        let outcome: UnitTestVerification.Outcome = failed > 0 ? .failed : (passed > 0 ? .passed : .notApplicable)
-        let excluded = changed.count - candidates.count
-        let deferred = candidates.count - targets.count
-        let summary = "기준 \(baseName) · 통과 \(passed)개 · 실패 \(failed)개 · 건너뜀 \(results.count - passed - failed)개 · 범위 밖 \(excluded)개 · 병합 유입 제외 \(mergedOnly)개 · 상한 초과 미처리 \(deferred)개" + (accepted.isEmpty && deleted.isEmpty ? "" : " — 로컬 \(outputBranch) 브랜치에 테스트 \(accepted.count)개 추가·수정, \(deleted.count)개 삭제 (커밋하지 않음).") + restoreStash()
-        return UnitTestVerification(outcome: outcome, verifiedSHA: head, resultSHA: head, pushed: false, summary: summary, files: results)
+        let written = accepted.isEmpty && deleted.isEmpty ? "" : " — 로컬 \(outputBranch) 브랜치에 테스트 \(accepted.count)개 추가·수정, \(deleted.count)개 삭제 (커밋하지 않음)."
+        return BranchRun(planned: planned.count, results: results, note: written + restoreStash())
     }
 
     /// Up to `maxAttempts` generate → guard → validate rounds; failures feed the next prompt.
@@ -449,6 +572,8 @@ struct UnitTestVerifier: Sendable {
             .init(sourcePath: target.sourcePath, testPath: test, status: status, detail: detail, rules: rules)
         }
         var previousError: String?
+        // Spec mode only: the agent reports that the spec's expected values disagree with the implementation.
+        var mismatch: String?
         for _ in 1...Self.maxAttempts {
             let proposal: UnitTestProposal
             do {
@@ -458,6 +583,9 @@ struct UnitTestVerifier: Sendable {
                 continue
             }
             if let extracted = proposal.businessRules, !extracted.isEmpty { rules = extracted.map(\.summary) }
+            if target.spec != nil, let reported = proposal.specMismatch?.trimmingCharacters(in: .whitespacesAndNewlines), !reported.isEmpty {
+                mismatch = reported
+            }
             guard proposal.status == UnitTestProposal.generated else {
                 return result(.skipped, proposal.reason.isEmpty ? "Agent가 UnitTest를 만들 수 없다고 판단했습니다 (\(proposal.status))." : proposal.reason)
             }
@@ -526,6 +654,9 @@ struct UnitTestVerifier: Sendable {
                 return result(.passed, detail, test: proposal.files.map(\.path).joined(separator: ", "))
             }
             previousError = outcome.log
+        }
+        if let mismatch {
+            return result(.specMismatch, "spec과 구현 불일치: \(mismatch)\n\(Self.maxAttempts)회 시도 후 검증 실패:\n" + (previousError ?? ""))
         }
         return result(.failed, "\(Self.maxAttempts)회 시도 후 검증 실패:\n" + (previousError ?? ""))
     }

@@ -72,12 +72,18 @@ struct GitHubClient: Sendable {
     }
 
     func pullRequests(for repository: RegisteredRepository) throws -> [PullRequest] {
-        let fields = "number,title,author,headRefName,baseRefName,headRefOid,updatedAt,isDraft,reviewDecision,url"
+        let fields = "number,title,author,headRefName,baseRefName,headRefOid,updatedAt,isDraft,reviewDecision,url,mergeable"
         let result = try runner.run("gh", arguments: ["pr", "list", "--repo", repository.fullName, "--state", "open", "--json", fields, "--limit", "100"])
         let items = try githubDecoder.decode([GitHubPullRequest].self, from: Data(result.output.utf8))
         return items.map { item in
-            PullRequest(id: stableID(repository.fullName, item.number), repository: repository.fullName, number: item.number, title: item.title, author: item.author.login, headBranch: item.headRefName, baseBranch: item.baseRefName, headSHA: String(item.headRefOid.prefix(12)), reviewer: item.reviewDecision?.reviewer ?? "리뷰 대기", commentCount: 0, updatedAt: item.updatedAt, reviewState: item.reviewDecision?.state ?? .commented, analysisStatus: .needsAnalysis, summary: "최신 리뷰와 코멘트를 확인하려면 PR을 선택하세요.", files: [])
+            PullRequest(id: stableID(repository.fullName, item.number), repository: repository.fullName, number: item.number, title: item.title, author: item.author.login, headBranch: item.headRefName, baseBranch: item.baseRefName, headSHA: String(item.headRefOid.prefix(12)), reviewer: item.reviewDecision?.reviewer ?? "리뷰 대기", commentCount: 0, updatedAt: item.updatedAt, reviewState: item.reviewDecision?.state ?? .commented, analysisStatus: .needsAnalysis, summary: "최신 리뷰와 코멘트를 확인하려면 PR을 선택하세요.", files: [], mergeability: item.mergeable)
         }
+    }
+
+    func mergeStatus(repository: String, number: Int) throws -> (base: String, head: String, mergeability: Mergeability?, approved: Bool) {
+        let result = try runner.run("gh", arguments: ["pr", "view", String(number), "--repo", repository, "--json", "baseRefName,headRefOid,mergeable,reviewDecision"])
+        let status = try githubDecoder.decode(GitHubMergeStatus.self, from: Data(result.output.utf8))
+        return (status.baseRefName, status.headRefOid, status.mergeable, status.reviewDecision?.state == .approved)
     }
 
     /// Returns every human-review surface GitHub exposes for a PR: review bodies,
@@ -138,6 +144,15 @@ struct GitHubClient: Sendable {
             .sorted { ($0.submittedAt ?? $0.createdAt ?? .distantPast) < ($1.submittedAt ?? $1.createdAt ?? .distantPast) }
             .last?
             .user.login
+    }
+
+    /// The reviewed commit remains stable even after review fixes are pushed.
+    func latestReviewedCommit(repository: String, number: Int) throws -> String? {
+        let reviews: [GitHubReview] = try paged("repos/\(repository)/pulls/\(number)/reviews")
+        return reviews
+            .filter { ["APPROVED", "CHANGES_REQUESTED", "COMMENTED"].contains($0.state) && $0.submittedAt != nil }
+            .sorted { ($0.submittedAt ?? .distantPast) < ($1.submittedAt ?? .distantPast) }
+            .last?.commitId
     }
 
     /// Returns the created comment's ID in `ReviewComment.id` form. The comment
@@ -203,8 +218,8 @@ struct GitHubClient: Sendable {
     /// GitHub web UI, then asks GitHub to delete the source branch only after a
     /// successful server-side merge. Run from the registered repository so any
     /// optional local cleanup is scoped to that repository too.
-    func mergePullRequest(repository: String, number: Int, workingDirectory: String) throws {
-        _ = try runner.run("gh", arguments: ["pr", "merge", String(number), "--repo", repository, "--merge", "--delete-branch"], workingDirectory: workingDirectory)
+    func mergePullRequest(repository: String, number: Int, headSHA: String, workingDirectory: String) throws {
+        _ = try runner.run("gh", arguments: ["pr", "merge", String(number), "--repo", repository, "--merge", "--delete-branch", "--match-head-commit", headSHA], workingDirectory: workingDirectory)
     }
 
     private func repositoryName(from remote: String) throws -> String {
@@ -257,8 +272,11 @@ private let githubDecoder: JSONDecoder = {
 
 private struct GitHubUser: Codable { let login: String; let html_url: String?; var identity: GitHubIdentity { .init(login: login, hostname: "github.com") } }
 private struct GitHubAuthor: Codable { let login: String }
+private struct GitHubMergeStatus: Decodable {
+    let baseRefName: String; let headRefOid: String; let mergeable: Mergeability?; let reviewDecision: GitHubReviewDecision?
+}
 private struct GitHubPullRequest: Codable {
-    let number: Int; let title: String; let author: GitHubAuthor; let headRefName: String; let baseRefName: String; let headRefOid: String; let updatedAt: Date; let isDraft: Bool; let reviewDecision: GitHubReviewDecision?; let url: String
+    let number: Int; let title: String; let author: GitHubAuthor; let headRefName: String; let baseRefName: String; let headRefOid: String; let updatedAt: Date; let isDraft: Bool; let reviewDecision: GitHubReviewDecision?; let url: String; let mergeable: Mergeability?
 }
 private struct GitHubBranchPullRequest: Codable { let number: Int; let state: String; let url: String; let createdAt: Date }
 private struct GitHubReviewDecision: Codable {
@@ -269,7 +287,7 @@ private struct GitHubReviewDecision: Codable {
         reviewer = nil
     }
 }
-private struct GitHubReview: Codable { let id: Int; let body: String; let state: String; let submittedAt: Date?; let createdAt: Date?; let user: GitHubAuthor }
+private struct GitHubReview: Codable { let id: Int; let body: String; let state: String; let submittedAt: Date?; let createdAt: Date?; let user: GitHubAuthor; let commitId: String? }
 private struct GitHubIssueComment: Codable { let id: Int; let body: String; let createdAt: Date; let user: GitHubAuthor }
 private struct GitHubIssueEvent: Decodable { let id: Int; let event: String; let createdAt: Date?; let requestedReviewer: GitHubAuthor? }
 private struct GitHubReviewComment: Codable { let pullRequestReviewId: Int?; let id: Int; let body: String; let path: String?; let line: Int?; let createdAt: Date; let user: GitHubAuthor; let inReplyToID: Int? }

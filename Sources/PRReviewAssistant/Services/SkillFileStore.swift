@@ -2,43 +2,41 @@ import Foundation
 
 /// A review role or UnitTest skill file that the agents read at run time.
 struct EditableSkill: Identifiable, Hashable, Sendable {
-    enum Group: String, Sendable { case review = "리뷰 에이전트", unitTest = "UnitTest 스킬" }
+    enum Group: String, Sendable { case review = "리뷰 스킬", unitTest = "UnitTest 스킬" }
     let name: String
     let url: URL
     let group: Group
     var id: String { url.path }
 }
 
-/// Lists, reads and saves the files behind the review workflow (`~/.cursor/agents/<role>.md`)
-/// and the UnitTest skills (`~/.cursor/skills/unittest-*/SKILL.md`). Only files found by
-/// `list()` can be read or written, so the editor never touches arbitrary paths.
+/// Lists and edits the selected review skill and installed UnitTest skills.
 struct SkillFileStore: Sendable {
-    /// Roles `CursorReviewWorkflow` loads for a branch review.
-    static let reviewRoles = ["spec-search-agent", "structure-agent", "code-reviewer", "maintenance-reviewer", "scope-guard", "risk-guard"]
     static let unitTestPrefix = "unittest-"
     static let defaultUnitTestSkills = ["unittest-csharp-base", "unittest-unity-base", "unittest-domain-currency", "unittest-domain-time-season", "unittest-domain-probability", "unittest-target-selection", "unittest-writer"]
 
-    let agentsDirectory: URL
+    let reviewSkillPath: String?
     let skillsDirectory: URL
 
     init(
-        cursorDirectory: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cursor")
+        cursorDirectory: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cursor"),
+        reviewSkillPath: String? = nil
     ) {
-        agentsDirectory = cursorDirectory.appendingPathComponent("agents")
+        self.reviewSkillPath = reviewSkillPath
         skillsDirectory = cursorDirectory.appendingPathComponent("skills")
     }
 
     func list() -> [EditableSkill] {
-        let review = Self.reviewRoles.compactMap { role -> EditableSkill? in
-            let url = agentsDirectory.appendingPathComponent("\(role).md")
-            return FileManager.default.fileExists(atPath: url.path) ? EditableSkill(name: role, url: url, group: .review) : nil
+        let review = reviewSkillPath.map { path in
+            let url = URL(fileURLWithPath: path)
+            let name = url.lastPathComponent == "SKILL.md" ? url.deletingLastPathComponent().lastPathComponent : url.lastPathComponent
+            return EditableSkill(name: name, url: url, group: .review)
         }
         let folders = (try? FileManager.default.contentsOfDirectory(atPath: skillsDirectory.path)) ?? []
         let unitTest = folders.filter { $0.hasPrefix(Self.unitTestPrefix) }.sorted().compactMap { folder -> EditableSkill? in
             let url = skillsDirectory.appendingPathComponent(folder).appendingPathComponent("SKILL.md")
             return FileManager.default.fileExists(atPath: url.path) ? EditableSkill(name: folder, url: url, group: .unitTest) : nil
         }
-        return review + unitTest
+        return (review.map { [$0] } ?? []) + unitTest
     }
 
     func read(_ skill: EditableSkill) throws -> String {

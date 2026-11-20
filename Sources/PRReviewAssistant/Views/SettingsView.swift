@@ -128,7 +128,7 @@ struct SettingsView: View {
             AgentSettingsView(store: store)
                 .tabItem { Label("LLM Agent", systemImage: "sparkles") }
 
-            SkillSettingsView()
+            SkillSettingsView(store: store)
                 .tabItem { Label("스킬", systemImage: "doc.text") }
         }
         .frame(width: 640, height: 460)

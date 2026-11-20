@@ -685,11 +685,18 @@ struct SkillFileStoreTests {
         return (SkillFileStore(cursorDirectory: root), root)
     }
 
-    @Test("리뷰 역할 파일과 기본 UnitTest 스킬을 목록에 보여준다")
+    @Test("선택한 리뷰 스킬과 기본 UnitTest 스킬을 목록에 보여준다")
     func listsAndInstallsDefaults() throws {
-        let (store, root) = try makeStore()
+        let (unconfigured, root) = try makeStore()
         defer { try? FileManager.default.removeItem(at: root) }
-        #expect(store.list().map(\.name) == ["code-reviewer"])
+        #expect(unconfigured.list().isEmpty)
+        let file = root.appending(path: "skills/branch-review/SKILL.md")
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "리뷰 지침".write(to: file, atomically: true, encoding: .utf8)
+        let store = SkillFileStore(cursorDirectory: root, reviewSkillPath: file.path)
+        #expect(store.list().map(\.name) == ["branch-review"])
+        let review = try #require(store.list().first)
+        #expect(try store.read(review) == "리뷰 지침")
 
         #expect(try store.installDefaultUnitTestSkills(defaultFile: Self.defaults) == SkillFileStore.defaultUnitTestSkills.count)
         #expect(store.list().filter { $0.group == .unitTest }.count == SkillFileStore.defaultUnitTestSkills.count)
@@ -711,5 +718,144 @@ struct SkillFileStoreTests {
         #expect(throws: (any Error).self) { try store.write("  \n", to: skill) }
         let outside = EditableSkill(name: "pm", url: root.appending(path: "agents/pm.md"), group: .review)
         #expect(throws: (any Error).self) { try store.write("x", to: outside) }
+    }
+}
+
+// MARK: - spec 문서 기반 UnitTest
+
+extension UnitTestVerifierTests {
+    @Test("spec 본문 백틱의 C# 경로와 파일 이름을 추적 소스와 대조하고 테스트 경로는 뺀다")
+    func findsReferencedSources() {
+        let sources = ["Assets/Scripts/Shop/ShopDiscount.cs", "Assets/Scripts/Item/ItemPrice.cs", "Tests/Shop/ShopDiscountTests.cs", "Other/ShopDiscount.cs"]
+        let spec = "구현은 `Assets/Scripts/Item/ItemPrice.cs`와 `ShopDiscount.cs`, `ShopDiscountTests.cs`, 없는 `Missing.cs`, 코드 `ShopDiscount.Apply`."
+        #expect(UnitTestVerifier.referencedSources(in: spec, sources: sources) == [
+            "Assets/Scripts/Item/ItemPrice.cs", "Assets/Scripts/Shop/ShopDiscount.cs", "Other/ShopDiscount.cs"
+        ])
+    }
+
+    @Test("spec 모드 선별·생성 프롬프트에 지정 spec과 규칙을 담고 diff는 넣지 않는다")
+    func buildsSpecPrompts() {
+        let spec = UnitTestVerifier.SpecDocument(path: ".specs/spec_shop/spec.md", text: "VIP는 10% 할인", truncated: false)
+        let selection = CursorAgent.specUnitTestSelectionPrompt(spec: spec, referencedSources: ["Assets/Shop.cs"])
+        #expect(selection.contains(".specs/spec_shop/spec.md") && selection.contains("`Assets/Shop.cs`") && selection.contains("VIP는 10% 할인"))
+
+        var target = UnitTestVerifier.Target(sourcePath: "Assets/Shop.cs", source: "class Shop {}", diff: "", suggestedTestPath: "Tests/ShopTests.cs", stylePath: nil, styleSample: nil, behavior: "Shop.Price: VIP → 900")
+        target.spec = spec
+        let prompt = CursorAgent.unitTestPrompt(for: .init(target: target, previousError: nil))
+        #expect(prompt.contains("선별된 spec 규칙: Shop.Price: VIP → 900"))
+        #expect(prompt.contains("VIP는 10% 할인") && prompt.contains("specMismatch") && prompt.contains("기대값의 1순위 근거"))
+        #expect(!prompt.contains("이번 브랜치의 변경 diff"))
+        target.spec = nil
+        let branchPrompt = CursorAgent.unitTestPrompt(for: .init(target: target, previousError: nil))
+        #expect(branchPrompt.contains("이번 브랜치의 변경 diff") && !branchPrompt.contains("specMismatch"))
+    }
+
+    @Test("spec 불일치 보고를 제안에서 읽는다")
+    func parsesSpecMismatch() throws {
+        let proposal = try UnitTestProposal.parse(#"{"status":"generated","reason":"r","files":[{"path":"Tests/ATests.cs","content":"x"}],"specMismatch":"R1 할인율이 다름"}"#)
+        #expect(proposal.specMismatch == "R1 할인율이 다름")
+    }
+
+    @Test("spec UnitTest 결과는 이전 저장 파일에 없어도 빈 값으로 읽고 저장 후 복원한다")
+    func persistsSpecResults() throws {
+        let old = try JSONDecoder().decode(PersistedState.self, from: Data("{}".utf8))
+        #expect(old.specUnitTestResults.isEmpty)
+        var state = old
+        state.specUnitTestResults["id"] = .init(outcome: .passed, verifiedSHA: "a", resultSHA: "a", pushed: false, summary: "s", files: [
+            .init(sourcePath: "A.cs", status: .specMismatch, detail: "d")
+        ])
+        let restored = try JSONDecoder().decode(PersistedState.self, from: JSONEncoder().encode(state))
+        #expect(restored.specUnitTestResults["id"]?.files.first?.status == .specMismatch)
+    }
+}
+
+extension UnitTestWorkflowTests {
+    private static let specPath = ".specs/spec_shop/spec.md"
+
+    private func writeSpec(_ fixture: Fixture, _ text: String = "# 상점 할인\n\n구현: `Assets/Scripts/Shop/ShopDiscount.cs`\n\n| 테스트 | VIP 1000 → 900 |") throws {
+        let url = URL(fileURLWithPath: fixture.repository.localPath).appending(path: Self.specPath)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try text.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    @Test("spec 모드는 현재 브랜치 HEAD에서 UnitTest 브랜치를 만들고 저장소에 없는 경로는 제외한다")
+    func verifiesFromSpec() throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        try writeSpec(fixture)
+        let verifier = UnitTestVerifier { _, _, _ in .init(success: true, log: "Passed!") }
+        let result = try verifier.verifySpec(
+            repository: fixture.repository, specPath: Self.specPath,
+            select: { _, spec, referenced in
+                #expect(spec.path == Self.specPath && spec.text.contains("VIP 1000 → 900"))
+                #expect(referenced == ["Assets/Scripts/Shop/ShopDiscount.cs"])
+                let current = try fixture.git(["branch", "--show-current"])
+                #expect(current == "feature/x")
+                return [
+                    .init(sourcePath: "Assets/Scripts/Shop/ShopDiscount.cs", behavior: "ShopDiscount.Apply: VIP 1000 → 900", priority: 3),
+                    .init(sourcePath: "Assets/Scripts/Missing.cs", behavior: "없는 파일", priority: 2)
+                ]
+            },
+            generate: { request in
+                #expect(request.target.spec?.path == Self.specPath)
+                #expect(request.target.diff.isEmpty)
+                let current = try fixture.git(["branch", "--show-current"])
+                #expect(current == "unittest/x")
+                return .init(status: "generated", files: proposal.files, businessRules: [.init(id: "R1", rule: "VIP 1000 → 900", source: "spec")])
+            },
+            progress: { _ in }
+        )
+        #expect(result.outcome == .passed)
+        #expect(result.verifiedSHA == fixture.head)
+        #expect(result.summary.contains("저장소에 없는 경로 제외 1개") && result.summary.contains("추출 규칙 1개 중 테스트 1개"))
+        #expect(try fixture.git(["branch", "--show-current"]) == "unittest/x")
+        #expect(fixture.file("Tests/Demo.Tests/Shop/ShopDiscountTests.cs") == "class ShopDiscountTests {}")
+    }
+
+    @Test("spec에서 규칙을 찾지 못하면 규칙 부족으로 보고하고 브랜치를 바꾸지 않는다")
+    func reportsMissingRules() throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        try writeSpec(fixture, "# 빈 spec")
+        let result = try UnitTestVerifier { _, _, _ in .init(success: true, log: "") }.verifySpec(
+            repository: fixture.repository, specPath: Self.specPath,
+            select: { _, _, _ in [] }, generate: { _ in proposal }, progress: { _ in }
+        )
+        #expect(result.outcome == .notApplicable && result.summary.contains("규칙 부족"))
+        #expect(try fixture.git(["branch", "--show-current"]) == "feature/x")
+    }
+
+    @Test("detached HEAD에서는 spec 모드를 시작하지 않는다")
+    func refusesDetachedHead() throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        try writeSpec(fixture)
+        _ = try fixture.git(["switch", "--detach", "HEAD"])
+        let selected = Counter()
+        #expect(throws: CommandError.self) {
+            try UnitTestVerifier { _, _, _ in .init(success: true, log: "") }.verifySpec(
+                repository: fixture.repository, specPath: Self.specPath,
+                select: { _, _, _ in selected.increment(); return [] }, generate: { _ in proposal }, progress: { _ in }
+            )
+        }
+        #expect(selected.value == 0)
+    }
+
+    @Test("spec과 구현이 달라 검증이 계속 실패하면 불일치로 구분하고 파일을 쓰지 않는다")
+    func marksSpecMismatch() throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        try writeSpec(fixture)
+        let result = try UnitTestVerifier { _, _, _ in .init(success: false, log: "Expected 900 But was 1000") }.verifySpec(
+            repository: fixture.repository, specPath: Self.specPath,
+            select: { _, _, referenced in referenced.map { .init(sourcePath: $0, behavior: "VIP 1000 → 900", priority: 3) } },
+            generate: { _ in .init(status: "generated", files: proposal.files, specMismatch: "R1: spec은 900, 구현은 할인하지 않음") },
+            progress: { _ in }
+        )
+        #expect(result.outcome == .failed)
+        #expect(result.files.map(\.status) == [.specMismatch])
+        #expect(result.files.first?.detail.contains("spec과 구현 불일치: R1") == true)
+        #expect(result.summary.contains("spec과 구현 불일치 1개"))
+        #expect(fixture.file("Tests/Demo.Tests/Shop/ShopDiscountTests.cs") == nil)
     }
 }

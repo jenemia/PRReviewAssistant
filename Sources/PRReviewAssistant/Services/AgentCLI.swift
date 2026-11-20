@@ -16,6 +16,10 @@ enum AgentProvider: String, CaseIterable, Codable, Sendable {
         }
     }
 
+    var skillDirectory: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".\(rawValue)/skills", isDirectory: true)
+    }
+
     var loginArguments: [String] {
         self == .claude ? ["auth", "login"] : ["login"]
     }
@@ -47,7 +51,7 @@ enum AgentProvider: String, CaseIterable, Codable, Sendable {
     }
 
     func run(
-        prompt: String, model: String, directory: String?, writable: Bool, timeout: TimeInterval
+        prompt: String, model: String, directory: String?, writable: Bool, timeout: TimeInterval, allowSubagents: Bool = false
     ) throws -> CommandResult {
         let runner = ProcessRunner()
         var arguments: [String]
@@ -72,7 +76,7 @@ enum AgentProvider: String, CaseIterable, Codable, Sendable {
                          "--strict-mcp-config",
                          "--setting-sources", "user",
                          "--permission-mode", writable ? "acceptEdits" : "plan",
-                         "--tools", writable ? "Read,Glob,Grep,Edit,Write,Bash" : "Read,Glob,Grep,Bash",
+                         "--tools", writable ? "Read,Glob,Grep,Edit,Write,Bash" : (allowSubagents ? "Read,Glob,Grep,Bash,Agent" : "Read,Glob,Grep,Bash"),
                          "--disable-slash-commands"]
         }
         if !model.isEmpty { arguments += ["--model", model] }

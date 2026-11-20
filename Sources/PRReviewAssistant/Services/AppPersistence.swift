@@ -30,6 +30,7 @@ struct PersistedState: Codable {
     var agentModel = "composer-2.5"
     var customAgentModel = ""
     var agentProvider: AgentProvider = .cursor
+    var reviewSkillPaths: [String: String] = [:]
     var codexModel = ""
     var claudeModel = ""
     /// The GitHub login (or the local Git author name as a fallback) whose PRs
@@ -54,6 +55,8 @@ struct PersistedState: Codable {
     var branchImplementationResults: [UUID: String] = [:]
     var branchImplementationInProgress: Set<UUID> = []
     var branchUnitTestResults: [String: UnitTestVerification] = [:]
+    /// Spec tab UnitTest results keyed by repository id and spec path.
+    var specUnitTestResults: [String: UnitTestVerification] = [:]
     /// The five spec groups shown under the Agent sidebar, including pin and
     /// non-destructive dismissal state.
     var cursorSpecSidebarCache = CursorSpecSidebarCache()
@@ -66,9 +69,9 @@ struct PersistedState: Codable {
     private enum CodingKeys: String, CodingKey {
         case repositories, processedCommentIDs, knownPullRequestIDs, unreadPullRequestIDs, unreadCommentIDs
         case hasEstablishedNotificationBaseline, approvedPullRequestIDs, hasEstablishedApprovalBaseline
-        case agentProvider, codexModel, claudeModel, monitoringEnabled, monitoringInterval, analyses, agentReviewCards, hiddenReviewCommentIDsByPullRequest, reviewHistoryRoundsByPullRequest, implementationPlans, committedHeads, postedReReviewCommentTokens, agentModel, customAgentModel, reviewAuthorFilter, petVisible, petSize, petReduceMotion, latestPetNotification, hasCompletedOnboarding, skippedOnboardingSteps, projectCopyFolder, updateRepository, updatesEnabled, lastNotifiedUpdateTag, requestedBranches, cursorSpecSidebarCache, automaticCursorSessionClassification, automaticReviewAnalysis
+        case agentProvider, reviewSkillPaths, codexModel, claudeModel, monitoringEnabled, monitoringInterval, analyses, agentReviewCards, hiddenReviewCommentIDsByPullRequest, reviewHistoryRoundsByPullRequest, implementationPlans, committedHeads, postedReReviewCommentTokens, agentModel, customAgentModel, reviewAuthorFilter, petVisible, petSize, petReduceMotion, latestPetNotification, hasCompletedOnboarding, skippedOnboardingSteps, projectCopyFolder, updateRepository, updatesEnabled, lastNotifiedUpdateTag, requestedBranches, cursorSpecSidebarCache, automaticCursorSessionClassification, automaticReviewAnalysis
         case appPostedCommentIDs
-        case branchReviewCards, branchCardReviewed, branchImplementationResults, branchImplementationInProgress, branchUnitTestResults
+        case branchReviewCards, branchCardReviewed, branchImplementationResults, branchImplementationInProgress, branchUnitTestResults, specUnitTestResults
     }
     init(repositories: [RegisteredRepository] = [], processedCommentIDs: Set<String> = [], knownPullRequestIDs: Set<String> = [], unreadPullRequestIDs: Set<String> = [], unreadCommentIDs: Set<String> = [], hasEstablishedNotificationBaseline: Bool = false, approvedPullRequestIDs: Set<String> = [], hasEstablishedApprovalBaseline: Bool = false, monitoringEnabled: Bool = true, monitoringInterval: Int = 60, analyses: [String: AgentAnalysis] = [:], agentReviewCards: [AgentReviewCard] = [], hiddenReviewCommentIDsByPullRequest: [String: Set<String>] = [:], reviewHistoryRoundsByPullRequest: [String: [Set<String>]] = [:], implementationPlans: [String: ImplementationPlan] = [:], committedHeads: [String: String] = [:], postedReReviewCommentTokens: Set<String> = [], agentModel: String = "composer-2.5", customAgentModel: String = "", reviewAuthorFilter: String = "", petVisible: Bool = true, petSize: Double = 190.0, petReduceMotion: Bool = false, latestPetNotification: PetBubbleContent? = nil, hasCompletedOnboarding: Bool = false, skippedOnboardingSteps: Set<String> = [], projectCopyFolder: String = "", updateRepository: String = "", updatesEnabled: Bool = true, lastNotifiedUpdateTag: String = "", requestedBranches: [RepositoryBranch] = [], cursorSpecSidebarCache: CursorSpecSidebarCache = CursorSpecSidebarCache(), automaticCursorSessionClassification: Bool = false, automaticReviewAnalysis: Bool = true) {
         self.repositories = repositories
@@ -128,6 +131,7 @@ struct PersistedState: Codable {
         appPostedCommentIDs = try container.decodeIfPresent(Set<String>.self, forKey: .appPostedCommentIDs) ?? []
         agentModel = try container.decodeIfPresent(String.self, forKey: .agentModel) ?? "composer-2.5"
         agentProvider = (try? container.decode(AgentProvider.self, forKey: .agentProvider)) ?? .cursor
+        reviewSkillPaths = try container.decodeIfPresent([String: String].self, forKey: .reviewSkillPaths) ?? [:]
         codexModel = try container.decodeIfPresent(String.self, forKey: .codexModel) ?? ""
         claudeModel = try container.decodeIfPresent(String.self, forKey: .claudeModel) ?? ""
         customAgentModel = try container.decodeIfPresent(String.self, forKey: .customAgentModel) ?? ""
@@ -148,6 +152,7 @@ struct PersistedState: Codable {
         branchImplementationResults = try container.decodeIfPresent([UUID: String].self, forKey: .branchImplementationResults) ?? [:]
         branchImplementationInProgress = try container.decodeIfPresent(Set<UUID>.self, forKey: .branchImplementationInProgress) ?? []
         branchUnitTestResults = try container.decodeIfPresent([String: UnitTestVerification].self, forKey: .branchUnitTestResults) ?? [:]
+        specUnitTestResults = try container.decodeIfPresent([String: UnitTestVerification].self, forKey: .specUnitTestResults) ?? [:]
         cursorSpecSidebarCache = try container.decodeIfPresent(CursorSpecSidebarCache.self, forKey: .cursorSpecSidebarCache) ?? CursorSpecSidebarCache()
         automaticCursorSessionClassification = try container.decodeIfPresent(Bool.self, forKey: .automaticCursorSessionClassification) ?? false
         automaticReviewAnalysis = try container.decodeIfPresent(Bool.self, forKey: .automaticReviewAnalysis) ?? true

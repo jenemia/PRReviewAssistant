@@ -57,6 +57,8 @@ struct PullRequestDetailView: View {
     @State private var showingImplementationPlan = false
     @State private var showingWorkArea = false
     @State private var showingMergeApproval = false
+    @State private var showingConflictApproval = false
+    @State private var conflictAnswer = ""
     @State private var showingCardRebuildConfirmation = false
     @State private var showingReviewResponseSheet = false
     @State private var showingManualCommitSheet = false
@@ -138,6 +140,29 @@ struct PullRequestDetailView: View {
             }
         } message: {
             Text("GitHub에서 이 PR을 Create a merge commit 방식으로 머지합니다. 머지와 푸시가 성공한 경우 소스 브랜치를 삭제합니다.")
+        }
+        .alert("충돌 해결", isPresented: $showingConflictApproval) {
+            Button("취소", role: .cancel) {}
+            Button("머지하고 충돌 해결") {
+                Task { await store.resolveConflicts(for: pullRequest) }
+            }
+        } message: {
+            Text("\(pullRequest.baseBranch) 브랜치를 \(pullRequest.headBranch)에 머지하고, 에이전트가 \(pullRequest.baseBranch) 내용을 우선하되 PR 기능을 살려 충돌을 해결합니다. 스태틱 데이터는 \(pullRequest.baseBranch) 것을 사용합니다. 성공하면 머지 커밋을 PR 브랜치에 푸시합니다. 방향이 다른 코드가 있으면 머지를 취소하고 질문합니다.")
+        }
+        .alert("충돌 해결 질문", isPresented: Binding(
+            get: { store.conflictQuestion(for: pullRequest) != nil },
+            set: { presented in if !presented { store.dismissConflictQuestion(for: pullRequest) } }
+        )) {
+            TextField("답변", text: $conflictAnswer)
+            Button("취소", role: .cancel) { conflictAnswer = "" }
+            Button("답변하고 다시 시도") {
+                let question = store.conflictQuestion(for: pullRequest) ?? ""
+                let answer = "질문:\n\(question)\n\n답변:\n\(conflictAnswer)"
+                conflictAnswer = ""
+                Task { await store.resolveConflicts(for: pullRequest, userAnswer: answer) }
+            }
+        } message: {
+            Text(store.conflictQuestion(for: pullRequest) ?? "")
         }
         .alert("검토카드를 다시 분류할까요?", isPresented: $showingCardRebuildConfirmation) {
             Button("취소", role: .cancel) {}
@@ -365,6 +390,13 @@ struct PullRequestDetailView: View {
                     HStack {
                         Text("PR 코멘트 분류").font(.headline)
                         Spacer()
+                        Button("전체 검토", systemImage: "play.circle") {
+                            store.reviewAll(cards: allCards, pullRequest: pullRequest)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .disabled(store.unreviewedCards(in: allCards).isEmpty)
+                        .help("아직 검토하지 않은 모든 카드를 검토합니다. 이미 검토한 카드는 건너뜁니다")
                         Button("분류 다시 만들기", systemImage: "arrow.triangle.2.circlepath") {
                             showingCardRebuildConfirmation = true
                         }
@@ -436,6 +468,13 @@ struct PullRequestDetailView: View {
                         }
                     }
                     Spacer()
+                    Button("전체 검토", systemImage: "play.circle") {
+                        store.reviewAll(cards: group.cards, pullRequest: pullRequest)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(store.unreviewedCards(in: group.cards).isEmpty)
+                    .help("이 차수에서 아직 검토하지 않은 카드를 모두 검토합니다")
                     Text("분석 \(group.cards.count)개").font(.caption).foregroundStyle(.secondary)
                 }
             }
@@ -591,13 +630,10 @@ struct PullRequestDetailView: View {
                             .font(.caption.weight(.medium))
                             .foregroundStyle(.green)
                     } else {
-                        Button("커밋", systemImage: "checkmark.circle") {
+                        CommitButtonWithHint(blockedReason: store.commitBlockedReason(for: card, pullRequest: pullRequest)) {
                             pendingCommitCardID = card.id
                             showingPushApproval = true
                         }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(!store.canCommit(for: card, pullRequest: pullRequest))
-                        .help(plan.status == .completed ? "이 카드의 리뷰와 변경 내용을 로컬 커밋으로 남깁니다" : "이 카드의 구현이 완료되면 커밋할 수 있습니다")
                     }
                 }
             }
@@ -616,6 +652,31 @@ struct PullRequestDetailView: View {
                 Label("이 PR은 승인되었습니다.", systemImage: "checkmark.seal.fill")
                     .foregroundStyle(.green)
                     .font(.headline)
+                if !pullRequest.hasExpectedMergeBase {
+                    Label("머지 대상 불일치: PR은 \(pullRequest.baseBranch), 예상 대상은 \(pullRequest.expectedMergeBase)입니다.", systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                } else if pullRequest.mergeability == .conflicting {
+                    HStack {
+                        Label("충돌: \(pullRequest.baseBranch) 브랜치와 충돌을 해결해야 합니다.", systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.red)
+                        Spacer()
+                        if store.isResolvingConflicts(pullRequest) {
+                            ProgressView().controlSize(.small)
+                        }
+                        Button("충돌해결하기", systemImage: "wand.and.stars") {
+                            showingConflictApproval = true
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(store.isResolvingConflicts(pullRequest))
+                        .help("\(pullRequest.baseBranch)를 머지하며 에이전트가 충돌을 해결합니다")
+                    }
+                } else if pullRequest.mergeability != .mergeable {
+                    Label("충돌 여부 확인 중 또는 확인 불가. 새로 고침하세요.", systemImage: "questionmark.circle")
+                        .foregroundStyle(.secondary)
+                } else {
+                    Label("충돌 없음 · 대상: \(pullRequest.baseBranch)", systemImage: "checkmark.circle")
+                        .foregroundStyle(.green)
+                }
                 Text("Create a merge commit 방식으로 GitHub에 머지합니다. 머지와 푸시가 성공하면 소스 브랜치를 삭제합니다.")
                     .foregroundStyle(.secondary)
                 HStack {
@@ -625,7 +686,7 @@ struct PullRequestDetailView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(.green)
-                    .disabled(store.isMerging(pullRequest))
+                    .disabled(store.isMerging(pullRequest) || !pullRequest.hasExpectedMergeBase || pullRequest.mergeability != .mergeable)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -760,14 +821,10 @@ struct PullRequestDetailView: View {
         Task { await store.beginAgentReview(id: id, pullRequest: pullRequest) }
     }
 
+    /// A comment card always opens its review comment and conversation, even
+    /// after work started; the work result is opened from the work area card.
     private func openReviewOrWorkCard(_ id: AgentReviewCard.ID) {
         store.markAgentCardRead(id)
-        if let card = store.agentCard(id: id),
-           let plan = store.implementationPlan(for: card, pullRequest: pullRequest),
-           plan.status != .ready {
-            detailNavigation.showWork(id)
-            return
-        }
         detailNavigation.showAgent(id)
     }
 
@@ -1147,6 +1204,33 @@ private struct ImplementationPlanSheet: View {
     }
 }
 
+/// A disabled button swallows clicks, so a tap on it shows why it is disabled.
+private struct CommitButtonWithHint: View {
+    let blockedReason: String?
+    let action: () -> Void
+    @State private var showsHint = false
+
+    var body: some View {
+        Button("커밋", systemImage: "checkmark.circle", action: action)
+            .buttonStyle(.borderedProminent)
+            .disabled(blockedReason != nil)
+            .overlay {
+                if blockedReason != nil {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onTapGesture { showsHint.toggle() }
+                }
+            }
+            .popover(isPresented: $showsHint, arrowEdge: .top) {
+                Label(blockedReason ?? "", systemImage: "info.circle")
+                    .font(.callout)
+                    .padding(12)
+                    .frame(maxWidth: 280, alignment: .leading)
+            }
+            .help(blockedReason ?? "이 카드의 리뷰와 변경 내용을 로컬 커밋으로 남깁니다")
+    }
+}
+
 private struct WorkAreaSheet: View {
     let pullRequest: PullRequest
     let plan: ImplementationPlan
@@ -1286,18 +1370,19 @@ private struct WorkReviewSidePanel: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    GroupBox("구현 요청") {
+                    GroupBox {
                         MarkdownContentView(plan.implementationRequest ?? plan.content, nativeSelection: true)
                             .frame(maxWidth: .infinity, alignment: .leading)
+                    } label: {
+                        CopyableSectionTitle(title: "구현 요청", text: plan.implementationRequest ?? plan.content)
                     }
-                    GroupBox("작업 결과") {
+                    GroupBox {
                         VStack(alignment: .leading, spacing: 12) {
                             Label(plan.status.rawValue, systemImage: plan.status.symbol)
                                 .font(.subheadline.weight(.semibold))
                                 .foregroundStyle(plan.status == .failed ? .orange : (plan.status == .completed ? .green : BrandColor.prPurple))
                             if let workResult = plan.result, !workResult.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                                MarkdownContentView(workResult)
-                                    .textSelection(.enabled)
+                                MarkdownContentView(workResult, nativeSelection: true)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                             } else {
                                 Text("에이전트 구현 결과를 기다리고 있습니다.")
@@ -1319,12 +1404,40 @@ private struct WorkReviewSidePanel: View {
                                     .help("최신 검토 내용을 기준으로 구현 요청 팝업을 다시 엽니다.")
                             }
                         }
+                    } label: {
+                        CopyableSectionTitle(title: "작업 결과", text: plan.result ?? "")
                     }
                 }
                 .padding(16)
             }
         }
         .background(.bar)
+    }
+}
+
+/// A GroupBox title with a whole-content copy button on its trailing edge.
+private struct CopyableSectionTitle: View {
+    let title: String
+    let text: String
+    @State private var copied = false
+
+    var body: some View {
+        HStack {
+            Text(title)
+            Spacer()
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(text, forType: .string)
+                copied = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
+            } label: {
+                Image(systemName: copied ? "checkmark" : "doc.on.doc")
+            }
+            .buttonStyle(.borderless)
+            .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .help("\(title) 전체 복사")
+            .accessibilityLabel("\(title) 전체 복사")
+        }
     }
 }
 
@@ -1632,7 +1745,7 @@ private struct AgentChatSidePanel: View {
                             ContentUnavailableView("분석을 시작하세요", systemImage: "sparkles", description: Text("분석 시작을 선택하면 코드 수정 없이 현재 저장소를 읽고 리뷰 내용을 검토합니다."))
                             Button("분석 시작", systemImage: "sparkles", action: startAnalysis)
                                 .buttonStyle(.borderedProminent)
-                                .disabled(card.status == .reviewing || card.status == .queued)
+                                .disabled(card.status == .reviewing)
                         }
                             .frame(maxWidth: .infinity)
                             .padding(.top, 40)
@@ -1666,7 +1779,7 @@ private struct AgentChatSidePanel: View {
             HStack {
                 Button("분석 요청", systemImage: "sparkles", action: retryAnalysis)
                     .buttonStyle(.bordered)
-                    .disabled(card.status == .reviewing || card.status == .queued)
+                    .disabled(card.status == .reviewing)
                     .help("에이전트 응답 실패 후 이 카드의 읽기 전용 검토를 다시 시작합니다")
                 Button("응답 작성", systemImage: "text.badge.plus", action: writeResponse)
                     .buttonStyle(.bordered)

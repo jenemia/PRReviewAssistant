@@ -43,6 +43,8 @@ final class ReviewStore {
             case quiz
             case pullRequestProposal
             case unitTest
+            /// Spec tab; `branch` is the registered folder's current branch the run starts from.
+            case specUnitTest(specPath: String)
         }
 
         let id = UUID()
@@ -78,6 +80,8 @@ final class ReviewStore {
     /// This remains in memory only: an app relaunch must not imply a merge is
     /// still in progress.
     private var mergingPullRequestIDs: Set<String> = []
+    private var resolvingConflictIDs: Set<String> = []
+    private var conflictQuestions: [String: String] = [:]
     var isInitialLoadInProgress = true
     var statusMessage = "GitHub CLI를 확인하고 저장소를 등록하세요."
     var notificationStatus = "알림 권한을 확인 중입니다"
@@ -168,6 +172,11 @@ final class ReviewStore {
     var branchUnitTestMessages: [String: String] = [:]
     var branchUnitTestErrors: [String: String] = [:]
     var verifyingUnitTestBranchIDs: Set<String> = []
+    /// Spec tab results, keyed by `specUnitTestID(repositoryID:specPath:)`.
+    var specUnitTestResults: [String: UnitTestVerification] = [:]
+    var specUnitTestMessages: [String: String] = [:]
+    var specUnitTestErrors: [String: String] = [:]
+    var verifyingSpecUnitTestIDs: Set<String> = []
 
     private let persistence: AppPersistence
     private let github = GitHubClient()
@@ -175,6 +184,15 @@ final class ReviewStore {
     private let localPractice = LocalPracticeRepository()
     private var selectedAgent: CursorAgent { CursorAgent(provider: agentProvider) }
     var agentProvider: AgentProvider = .cursor { didSet { persist() } }
+    var reviewSkillPaths: [String: String] = [:] { didSet { persist() } }
+    func reviewSkillPath(for provider: AgentProvider) -> String? {
+        if let path = reviewSkillPaths[provider.rawValue] {
+            return path.isEmpty ? nil : path
+        }
+        let path = provider.skillDirectory.appendingPathComponent("branch-review/SKILL.md").path
+        return FileManager.default.isReadableFile(atPath: path) ? path : nil
+    }
+
     var codexModel = "" { didSet { persist() } }
     var claudeModel = "" { didSet { persist() } }
     private let pullRequestProposalVerifier = PullRequestProposalVerifier()
@@ -232,6 +250,7 @@ final class ReviewStore {
             }
         }
         agentProvider = state.agentProvider
+        reviewSkillPaths = state.reviewSkillPaths
         codexModel = state.codexModel
         claudeModel = state.claudeModel
         agentModel = state.agentModel
@@ -251,6 +270,7 @@ final class ReviewStore {
         branchCardReviewed = state.branchCardReviewed
         branchImplementationResults = state.branchImplementationResults
         branchUnitTestResults = state.branchUnitTestResults
+        specUnitTestResults = state.specUnitTestResults
         branchImplementationInProgress = state.branchImplementationInProgress
         cursorSpecSidebarCache = state.cursorSpecSidebarCache
         automaticCursorSessionClassification = state.automaticCursorSessionClassification
@@ -489,12 +509,12 @@ final class ReviewStore {
         let progressKey = "branch:\(branch.id)"
         let progress = reviewProgress(key: progressKey) { [weak self] in self?.branchReviewMessages[branch.id] = $0 }
         defer { reviewProgressTokens[progressKey] = nil }
-        branchReviewMessages[branch.id] = "스펙과 구조를 조사한 뒤 구현과 유지보수를 검토하고 결과를 통합합니다."
+        branchReviewMessages[branch.id] = "선택한 설정으로 브랜치를 검토합니다."
         do {
             let model = effectiveAgentModel
             let isTrusted = trustedBranchReviewIDs.contains(branch.id)
             let baseReference = branchBaseReference(for: branch, repository: repository)
-            let output = try await selectedAgent.reviewBranch(repositoryPath: repository.localPath, branch: branch, baseBranch: baseReference, trustWorkspace: isTrusted, model: model, progress: progress)
+            let output = try await selectedAgent.reviewBranch(repositoryPath: repository.localPath, branch: branch, baseBranch: baseReference, skillPath: reviewSkillPath(for: agentProvider), trustWorkspace: isTrusted, model: model, progress: progress)
             try Task.checkCancellation()
             guard requestedBranches.contains(where: { $0.id == branch.id }) else { return }
             clearBranchCards(for: branch.id)
@@ -763,7 +783,8 @@ final class ReviewStore {
     /// uncommitted on the local UnitTest branch checked out in the registered folder.
     func verifyUnitTests(for branch: RepositoryBranch) async {
         guard !verifyingUnitTestBranchIDs.contains(branch.id),
-              !implementingBranchRepositoryIDs.contains(branch.repositoryID) else { return }
+              !implementingBranchRepositoryIDs.contains(branch.repositoryID),
+              !verifyingSpecUnitTestIDs.contains(where: { $0.hasPrefix(branch.repositoryID.uuidString + ":") }) else { return }
         guard let repository = repositories.first(where: { $0.id == branch.repositoryID }) else {
             branchUnitTestErrors[branch.id] = "저장소를 찾을 수 없습니다. 저장소를 다시 등록하세요."
             return
@@ -849,6 +870,73 @@ final class ReviewStore {
         return await makeBranchQuiz(for: branch)
     }
 
+    nonisolated static func specUnitTestID(repositoryID: UUID, specPath: String) -> String {
+        "\(repositoryID.uuidString):\(specPath)"
+    }
+
+    /// Spec documents (`specs/` or `.specs/` … `spec.md`) of every registered repository.
+    func specDocuments() async -> [(repository: RegisteredRepository, documents: [WorkspaceSpecDocument])] {
+        let repositories = repositories
+        return (try? await background {
+            repositories.map { (repository: $0, documents: WorkspaceSpecCatalog().documents(in: $0.localPath)) }
+        }) ?? []
+    }
+
+    /// Both UnitTest modes and implementation switch the registered folder's branch, so only one runs per repository.
+    func isUnitTestBlocked(in repositoryID: UUID) -> Bool {
+        let prefix = repositoryID.uuidString + ":"
+        return implementingBranchRepositoryIDs.contains(repositoryID)
+            || verifyingUnitTestBranchIDs.contains { $0.hasPrefix(prefix) }
+            || verifyingSpecUnitTestIDs.contains { $0.hasPrefix(prefix) }
+    }
+
+    /// Uses one spec document's rules instead of a branch diff to pick targets, and leaves passing
+    /// tests uncommitted on the local UnitTest branch of the registered folder's current branch.
+    func verifySpecUnitTests(repository: RegisteredRepository, specPath: String) async {
+        let id = Self.specUnitTestID(repositoryID: repository.id, specPath: specPath)
+        guard !isUnitTestBlocked(in: repository.id) else { return }
+        verifyingSpecUnitTestIDs.insert(id)
+        specUnitTestErrors[id] = nil
+        if specUnitTestResults.removeValue(forKey: id) != nil { persist() }
+        specUnitTestMessages[id] = "spec 문서를 읽는 중입니다."
+        defer { verifyingSpecUnitTestIDs.remove(id) }
+        let current = checkedOutBranches[repository.id] ?? ""
+        // Workspace trust is remembered per branch, as in branch mode.
+        let branch = RepositoryBranch(
+            repositoryID: repository.id, repositoryName: repository.fullName, name: current, reference: "refs/heads/\(current)",
+            sha: "", subject: "", updatedAt: nil, isCurrent: true, isRemote: false
+        )
+        do {
+            let model = effectiveAgentModel
+            let isTrusted = trustedBranchReviewIDs.contains(branch.id)
+            let cursor = selectedAgent, verifier = unitTestVerifier
+            let verification = try await background {
+                try verifier.verifySpec(
+                    repository: repository, specPath: specPath,
+                    select: { workspace, spec, referenced in
+                        try cursor.selectSpecUnitTestTargets(repositoryPath: workspace, spec: spec, referencedSources: referenced, trustWorkspace: isTrusted, model: model)
+                    },
+                    generate: { try cursor.generateUnitTest(repositoryPath: $0.workspace, request: $0, trustWorkspace: isTrusted, model: model) },
+                    progress: { message in Task { @MainActor in self.specUnitTestMessages[id] = message } }
+                )
+            }
+            specUnitTestResults[id] = verification
+            persist()
+            specUnitTestMessages[id] = verification.summary
+            statusMessage = "\(specPath) UnitTest 생성: \(verification.summary)"
+        } catch {
+            if let kind = permissionKind(for: error) {
+                specUnitTestMessages[id] = nil
+                branchAgentPermissionRequest = .init(kind: kind, branch: branch, action: .specUnitTest(specPath: specPath), detail: error.localizedDescription)
+                return
+            }
+            specUnitTestMessages[id] = nil
+            specUnitTestErrors[id] = "UnitTest 생성 실패: \(error.localizedDescription)"
+            statusMessage = "spec UnitTest 생성 실패: \(error.localizedDescription)"
+        }
+        await refreshCheckedOutBranches()
+    }
+
     func approveBranchAgentPermission() {
         guard let request = branchAgentPermissionRequest else { return }
         branchAgentPermissionRequest = nil
@@ -883,6 +971,10 @@ final class ReviewStore {
                 _ = await preparePullRequestProposal(for: request.branch, force: true)
             case .unitTest:
                 await verifyUnitTests(for: request.branch)
+            case let .specUnitTest(specPath):
+                if let repository = repositories.first(where: { $0.id == request.branch.repositoryID }) {
+                    await verifySpecUnitTests(repository: repository, specPath: specPath)
+                }
             }
         }
     }
@@ -909,6 +1001,12 @@ final class ReviewStore {
     }
 
     private static func branchReviewItems(category: BranchReviewCategory, details: String, reviewedSHA: String) -> [BranchReviewCard] {
+        let meaningfulLines = details.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.filter { line in
+            !line.isEmpty && !["---", "***", "___"].contains(line)
+        }
+        if meaningfulLines == [BranchReviewCard.noFindings] {
+            return [makeBranchReviewCard(category: category, title: category.rawValue, details: BranchReviewCard.noFindings, reviewedSHA: reviewedSHA)]
+        }
         var cards: [BranchReviewCard] = []
         var title = category.rawValue
         var lines: [String] = []
@@ -970,6 +1068,14 @@ final class ReviewStore {
             cards.flatMap { card -> [BranchReviewCard] in
                 guard card.isArchivedAggregate != true else { return [card] }
                 let items = Self.branchReviewItems(category: card.category, details: card.details, reviewedSHA: card.reviewedSHA)
+                if items.count == 1, items[0].details == BranchReviewCard.noFindings,
+                   card.details != BranchReviewCard.noFindings {
+                    var normalized = card
+                    normalized.details = BranchReviewCard.noFindings
+                    normalized.summary = BranchReviewCard.noFindings
+                    changed = true
+                    return [normalized]
+                }
                 guard items.count > 1 else { return [card] }
                 changed = true
                 guard !card.messages.isEmpty || branchCardReviewed.contains(card.id) || branchImplementationResults[card.id] != nil else {
@@ -991,6 +1097,23 @@ final class ReviewStore {
         return plan.status == .completed
             && plan.committedSHA == nil
             && !(plan.changedFiles ?? []).isEmpty
+    }
+    /// Why the commit button is disabled, or nil when it is available.
+    func commitBlockedReason(for card: AgentReviewCard, pullRequest: PullRequest) -> String? {
+        guard let plan = implementationPlan(for: card, pullRequest: pullRequest) else {
+            return "이 카드에 구현 계획이 없습니다. 작업 요청으로 계획을 먼저 전달하세요."
+        }
+        switch plan.status {
+        case .ready: return "구현이 아직 시작되지 않았습니다."
+        case .inProgress: return "구현이 진행 중입니다. 완료되면 커밋할 수 있습니다."
+        case .failed: return "구현이 실패했거나 확인이 필요합니다. 작업 결과를 확인하고 다시 실행하세요."
+        case .completed: break
+        }
+        if plan.committedSHA != nil { return "이미 커밋된 카드입니다." }
+        if (plan.changedFiles ?? []).isEmpty {
+            return "이 카드의 구현에서 변경된 파일이 없습니다. 작업 결과의 보류 사유를 확인하고 결정을 알려 다시 실행하세요."
+        }
+        return nil
     }
     var petState: PetState { PetState.resolve(pullRequests: pullRequests, unreadCount: unreadCount) }
     var petBubbleContent: PetBubbleContent {
@@ -1753,11 +1876,20 @@ final class ReviewStore {
         let agent = selectedAgent
         let model = effectiveAgentModel
         do {
+            let repository = try registeredRepository(for: pullRequest)
+            let baseSHA: String
+            if repository.isLocalPractice == true {
+                baseSHA = pullRequest.headSHA
+            } else {
+                baseSHA = try await background {
+                    try self.github.latestReviewedCommit(repository: pullRequest.repository, number: pullRequest.number)
+                } ?? pullRequest.headSHA
+            }
             let commits = try await background {
-                try workspace.reviewCommits(at: path, branch: pullRequest.headBranch, baseSHA: pullRequest.headSHA, committedSHA: committedSHA)
+                try workspace.reviewCommits(at: path, branch: pullRequest.headBranch, baseSHA: baseSHA, committedSHA: committedSHA)
             }
             guard !commits.isEmpty else {
-                statusMessage = "PR 기준 이후의 리뷰 반영 커밋이 없습니다."
+                statusMessage = "마지막 리뷰 이후의 리뷰 반영 커밋이 없습니다."
                 return nil
             }
             let workSummary = Self.reReviewCommitSummary(commits: commits, cards: cards, plans: plans)
@@ -1860,6 +1992,81 @@ final class ReviewStore {
         }
     }
 
+    /// Merges the PR's base branch into the PR branch, has the agent resolve any
+    /// conflicts (base first, PR features kept, static data from base), then
+    /// commits and pushes. When the agent finds a direction it cannot choose, the
+    /// merge is aborted and its question is kept in `conflictQuestions`.
+    func resolveConflicts(for pullRequest: PullRequest, userAnswer: String? = nil) async {
+        let key = worktreeKey(pullRequest)
+        guard !resolvingConflictIDs.contains(key) else { return }
+        guard pullRequest.hasExpectedMergeBase else {
+            statusMessage = "머지 대상 브랜치가 예상과 달라 충돌을 해결하지 않았습니다."
+            return
+        }
+        resolvingConflictIDs.insert(key)
+        conflictQuestions[key] = nil
+        defer { resolvingConflictIDs.remove(key) }
+        let workspace = workspaces
+        let agent = selectedAgent
+        let model = effectiveAgentModel
+        do {
+            let repository = try registeredRepository(for: pullRequest)
+            statusMessage = "\(pullRequest.baseBranch) 브랜치를 가져와 머지하는 중입니다."
+            let path = try await inCheckoutQueue(key) {
+                guard self.reserveActiveWorkspace(for: pullRequest) else { throw CommandError.failed(.init(output: "", error: self.statusMessage, status: 1)) }
+                let path = try await self.background { try workspace.prepareRepositoryWorkspace(repository: repository, pullRequest: pullRequest) }
+                try await self.background { try workspace.verifyHead(path, expectedSHA: pullRequest.headSHA, expectedBranch: pullRequest.headBranch) }
+                self.setActiveWorkspace(path, for: pullRequest)
+                return path
+            }
+            let remote = repository.remoteName
+            let merge = try await background { try workspace.beginBaseMerge(at: path, baseBranch: pullRequest.baseBranch, remote: remote) }
+            guard merge.inProgress else {
+                statusMessage = "\(pullRequest.baseBranch)의 새 변경이 없습니다. 새로 고침해 충돌 상태를 확인하세요."
+                return
+            }
+            if !merge.conflicted.isEmpty {
+                statusMessage = "충돌 \(merge.conflicted.count)개 파일을 에이전트가 해결하는 중입니다."
+                let report: String
+                do {
+                    report = try await background {
+                        try agent.resolveMergeConflicts(worktreePath: path, pullRequest: pullRequest, conflictedFiles: merge.conflicted, userAnswer: userAnswer, model: model)
+                    }
+                } catch {
+                    _ = try? await background { workspace.abortMerge(at: path) }
+                    throw error
+                }
+                if report.hasPrefix(CursorAgent.conflictQuestionMarker) {
+                    _ = try? await background { workspace.abortMerge(at: path) }
+                    conflictQuestions[key] = String(report.dropFirst(CursorAgent.conflictQuestionMarker.count))
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    statusMessage = "방향이 다른 코드가 있어 머지를 취소했습니다. 질문에 답하면 다시 시도합니다."
+                    return
+                }
+            }
+            let message = "Merge branch '\(pullRequest.baseBranch)' into \(pullRequest.headBranch)"
+            let sha: String
+            do {
+                sha = try await background { try workspace.commitBaseMerge(at: path, resolvedFiles: merge.conflicted, message: message) }
+            } catch {
+                _ = try? await background { workspace.abortMerge(at: path) }
+                throw error
+            }
+            statusMessage = "머지 커밋을 만들었습니다. PR 브랜치에 푸시하는 중입니다."
+            try await background {
+                try workspace.pushCommittedChanges(at: path, branch: pullRequest.headBranch, expectedRemoteSHA: pullRequest.headSHA, committedSHA: sha, remote: remote)
+            }
+            await refresh()
+            statusMessage = "\(pullRequest.baseBranch) 머지와 충돌 해결을 푸시했습니다. 충돌 상태 반영에는 잠시 걸릴 수 있습니다."
+        } catch {
+            statusMessage = "충돌 해결 실패: \(error.localizedDescription)"
+        }
+    }
+
+    func isResolvingConflicts(_ pullRequest: PullRequest) -> Bool { resolvingConflictIDs.contains(worktreeKey(pullRequest)) }
+    func conflictQuestion(for pullRequest: PullRequest) -> String? { conflictQuestions[worktreeKey(pullRequest)] }
+    func dismissConflictQuestion(for pullRequest: PullRequest) { conflictQuestions[worktreeKey(pullRequest)] = nil }
+
     /// Performs the user-confirmed GitHub merge. `gh --delete-branch` removes
     /// the source branch only when the server-side merge succeeds.
     func mergeApprovedPullRequest(_ pullRequest: PullRequest) async {
@@ -1877,11 +2084,19 @@ final class ReviewStore {
         defer { mergingPullRequestIDs.remove(key) }
         do {
             let repository = try registeredRepository(for: pullRequest)
+            let latest = try await background { try self.github.mergeStatus(repository: pullRequest.repository, number: pullRequest.number) }
+            guard latest.base == pullRequest.expectedMergeBase, latest.approved,
+                  latest.head.hasPrefix(pullRequest.headSHA), latest.mergeability == .mergeable else {
+                await refresh()
+                statusMessage = "머지 상태가 변경되었거나 충돌 여부를 확인할 수 없습니다. 대상 브랜치와 승인·충돌 상태를 다시 확인하세요."
+                return
+            }
             statusMessage = "GitHub에서 Create a merge commit으로 머지하는 중입니다."
             try await background {
                 try self.github.mergePullRequest(
                     repository: pullRequest.repository,
                     number: pullRequest.number,
+                    headSHA: latest.head,
                     workingDirectory: repository.localPath
                 )
             }
@@ -2079,7 +2294,16 @@ final class ReviewStore {
         Task { await self.beginAgentReview(id: request.cardID, pullRequest: request.target) }
     }
 
-    func cancelWorkspaceSwitch() { workspaceSwitchRequest = nil }
+    func cancelWorkspaceSwitch() {
+        guard let request = workspaceSwitchRequest else { return }
+        workspaceSwitchRequest = nil
+        // The card was queued only for this switch; let the user start it again.
+        if let index = agentReviewCards.firstIndex(where: { $0.id == request.cardID }), agentReviewCards[index].status == .queued {
+            agentReviewCards[index].status = .ready
+            agentReviewCards[index].updatedAt = .now
+            persist()
+        }
+    }
 
     func markAgentCardRead(_ id: AgentReviewCard.ID) {
         guard let index = agentReviewCards.firstIndex(where: { $0.id == id }), agentReviewCards[index].isUnread else { return }
@@ -2278,6 +2502,13 @@ final class ReviewStore {
             agentReviewCards[index].updatedAt = .now
             changed = true
         }
+        // Queues and switch requests live only in memory, so a queued card
+        // would otherwise stay disabled forever after a restart.
+        for index in agentReviewCards.indices where agentReviewCards[index].status == .queued {
+            agentReviewCards[index].status = .ready
+            agentReviewCards[index].updatedAt = .now
+            changed = true
+        }
         for key in implementationPlans.keys {
             if let worktree = implementationPlans[key]?.worktreePath {
                 if let path = repositories.first(where: { $0.fullName == implementationPlans[key]?.repository })?.localPath {
@@ -2321,6 +2552,27 @@ final class ReviewStore {
             return "Cursor에서 \(relativePath)\(line.map { ": \($0)번째 줄" } ?? "")을 열었습니다"
         } catch {
             return "Cursor에서 열지 못했습니다: \(error.localizedDescription)"
+        }
+    }
+
+    /// Cards that still need a first agent review. Cards that already have a
+    /// conversation, are running, or are waiting are skipped.
+    func unreviewedCards(in cards: [AgentReviewCard]) -> [AgentReviewCard] {
+        cards.compactMap { agentCard(id: $0.id) }
+            .filter { $0.messages.isEmpty && $0.status != .reviewing && $0.status != .queued }
+    }
+
+    /// Starts the agent review of every unreviewed card in `cards`; reviewed
+    /// cards are skipped.
+    func reviewAll(cards: [AgentReviewCard], pullRequest: PullRequest) {
+        let targets = unreviewedCards(in: cards)
+        guard !targets.isEmpty else {
+            statusMessage = "검토할 카드가 없습니다. 이미 검토했거나 진행 중입니다."
+            return
+        }
+        statusMessage = "카드 \(targets.count)개 전체 검토를 시작합니다. 이미 검토한 카드는 건너뜁니다."
+        for card in targets {
+            Task { await self.beginAgentReview(id: card.id, pullRequest: pullRequest) }
         }
     }
 
@@ -2395,7 +2647,7 @@ final class ReviewStore {
     /// Keeps the prior conversation visible, but starts a fresh read-only
     /// analysis attempt after an unavailable or failed agent response.
     func retryAgentReview(id: AgentReviewCard.ID, pullRequest: PullRequest) async {
-        guard let card = agentCard(id: id), card.status != .reviewing, card.status != .queued else { return }
+        guard let card = agentCard(id: id), card.status != .reviewing else { return }
         statusMessage = "\(card.title) 검토를 다시 시작합니다."
         await beginAgentReview(id: id, pullRequest: pullRequest, allowsRetry: true)
     }
@@ -2942,6 +3194,7 @@ final class ReviewStore {
         var state = PersistedState(repositories: repositories, processedCommentIDs: processedCommentIDs, knownPullRequestIDs: knownPullRequestIDs, unreadPullRequestIDs: unreadPullRequestIDs, unreadCommentIDs: unreadCommentIDs, hasEstablishedNotificationBaseline: hasEstablishedNotificationBaseline, approvedPullRequestIDs: approvedPullRequestIDs, hasEstablishedApprovalBaseline: hasEstablishedApprovalBaseline, monitoringEnabled: monitoringEnabled, monitoringInterval: monitoringInterval, analyses: analyses, agentReviewCards: agentReviewCards, hiddenReviewCommentIDsByPullRequest: hiddenReviewCommentIDsByPullRequest, reviewHistoryRoundsByPullRequest: reviewHistoryRoundsByPullRequest, implementationPlans: implementationPlans, committedHeads: committedHeads, postedReReviewCommentTokens: postedReReviewCommentTokens, agentModel: agentModel, customAgentModel: customAgentModel, reviewAuthorFilter: reviewAuthorFilter, petVisible: petVisible, petSize: petSize, petReduceMotion: petReduceMotion, latestPetNotification: latestPetNotification, hasCompletedOnboarding: hasCompletedOnboarding, skippedOnboardingSteps: skippedOnboardingSteps, projectCopyFolder: projectCopyFolder, updateRepository: updateRepository, updatesEnabled: updatesEnabled, lastNotifiedUpdateTag: lastNotifiedUpdateTag, requestedBranches: requestedBranches, cursorSpecSidebarCache: cursorSpecSidebarCache, automaticCursorSessionClassification: automaticCursorSessionClassification, automaticReviewAnalysis: automaticReviewAnalysis)
         state.appPostedCommentIDs = appPostedCommentIDs
         state.agentProvider = agentProvider
+        state.reviewSkillPaths = reviewSkillPaths
         state.codexModel = codexModel
         state.claudeModel = claudeModel
         state.branchReviewCards = branchReviewCards
@@ -2949,6 +3202,7 @@ final class ReviewStore {
         state.branchImplementationResults = branchImplementationResults
         state.branchImplementationInProgress = branchImplementationInProgress
         state.branchUnitTestResults = branchUnitTestResults
+        state.specUnitTestResults = specUnitTestResults
         persistence.save(state)
     }
     private func background<T: Sendable>(_ work: @escaping @Sendable () throws -> T) async throws -> T { try await Task.detached(priority: .userInitiated, operation: work).value }

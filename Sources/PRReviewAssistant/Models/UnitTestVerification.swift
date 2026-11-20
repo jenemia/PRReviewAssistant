@@ -6,7 +6,8 @@ struct UnitTestVerification: Hashable, Codable, Sendable {
     enum Outcome: String, Codable, Sendable { case passed, notApplicable, failed }
 
     struct FileResult: Hashable, Codable, Sendable, Identifiable {
-        enum Status: String, Codable, Sendable { case passed, failed, skipped }
+        /// `specMismatch`: spec mode only, validation kept failing where the spec disagrees with the implementation.
+        enum Status: String, Codable, Sendable { case passed, failed, skipped, specMismatch }
         var sourcePath: String
         var testPath: String?
         var status: Status
@@ -51,6 +52,8 @@ struct UnitTestProposal: Decodable, Sendable {
     let businessRules: [BusinessRule]?
     /// `replica` when the source cannot compile and the test carries a copy of its rules.
     let verification: String?
+    /// Spec mode: where the spec's expected values disagree with the implementation, if anywhere.
+    let specMismatch: String?
 
     struct BusinessRule: Decodable, Hashable, Sendable {
         let id: String
@@ -73,7 +76,7 @@ struct UnitTestProposal: Decodable, Sendable {
         }
     }
 
-    init(status: String, reason: String = "", files: [File] = [], dependencies: [String]? = nil, deletions: [String]? = nil, businessRules: [BusinessRule]? = nil, verification: String? = nil) {
+    init(status: String, reason: String = "", files: [File] = [], dependencies: [String]? = nil, deletions: [String]? = nil, businessRules: [BusinessRule]? = nil, verification: String? = nil, specMismatch: String? = nil) {
         self.status = status
         self.reason = reason
         self.files = files
@@ -81,6 +84,7 @@ struct UnitTestProposal: Decodable, Sendable {
         self.deletions = deletions
         self.businessRules = businessRules
         self.verification = verification
+        self.specMismatch = specMismatch
     }
 
     /// Reads the first `{` to the last `}` so code fences or a sentence around the JSON are tolerated.

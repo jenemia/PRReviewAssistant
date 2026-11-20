@@ -230,7 +230,7 @@ struct BranchRequestDetailView: View {
 
                 GroupBox("리뷰하기") {
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("`.cursor`와 저장소 하위의 `SKILL.md`/`AGENTS.md`에서 code review 지침을 찾아, 이 브랜치를 읽기 전용으로 검토합니다.")
+                        Text("선택한 AI와 리뷰 스킬 설정으로 이 브랜치의 고정 커밋을 읽기 전용으로 검토합니다.")
                             .font(.caption).foregroundStyle(.secondary)
                         HStack {
                             Button(store.isReviewingBranch ? "리뷰 중…" : "리뷰 시작", systemImage: "sparkles") {
@@ -292,29 +292,7 @@ struct BranchRequestDetailView: View {
                             Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled)
                         }
                         if let result = unitTestResult, !result.files.isEmpty {
-                            VStack(alignment: .leading, spacing: 6) {
-                                ForEach(result.files) { file in
-                                    DisclosureGroup {
-                                        if let rules = file.rules, !rules.isEmpty {
-                                            VStack(alignment: .leading, spacing: 2) {
-                                                Text("추출한 비즈니스 규칙").font(.caption.bold())
-                                                ForEach(rules, id: \.self) { Text($0).font(.caption) }
-                                            }
-                                            .textSelection(.enabled)
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                        }
-                                        Text(file.detail).font(.caption.monospaced()).textSelection(.enabled)
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                    } label: {
-                                        HStack(spacing: 6) {
-                                            Image(systemName: file.status == .passed ? "checkmark.circle.fill" : (file.status == .failed ? "xmark.octagon.fill" : "minus.circle"))
-                                                .foregroundStyle(file.status == .passed ? .green : (file.status == .failed ? .red : .secondary))
-                                            Text(file.sourcePath).font(.caption).lineLimit(1).truncationMode(.middle)
-                                            if let test = file.testPath { Text("→ \(test)").font(.caption2).foregroundStyle(.secondary).lineLimit(1) }
-                                        }
-                                    }
-                                }
-                            }
+                            UnitTestFileResultsView(files: result.files)
                         }
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(4)
                 }
@@ -423,6 +401,55 @@ struct UnitTestBranchPickerSheet: View {
             async let locals = store.localUnitTestBranches()
             await store.loadRepositoryBranches()
             localBranches = await locals
+        }
+    }
+}
+
+/// Per-file UnitTest results with the extracted business rules; shared by branch and spec modes.
+struct UnitTestFileResultsView: View {
+    let files: [UnitTestVerification.FileResult]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(files) { file in
+                DisclosureGroup {
+                    if let rules = file.rules, !rules.isEmpty {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("추출한 비즈니스 규칙").font(.caption.bold())
+                            ForEach(rules, id: \.self) { Text($0).font(.caption) }
+                        }
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    Text(file.detail).font(.caption.monospaced()).textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: symbol(file.status)).foregroundStyle(tint(file.status))
+                        Text(file.sourcePath).font(.caption).lineLimit(1).truncationMode(.middle)
+                        if file.status == .specMismatch { Text("spec과 구현 불일치").font(.caption2.weight(.semibold)).foregroundStyle(.orange) }
+                        if let test = file.testPath { Text("→ \(test)").font(.caption2).foregroundStyle(.secondary).lineLimit(1) }
+                    }
+                }
+            }
+        }
+    }
+
+    private func symbol(_ status: UnitTestVerification.FileResult.Status) -> String {
+        switch status {
+        case .passed: "checkmark.circle.fill"
+        case .failed: "xmark.octagon.fill"
+        case .specMismatch: "exclamationmark.triangle.fill"
+        case .skipped: "minus.circle"
+        }
+    }
+
+    private func tint(_ status: UnitTestVerification.FileResult.Status) -> Color {
+        switch status {
+        case .passed: .green
+        case .failed: .red
+        case .specMismatch: .orange
+        case .skipped: .secondary
         }
     }
 }

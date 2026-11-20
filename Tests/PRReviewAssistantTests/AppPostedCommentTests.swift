@@ -12,6 +12,19 @@ struct AppPostedCommentTests {
         ReviewComment(id: id, author: "someone", body: "본문 \(id)", path: nil, line: nil, createdAt: .now, kind: .general, reviewState: nil, parentID: nil)
     }
 
+    @Test("sprint PR의 머지 대상이 부모 sprint main인지 확인한다")
+    func expectedMergeBase() {
+        var pr = pullRequest()
+        pr.headBranch = "sprint/s29/feature/example"
+        pr.baseBranch = "sprint/s29/main"
+        #expect(pr.expectedMergeBase == "sprint/s29/main")
+        #expect(pr.hasExpectedMergeBase)
+        pr.baseBranch = "main"
+        #expect(!pr.hasExpectedMergeBase)
+        pr.headBranch = "feature/example"
+        #expect(pr.hasExpectedMergeBase)
+    }
+
     @Test("앱이 올린 코멘트는 검토 카드를 만들지 않고 저장 후에도 유지한다")
     @MainActor
     func skipsCommentsPostedByApp() throws {

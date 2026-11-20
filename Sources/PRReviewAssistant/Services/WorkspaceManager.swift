@@ -361,6 +361,49 @@ struct WorkspaceManager: Sendable {
         return commit
     }
 
+    /// Starts merging the PR's base branch into the checked-out PR branch without
+    /// committing. Returns the conflicted files (empty when the merge was clean
+    /// or already up to date). The checkout must have no uncommitted edits.
+    func beginBaseMerge(at path: String, baseBranch: String, remote: String = "origin") throws -> (conflicted: [String], inProgress: Bool) {
+        let status = try runner.run("git", arguments: ["status", "--porcelain=v1"], workingDirectory: path).output
+        guard status.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw CommandError.failed(.init(output: "", error: "작업 폴더에 커밋되지 않은 변경이 있습니다. 커밋하거나 정리한 뒤 다시 시도하세요.", status: 1))
+        }
+        _ = try runner.run("git", arguments: ["fetch", remote, "refs/heads/\(baseBranch):refs/remotes/\(remote)/\(baseBranch)"], workingDirectory: path)
+        _ = try? runner.run("git", arguments: ["merge", "--no-commit", "--no-ff", "\(remote)/\(baseBranch)"], workingDirectory: path)
+        let inProgress = (try? runner.run("git", arguments: ["rev-parse", "-q", "--verify", "MERGE_HEAD"], workingDirectory: path)) != nil
+        return (try unmergedFiles(at: path), inProgress)
+    }
+
+    func unmergedFiles(at path: String) throws -> [String] {
+        try runner.run("git", arguments: ["diff", "--name-only", "--diff-filter=U"], workingDirectory: path).output
+            .split(separator: "\n").map(String.init)
+    }
+
+    func abortMerge(at path: String) {
+        _ = try? runner.run("git", arguments: ["merge", "--abort"], workingDirectory: path)
+    }
+
+    /// Commits the in-progress base merge after confirming that no file is still
+    /// unmerged and that no resolved file keeps conflict markers.
+    func commitBaseMerge(at path: String, resolvedFiles: [String], message: String) throws -> String {
+        _ = try runner.run("git", arguments: ["add", "-u"], workingDirectory: path)
+        guard try unmergedFiles(at: path).isEmpty else {
+            throw CommandError.failed(.init(output: "", error: "아직 해결되지 않은 충돌 파일이 있습니다.", status: 1))
+        }
+        for file in resolvedFiles {
+            guard let text = try? String(contentsOfFile: "\(path)/\(file)", encoding: .utf8) else { continue }
+            let hasMarker = text.split(separator: "\n", omittingEmptySubsequences: false)
+                .contains { $0.hasPrefix("<<<<<<< ") || $0.hasPrefix(">>>>>>> ") }
+            guard !hasMarker else {
+                throw CommandError.failed(.init(output: "", error: "\(file)에 충돌 표시(<<<<<<<)가 남아 있습니다.", status: 1))
+            }
+        }
+        _ = try runner.run("git", arguments: ["commit", "-m", message], workingDirectory: path)
+        return try runner.run("git", arguments: ["rev-parse", "HEAD"], workingDirectory: path)
+            .output.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     func pushCommittedChanges(at path: String, branch: String, expectedRemoteSHA: String, committedSHA: String, remote: String = "origin") throws {
         _ = expectedRemoteSHA
         let localSHA = try runner.run("git", arguments: ["rev-parse", "HEAD"], workingDirectory: path)

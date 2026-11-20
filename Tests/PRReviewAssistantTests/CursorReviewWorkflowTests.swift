@@ -106,6 +106,45 @@ struct CursorReviewWorkflowTests {
         }
     }
 
+    @Test("PR 요청 리뷰는 선택한 스킬과 고정 비교 범위를 전달한다")
+    func branchSkillUsesPinnedRange() async throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try "skill".write(to: file, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let commands = Commands()
+        let workflow = CursorReviewWorkflow(runCommand: commands.run)
+        let output = try await workflow.runBranchSkill(directory: "/repo", headReference: "feature", expectedSHA: "head-sha", baseReference: "main", skillPath: file.path, outputInstructions: "branch-format", trustWorkspace: true, model: "chosen-model")
+        #expect(output == "evidence-from-summary")
+        let calls = commands.calls.filter { $0.first == "cursor" }
+        #expect(calls.count == 1)
+        let prompt = try #require(calls.first?.last)
+        #expect(prompt.contains(file.path))
+        #expect(prompt.contains("HEAD: feature @ head-sha"))
+        #expect(prompt.contains("MERGE_BASE: merge-sha"))
+        #expect(prompt.contains("현재 작업 트리는 리뷰 대상이 아니다"))
+        #expect(prompt.contains("branch-format"))
+    }
+
+    @Test("스킬을 선택하지 않으면 스킬 지시를 추가하지 않는다")
+    func branchWithoutSkill() async throws {
+        let commands = Commands()
+        let workflow = CursorReviewWorkflow(runCommand: commands.run)
+        _ = try await workflow.runBranchSkill(directory: "/repo", headReference: "feature", expectedSHA: "head-sha", baseReference: "main", outputInstructions: "format", trustWorkspace: false, model: "")
+        let prompt = try #require(commands.calls.first { $0.first == "cursor" }?.last)
+        #expect(!prompt.contains("스킬"))
+        #expect(!prompt.contains("branch-review"))
+    }
+
+    @Test("선택한 스킬 파일이 없으면 리뷰를 시작하지 않는다")
+    func missingBranchSkill() async throws {
+        let commands = Commands()
+        let workflow = CursorReviewWorkflow(runCommand: commands.run)
+        await #expect(throws: (any Error).self) {
+            try await workflow.runBranchSkill(directory: "/repo", headReference: "feature", expectedSHA: "head-sha", baseReference: "main", skillPath: "/missing/skill.md", outputInstructions: "format", trustWorkspace: false, model: "")
+        }
+        #expect(!commands.calls.contains { $0.first == "cursor" })
+    }
+
     private func reviewSection(_ workflow: CursorReviewWorkflow, _ section: String, shared: String) async throws -> String {
         try await workflow.run(preset: .comments, directory: "/repo", headReference: "HEAD", expectedSHA: "head-sha", context: section, researchContext: shared, outputInstructions: "format", trustWorkspace: false, model: "m")
     }

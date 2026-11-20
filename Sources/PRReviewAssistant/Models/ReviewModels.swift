@@ -148,6 +148,12 @@ enum UpdateCheckSchedule {
     }
 }
 
+enum Mergeability: String, Codable, Hashable {
+    case mergeable = "MERGEABLE"
+    case conflicting = "CONFLICTING"
+    case unknown = "UNKNOWN"
+}
+
 struct PullRequest: Identifiable, Hashable, Codable {
     var id: UUID
     var repository: String
@@ -164,6 +170,13 @@ struct PullRequest: Identifiable, Hashable, Codable {
     var analysisStatus: AnalysisStatus
     var summary: String
     var files: [ChangedFile]
+    var mergeability: Mergeability? = nil
+
+    var expectedMergeBase: String {
+        ReviewStore.sprintParentBranch(of: headBranch) ?? baseBranch
+    }
+
+    var hasExpectedMergeBase: Bool { baseBranch == expectedMergeBase }
 
     static let samples: [PullRequest] = [
         PullRequest(id: UUID(), repository: "supercent/mobile-app", number: 142, title: "로그인 오류 처리 개선", author: "minji", headBranch: "feature/login-error-handling", baseBranch: "main", headSHA: "8f3c12a", reviewer: "alex-kim", commentCount: 3, updatedAt: .now.addingTimeInterval(-600), reviewState: .changesRequested, analysisStatus: .needsChanges, summary: "로그인 실패 시 이전 세션이 남을 수 있다는 리뷰가 도착했습니다.", files: [.init(path: "Sources/Auth/LoginService.swift", additions: 12, deletions: 4), .init(path: "Tests/Auth/LoginServiceTests.swift", additions: 26, deletions: 0)]),
