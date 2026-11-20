@@ -45,7 +45,8 @@ struct SkillSettingsView: View {
                 }
             }
             .padding(.top, 8)
-            .frame(minWidth: 190, idealWidth: 200, maxWidth: 240)
+            .padding(.horizontal, 12)
+            .frame(minWidth: 210, idealWidth: 224, maxWidth: 264)
             .safeAreaInset(edge: .bottom) {
                 Button("기본 UnitTest 스킬 설치", systemImage: "square.and.arrow.down") { installDefaults() }
                     .buttonStyle(.borderless).padding(8)
