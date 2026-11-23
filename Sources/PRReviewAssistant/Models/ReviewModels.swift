@@ -253,7 +253,7 @@ enum BranchReviewCategory: String, CaseIterable, Codable, Hashable {
     }
 }
 
-struct CursorReviewSession: Codable, Hashable, Sendable {
+struct AgentSession: Codable, Hashable, Sendable {
     let id: String
     let directory: String
     let sha: String
@@ -279,7 +279,7 @@ struct BranchReviewCard: Identifiable, Hashable, Codable {
     var details: String
     var reviewedSHA: String = ""
     var isArchivedAggregate: Bool?
-    var cursorSession: CursorReviewSession?
+    var cursorSession: AgentSession?
     var messages: [AgentChatMessage] = []
     var updatedAt = Date()
 }
@@ -670,7 +670,7 @@ struct AgentReviewCard: Identifiable, Codable, Hashable {
     var sectionBody: String?
     var title: String
     var status: AgentReviewStatus = .ready
-    var cursorSession: CursorReviewSession?
+    var cursorSession: AgentSession?
     var messages: [AgentChatMessage] = []
     /// Opening an analysis card, rather than merely opening the PR, acknowledges it.
     var isUnread = false

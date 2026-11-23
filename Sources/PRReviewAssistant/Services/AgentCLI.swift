@@ -24,7 +24,7 @@ enum AgentProvider: String, CaseIterable, Codable, Sendable {
         self == .claude ? ["auth", "login"] : ["login"]
     }
 
-    func connection() -> CursorConnection {
+    func connection() -> AgentConnection {
         let runner = ProcessRunner()
         do {
             _ = try runner.run(rawValue, arguments: ["--version"], timeout: 15)

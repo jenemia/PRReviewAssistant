@@ -3,29 +3,29 @@ import Testing
 @testable import PRReviewAssistant
 
 @Suite("Cursor agent connection")
-struct CursorAgentTests {
+struct ReviewAgentTests {
     @Test("Cursor 스트림은 진행 이벤트와 최종 답변을 구분한다")
     func readsStreamProgressAndFinalResult() throws {
         let progress = #"{"type":"tool_call","subtype":"started"}"#
         let partial = #"{"type":"assistant","message":{"content":[{"text":"partial"}]}}"#
         let final = #"{"type":"result","subtype":"success","is_error":false,"result":" 최종 답변 ","session_id":"chat-1"}"#
-        #expect(CursorAgent.streamProgress(for: Data(progress.utf8))?.contains("자료") == true)
-        let result = try CursorAgent.streamResult(.init(output: [progress, partial, final].joined(separator: "\n"), error: "", status: 0))
+        #expect(ReviewAgent.streamProgress(for: Data(progress.utf8))?.contains("자료") == true)
+        let result = try ReviewAgent.streamResult(.init(output: [progress, partial, final].joined(separator: "\n"), error: "", status: 0))
         #expect(result.text == "최종 답변")
         #expect(result.sessionID == "chat-1")
         #expect(throws: CommandError.self) {
-            _ = try CursorAgent.streamResult(.init(output: partial, error: "workspace trust required", status: 0))
+            _ = try ReviewAgent.streamResult(.init(output: partial, error: "workspace trust required", status: 0))
         }
     }
 
     @Test("퀴즈 응답에서 코드 펜스를 허용하고 JSON 문자열 안의 펜스는 유지한다")
     func parsesFencedQuizResponse() throws {
         let output = "```json\n{\"needsQuiz\":false,\"reason\":\"코드 예제 ```swift\",\"questions\":[]}\n```"
-        let quiz = try CursorAgent.parseBranchQuiz(output)
+        let quiz = try ReviewAgent.parseBranchQuiz(output)
         #expect(!quiz.needsQuiz)
         #expect(quiz.reason == "코드 예제 ```swift")
         #expect(throws: CommandError.self) {
-            try CursorAgent.parseBranchQuiz("{\"needsQuiz\":true,\"reason\":\"\",\"questions\":[]}")
+            try ReviewAgent.parseBranchQuiz("{\"needsQuiz\":true,\"reason\":\"\",\"questions\":[]}")
         }
     }
 
@@ -33,14 +33,14 @@ struct CursorAgentTests {
     func parsesLoggedInAccount() {
         let output = "✓ Logged in as taid@supercent.io\n"
 
-        #expect(CursorAgent.isLoggedIn(output))
-        #expect(CursorAgent.accountName(output) == "taid@supercent.io")
-        #expect(!CursorAgent.requiresLogin(output))
+        #expect(ReviewAgent.isLoggedIn(output))
+        #expect(ReviewAgent.accountName(output) == "taid@supercent.io")
+        #expect(!ReviewAgent.requiresLogin(output))
     }
 
     @Test("인증 만료 문구를 로그인 필요로 분류한다")
     func detectsExpiredLogin() {
-        #expect(CursorAgent.requiresLogin("Authentication required. Please log in."))
+        #expect(ReviewAgent.requiresLogin("Authentication required. Please log in."))
     }
 
     @Test("사용 가능한 모델 행만 센다")
@@ -52,7 +52,7 @@ struct CursorAgentTests {
         gpt-5.3-codex - Codex 5.3
         """
 
-        #expect(CursorAgent.modelCount(output) == 2)
+        #expect(ReviewAgent.modelCount(output) == 2)
     }
     @Test("후속 질문은 최신 판단을 갱신하고 오래된 사용자 제한도 유지한다")
     func followUpUpdatesLatestJudgment() {
@@ -64,7 +64,7 @@ struct CursorAgentTests {
         }
         card.messages.append(.init(role: .agent, body: "최신 판단: 문서만 갱신하고 코드는 보류"))
 
-        let prompt = CursorAgent.followUpPrompt(card: card, question: "전역 리스너 도입은 비허용. 기존 구조 유지")
+        let prompt = ReviewAgent.followUpPrompt(card: card, question: "전역 리스너 도입은 비허용. 기존 구조 유지")
 
         #expect(prompt.contains("최신 판단: 문서만 갱신하고 코드는 보류"))
         #expect(prompt.contains("리뷰반영을 하지 않고 spec문서만 갱신"))
@@ -78,9 +78,9 @@ struct CursorAgentTests {
 
     @Test("판단 전 첫 질문은 판단 형식을 유지한다")
     func firstQuestionKeepsJudgmentFormat() {
-        let prompt = CursorAgent.followUpPrompt(card: reviewCard(), question: "봐줘")
+        let prompt = ReviewAgent.followUpPrompt(card: reviewCard(), question: "봐줘")
         #expect(prompt.contains("## 현재 동작과 이유"))
-        #expect(CursorAgent.resumedFollowUpPrompt(card: reviewCard(), question: "봐줘", sha: "abc", workResult: nil).contains("전체 대응 계획"))
+        #expect(ReviewAgent.resumedFollowUpPrompt(card: reviewCard(), question: "봐줘", sha: "abc", workResult: nil).contains("전체 대응 계획"))
     }
 
     @Test("후속 답변은 판단을 대체하지 않고 다음 질문과 작업 결과 맥락에 포함된다")
@@ -92,11 +92,11 @@ struct CursorAgentTests {
         #expect(card.latestAgentJudgment == "판단: 문서만 수정")
         #expect(card.followUpAnswers == ["후속 답변: 초기화에서 호출"])
 
-        let prompt = CursorAgent.followUpPrompt(card: card, question: "테스트는?", workResult: "작업 결과: 문서 갱신 완료")
+        let prompt = ReviewAgent.followUpPrompt(card: card, question: "테스트는?", workResult: "작업 결과: 문서 갱신 완료")
         #expect(prompt.contains("판단: 문서만 수정"))
         #expect(prompt.contains("후속 답변: 초기화에서 호출"))
         #expect(prompt.contains("작업 결과: 문서 갱신 완료"))
-        let resumed = CursorAgent.resumedFollowUpPrompt(card: card, question: "테스트는?", sha: "abc", workResult: "작업 결과: 문서 갱신 완료")
+        let resumed = ReviewAgent.resumedFollowUpPrompt(card: card, question: "테스트는?", sha: "abc", workResult: "작업 결과: 문서 갱신 완료")
         #expect(!resumed.contains("전체 대응 계획"))
         #expect(resumed.contains("작업 결과: 문서 갱신 완료"))
 
@@ -110,7 +110,7 @@ struct CursorAgentTests {
         var card = reviewCard()
         card.messages = [.init(role: .agent, body: "에이전트 응답을 가져오지 못했습니다.", isFailure: true)]
 
-        let prompt = CursorAgent.followUpPrompt(card: card, question: "다시 봐줘")
+        let prompt = ReviewAgent.followUpPrompt(card: card, question: "다시 봐줘")
 
         #expect(!prompt.contains("에이전트 응답을 가져오지 못했습니다."))
         #expect(prompt.contains(card.sectionBody ?? card.commentBody))
@@ -122,7 +122,7 @@ struct CursorAgentTests {
         var card = reviewCard()
         card.messages = [.init(role: .agent, body: "정상 판단"),
                          .init(role: .agent, body: "실패 안내", isFailure: true)]
-        let prompt = CursorAgent.followUpPrompt(card: card, question: "다시 봐줘")
+        let prompt = ReviewAgent.followUpPrompt(card: card, question: "다시 봐줘")
         #expect(prompt.contains("정상 판단"))
         #expect(!prompt.contains("실패 안내"))
     }
@@ -131,7 +131,7 @@ struct CursorAgentTests {
     func followUpDoesNotRepeatCurrentRequest() {
         var card = reviewCard()
         card.messages = [.init(role: .user, body: "이전 요청"), .init(role: .user, body: "현재 요청")]
-        let prompt = CursorAgent.followUpPrompt(card: card, question: "현재 요청")
+        let prompt = ReviewAgent.followUpPrompt(card: card, question: "현재 요청")
         #expect(prompt.contains("이전 요청"))
         #expect(prompt.components(separatedBy: "현재 요청\n").count == 2 || prompt.components(separatedBy: "\n현재 요청").count == 2)
     }
@@ -146,13 +146,13 @@ struct CursorAgentTests {
 
     @Test("빈 응답은 완료로 처리하지 않고 stderr 안내를 보존한다")
     func emptyTextResponseIsNotSuccess() throws {
-        let ok = try CursorAgent.validatedTextResult(.init(output: "답변", error: "warning", status: 0))
+        let ok = try ReviewAgent.validatedTextResult(.init(output: "답변", error: "warning", status: 0))
         #expect(ok.output == "답변")
         #expect(throws: CommandError.self) {
-            _ = try CursorAgent.validatedTextResult(.init(output: " \n", error: "", status: 0))
+            _ = try ReviewAgent.validatedTextResult(.init(output: " \n", error: "", status: 0))
         }
         do {
-            _ = try CursorAgent.validatedTextResult(.init(output: "", error: "Workspace Trust Required", status: 0))
+            _ = try ReviewAgent.validatedTextResult(.init(output: "", error: "Workspace Trust Required", status: 0))
             Issue.record("오류가 발생해야 합니다")
         } catch {
             #expect(error.localizedDescription == "Workspace Trust Required")
@@ -178,7 +178,7 @@ struct CursorAgentTests {
             reviewState: .commented, analysisStatus: .needsAnalysis, summary: "", files: []
         )
 
-        let prompt = CursorAgent.implementationPrompt(pullRequest: pullRequest, plan: plan)
+        let prompt = ReviewAgent.implementationPrompt(pullRequest: pullRequest, plan: plan)
 
         #expect(prompt.contains("리뷰반영을 하지 않고 spec문서만 갱신"))
         #expect(prompt.contains("최신 판단: spec 문서만 갱신"))
@@ -208,19 +208,19 @@ struct CursorAgentTests {
         별도 커밋 템플릿은 가져오지 않는다
         """.write(to: path, atomically: true, encoding: .utf8)
 
-        let loaded = CursorAgent.responseStyleGuidance(cursorDirectory: directory)
+        let loaded = ReviewAgent.responseStyleGuidance(cursorDirectory: directory)
         #expect(loaded.contains("역할과 목적을 쉬운 한국어로 설명한다"))
         #expect(!loaded.contains("작업 규칙은 가져오지 않는다"))
         #expect(!loaded.contains("별도 커밋 템플릿은 가져오지 않는다"))
         try FileManager.default.removeItem(at: path)
-        let fallback = CursorAgent.responseStyleGuidance(cursorDirectory: directory)
+        let fallback = ReviewAgent.responseStyleGuidance(cursorDirectory: directory)
         #expect(fallback.contains("결론을 먼저 말하고"))
         #expect(fallback.contains("코드 원문과 코드 블록은 기본적으로 표시하지 마라"))
     }
 
     @Test("재리뷰 추천 프롬프트는 코멘트별 커밋 종합과 근거 없는 완료 제외를 요구한다")
     func reReviewPromptUsesCommitEvidence() {
-        let prompt = CursorAgent.reReviewMessagePrompt(pullRequest: PullRequest.samples[0], workSummary: "실제 커밋 메시지")
+        let prompt = ReviewAgent.reReviewMessagePrompt(pullRequest: PullRequest.samples[0], workSummary: "실제 커밋 메시지")
         #expect(prompt.contains("실제 커밋 메시지"))
         #expect(prompt.contains("같은 코멘트의 여러 커밋은 시간순으로 종합"))
         #expect(prompt.contains("미커밋 작업은 처리 완료의 근거로 사용하지 않는다"))

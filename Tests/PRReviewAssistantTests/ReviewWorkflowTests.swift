@@ -3,7 +3,7 @@ import Testing
 @testable import PRReviewAssistant
 
 @Suite("Role-based review workflow")
-struct CursorReviewWorkflowTests {
+struct ReviewWorkflowTests {
     private final class Commands: @unchecked Sendable {
         private let lock = NSLock()
         private var recorded: [[String]] = []
@@ -75,7 +75,7 @@ struct CursorReviewWorkflowTests {
         let directory = try rolesDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let commands = Commands()
-        let workflow = CursorReviewWorkflow(agentsDirectory: directory, runCommand: commands.run)
+        let workflow = ReviewWorkflow(agentsDirectory: directory, runCommand: commands.run)
         let output = try await workflow.run(preset: .branch, directory: "/repo", headReference: "feature", expectedSHA: "head-sha", baseReference: "main", context: "branch", outputInstructions: "branch-format", trustWorkspace: true, model: "chosen-model")
         #expect(output == "evidence-from-summary")
         let calls = commands.calls.filter { $0.first == "cursor" }
@@ -112,7 +112,7 @@ struct CursorReviewWorkflowTests {
         try "skill".write(to: file, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: file) }
         let commands = Commands()
-        let workflow = CursorReviewWorkflow(runCommand: commands.run)
+        let workflow = ReviewWorkflow(runCommand: commands.run)
         let output = try await workflow.runBranchSkill(directory: "/repo", headReference: "feature", expectedSHA: "head-sha", baseReference: "main", skillPath: file.path, outputInstructions: "branch-format", trustWorkspace: true, model: "chosen-model")
         #expect(output == "evidence-from-summary")
         let calls = commands.calls.filter { $0.first == "cursor" }
@@ -128,7 +128,7 @@ struct CursorReviewWorkflowTests {
     @Test("스킬을 선택하지 않으면 스킬 지시를 추가하지 않는다")
     func branchWithoutSkill() async throws {
         let commands = Commands()
-        let workflow = CursorReviewWorkflow(runCommand: commands.run)
+        let workflow = ReviewWorkflow(runCommand: commands.run)
         _ = try await workflow.runBranchSkill(directory: "/repo", headReference: "feature", expectedSHA: "head-sha", baseReference: "main", outputInstructions: "format", trustWorkspace: false, model: "")
         let prompt = try #require(commands.calls.first { $0.first == "cursor" }?.last)
         #expect(!prompt.contains("스킬"))
@@ -138,14 +138,14 @@ struct CursorReviewWorkflowTests {
     @Test("선택한 스킬 파일이 없으면 리뷰를 시작하지 않는다")
     func missingBranchSkill() async throws {
         let commands = Commands()
-        let workflow = CursorReviewWorkflow(runCommand: commands.run)
+        let workflow = ReviewWorkflow(runCommand: commands.run)
         await #expect(throws: (any Error).self) {
             try await workflow.runBranchSkill(directory: "/repo", headReference: "feature", expectedSHA: "head-sha", baseReference: "main", skillPath: "/missing/skill.md", outputInstructions: "format", trustWorkspace: false, model: "")
         }
         #expect(!commands.calls.contains { $0.first == "cursor" })
     }
 
-    private func reviewSection(_ workflow: CursorReviewWorkflow, _ section: String, shared: String) async throws -> String {
+    private func reviewSection(_ workflow: ReviewWorkflow, _ section: String, shared: String) async throws -> String {
         try await workflow.run(preset: .comments, directory: "/repo", headReference: "HEAD", expectedSHA: "head-sha", context: section, researchContext: shared, outputInstructions: "format", trustWorkspace: false, model: "m")
     }
 
@@ -154,7 +154,7 @@ struct CursorReviewWorkflowTests {
         let directory = try rolesDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let commands = Commands()
-        let workflow = CursorReviewWorkflow(limiter: AgentCallLimiter(limit: 4), researchCache: ReviewResearchCache(), agentsDirectory: directory, runCommand: commands.run)
+        let workflow = ReviewWorkflow(limiter: AgentCallLimiter(limit: 4), researchCache: ReviewResearchCache(), agentsDirectory: directory, runCommand: commands.run)
 
         async let first = reviewSection(workflow, "SECTION-A", shared: "ALL-SECTIONS")
         async let second = reviewSection(workflow, "SECTION-B", shared: "ALL-SECTIONS")
@@ -174,7 +174,7 @@ struct CursorReviewWorkflowTests {
         let directory = try rolesDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let commands = Commands()
-        let workflow = CursorReviewWorkflow(limiter: AgentCallLimiter(limit: 4), researchCache: ReviewResearchCache(), agentsDirectory: directory, runCommand: commands.run)
+        let workflow = ReviewWorkflow(limiter: AgentCallLimiter(limit: 4), researchCache: ReviewResearchCache(), agentsDirectory: directory, runCommand: commands.run)
 
         commands.failRole = "structure-agent"
         await #expect(throws: (any Error).self) { _ = try await reviewSection(workflow, "SECTION-A", shared: "ALL") }
@@ -198,7 +198,7 @@ struct CursorReviewWorkflowTests {
             func leave() { lock.withLock { running -= 1 } }
         }
         let counter = Counter()
-        let workflow = CursorReviewWorkflow(limiter: AgentCallLimiter(limit: 2), researchCache: ReviewResearchCache(), agentsDirectory: directory) { executable, arguments, path, timeout in
+        let workflow = ReviewWorkflow(limiter: AgentCallLimiter(limit: 2), researchCache: ReviewResearchCache(), agentsDirectory: directory) { executable, arguments, path, timeout in
             guard executable == "cursor" else { return try commands.run(executable, arguments, path, timeout) }
             counter.enter()
             defer { counter.leave() }
@@ -250,7 +250,7 @@ struct CursorReviewWorkflowTests {
         _ = try git(["branch", "-D", "main"])
         let head = try git(["rev-parse", "HEAD"])
         let commands = Commands()
-        let workflow = CursorReviewWorkflow(agentsDirectory: roles) { executable, arguments, directory, timeout in
+        let workflow = ReviewWorkflow(agentsDirectory: roles) { executable, arguments, directory, timeout in
             if executable == "git" { return try runner.run(executable, arguments: arguments, workingDirectory: directory, timeout: timeout) }
             return try commands.run(executable, arguments, directory, timeout)
         }
@@ -267,7 +267,7 @@ struct CursorReviewWorkflowTests {
         let directory = try rolesDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let commands = Commands()
-        let workflow = CursorReviewWorkflow(agentsDirectory: directory, runCommand: commands.run)
+        let workflow = ReviewWorkflow(agentsDirectory: directory, runCommand: commands.run)
         _ = try await workflow.run(preset: .comments, directory: "/repo", headReference: "HEAD", expectedSHA: "head-sha", context: "ID: review-42", outputInstructions: "comment-format", trustWorkspace: false, model: "")
         let calls = commands.calls.filter { $0.first == "cursor" }
         #expect(calls.count == 3)
@@ -286,7 +286,7 @@ struct CursorReviewWorkflowTests {
         let directory = try rolesDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let commands = Commands()
-        let agent = CursorAgent(reviewWorkflow: CursorReviewWorkflow(agentsDirectory: directory, runCommand: commands.run))
+        let agent = ReviewAgent(reviewWorkflow: ReviewWorkflow(agentsDirectory: directory, runCommand: commands.run))
         let card = AgentReviewCard(repository: "example/repo", pullRequestNumber: 1, commentID: "review-42", commentAuthor: "reviewer", commentBody: "전체 원문", sectionTitle: "경쟁조건", sectionBody: "선택한 섹션만 검토", title: "검토 카드")
         let output = try await agent.ask(repositoryPath: "/repo", pullRequest: PullRequest.samples[0], card: card, question: "수용 여부를 확인해줘", trustWorkspace: true, model: "chosen-model", reviewsComment: true)
         #expect(output == "evidence-from-summary")
@@ -308,7 +308,7 @@ struct CursorReviewWorkflowTests {
     func missingRolesUseDefaults() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let commands = Commands()
-        let workflow = CursorReviewWorkflow(agentsDirectory: directory, runCommand: commands.run)
+        let workflow = ReviewWorkflow(agentsDirectory: directory, runCommand: commands.run)
         _ = try await workflow.run(preset: .branch, directory: directory.path, headReference: "feature", expectedSHA: "head-sha", baseReference: "main", context: "", outputInstructions: "", trustWorkspace: false, model: "")
         let calls = commands.calls.filter { $0.first == "cursor" }
         #expect(calls.count == 5)
@@ -322,7 +322,7 @@ struct CursorReviewWorkflowTests {
         let directory = try rolesDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let commands = Commands()
-        let workflow = CursorReviewWorkflow(agentsDirectory: directory, runCommand: commands.run)
+        let workflow = ReviewWorkflow(agentsDirectory: directory, runCommand: commands.run)
 
         func run(context: String) async throws -> String {
             try await workflow.run(preset: .branch, directory: directory.path, headReference: "feature", expectedSHA: "head-sha", baseReference: "main", context: context, outputInstructions: "", trustWorkspace: false, model: "")
@@ -350,7 +350,7 @@ struct CursorReviewWorkflowTests {
         let commands = Commands()
         let siblingStarted = DispatchSemaphore(value: 0)
         let siblingCancelled = DispatchSemaphore(value: 0)
-        let workflow = CursorReviewWorkflow(limiter: AgentCallLimiter(limit: 2), agentsDirectory: directory) { executable, arguments, path, timeout in
+        let workflow = ReviewWorkflow(limiter: AgentCallLimiter(limit: 2), agentsDirectory: directory) { executable, arguments, path, timeout in
             let prompt = arguments.last ?? ""
             if prompt.contains("담당 역할: structure-agent") {
                 siblingStarted.signal()
@@ -383,7 +383,7 @@ struct CursorReviewWorkflowTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let commands = Commands()
         commands.failRole = "structure-agent"
-        let workflow = CursorReviewWorkflow(agentsDirectory: directory, runCommand: commands.run)
+        let workflow = ReviewWorkflow(agentsDirectory: directory, runCommand: commands.run)
         await #expect(throws: (any Error).self) {
             try await workflow.run(preset: .comments, directory: "/repo", headReference: "HEAD", expectedSHA: "head-sha", context: "", outputInstructions: "", trustWorkspace: false, model: "")
         }
@@ -396,7 +396,7 @@ struct CursorReviewWorkflowTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let commands = Commands()
         commands.changesHeadAfterSummary = true
-        let workflow = CursorReviewWorkflow(agentsDirectory: directory, runCommand: commands.run)
+        let workflow = ReviewWorkflow(agentsDirectory: directory, runCommand: commands.run)
         await #expect(throws: (any Error).self) {
             try await workflow.run(preset: .comments, directory: "/repo", headReference: "HEAD", expectedSHA: "head-sha", context: "", outputInstructions: "", trustWorkspace: false, model: "")
         }
@@ -410,14 +410,14 @@ struct CursorReviewWorkflowTests {
         let comments = Commands()
         comments.changesHeadAfterSummary = true
         comments.changedHeadIsDescendant = true
-        let commentWorkflow = CursorReviewWorkflow(agentsDirectory: directory, runCommand: comments.run)
+        let commentWorkflow = ReviewWorkflow(agentsDirectory: directory, runCommand: comments.run)
         let output = try await commentWorkflow.run(preset: .comments, directory: "/repo", headReference: "HEAD", expectedSHA: "head-sha", context: "", outputInstructions: "", trustWorkspace: false, model: "")
         #expect(output == "evidence-from-summary")
 
         let branch = Commands()
         branch.changesHeadAfterSummary = true
         branch.changedHeadIsDescendant = true
-        let branchWorkflow = CursorReviewWorkflow(agentsDirectory: directory, runCommand: branch.run)
+        let branchWorkflow = ReviewWorkflow(agentsDirectory: directory, runCommand: branch.run)
         await #expect(throws: (any Error).self) {
             try await branchWorkflow.run(preset: .branch, directory: "/repo", headReference: "HEAD", expectedSHA: "head-sha", baseReference: "main", context: "", outputInstructions: "", trustWorkspace: false, model: "")
         }
@@ -429,7 +429,7 @@ struct CursorReviewWorkflowTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let commands = Commands()
         commands.emptyRole = "code-reviewer"
-        let workflow = CursorReviewWorkflow(agentsDirectory: directory, runCommand: commands.run)
+        let workflow = ReviewWorkflow(agentsDirectory: directory, runCommand: commands.run)
         await #expect(throws: (any Error).self) {
             try await workflow.run(preset: .comments, directory: "/repo", headReference: "HEAD", expectedSHA: "head-sha", context: "", outputInstructions: "", trustWorkspace: false, model: "")
         }
@@ -445,7 +445,7 @@ struct CursorReviewWorkflowTests {
         let commands = Commands()
         commands.stderrRole = "structure-agent"
         commands.stderrMessage = message
-        let workflow = CursorReviewWorkflow(agentsDirectory: directory, runCommand: commands.run)
+        let workflow = ReviewWorkflow(agentsDirectory: directory, runCommand: commands.run)
         do {
             _ = try await workflow.run(preset: .comments, directory: "/repo", headReference: "HEAD", expectedSHA: "head-sha", context: "", outputInstructions: "", trustWorkspace: false, model: "")
             Issue.record("승인 요청을 완료된 리뷰로 처리했습니다.")
@@ -463,7 +463,7 @@ struct CursorReviewWorkflowTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let commands = Commands()
         commands.stderrRole = "structure-agent"
-        let workflow = CursorReviewWorkflow(agentsDirectory: directory, runCommand: commands.run)
+        let workflow = ReviewWorkflow(agentsDirectory: directory, runCommand: commands.run)
         await #expect(throws: (any Error).self) {
             try await workflow.run(preset: .comments, directory: "/repo", headReference: "HEAD", expectedSHA: "head-sha", context: "", outputInstructions: "", trustWorkspace: false, model: "")
         }
@@ -480,7 +480,7 @@ struct CursorReviewWorkflowTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let commands = Commands()
         commands.warning = "Warning: update available"
-        let workflow = CursorReviewWorkflow(agentsDirectory: directory, runCommand: commands.run)
+        let workflow = ReviewWorkflow(agentsDirectory: directory, runCommand: commands.run)
         let output = try await workflow.run(preset: .comments, directory: "/repo", headReference: "HEAD", expectedSHA: "head-sha", context: "", outputInstructions: "", trustWorkspace: false, model: "")
         #expect(output == "evidence-from-summary")
         #expect(commands.calls.filter { $0.first == "cursor" }.count == 3)
@@ -497,7 +497,7 @@ struct CursorReviewWorkflowTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let commands = Commands()
         commands.responseOverride = response
-        let workflow = CursorReviewWorkflow(agentsDirectory: directory, runCommand: commands.run)
+        let workflow = ReviewWorkflow(agentsDirectory: directory, runCommand: commands.run)
         await #expect(throws: (any Error).self) {
             try await workflow.run(preset: .comments, directory: "/repo", headReference: "HEAD", expectedSHA: "head-sha", context: "", outputInstructions: "", trustWorkspace: true, model: "")
         }
@@ -510,7 +510,7 @@ struct CursorReviewWorkflowTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let commands = Commands()
         commands.responseOverride = #"{"type":"result","subtype":"success","is_error":false,"result":"","session_id":"session-for-diagnostics"}"#
-        let workflow = CursorReviewWorkflow(agentsDirectory: directory, runCommand: commands.run)
+        let workflow = ReviewWorkflow(agentsDirectory: directory, runCommand: commands.run)
         do {
             _ = try await workflow.run(preset: .comments, directory: "/repo", headReference: "HEAD", expectedSHA: "head-sha", context: "", outputInstructions: "", trustWorkspace: true, model: "")
             Issue.record("최종 보고서 없이 성공 처리했습니다.")
@@ -541,7 +541,7 @@ struct CursorReviewWorkflowTests {
         let marker = repository.appendingPathComponent("uncommitted.txt")
         try "keep working tree".write(to: marker, atomically: true, encoding: .utf8)
         let commands = Commands()
-        let workflow = CursorReviewWorkflow(agentsDirectory: directory) { executable, arguments, path, timeout in
+        let workflow = ReviewWorkflow(agentsDirectory: directory) { executable, arguments, path, timeout in
             if executable == "git" {
                 return try runner.run(executable, arguments: arguments, workingDirectory: path, timeout: timeout)
             }

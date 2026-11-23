@@ -91,7 +91,7 @@ struct UnitTestVerifierTests {
             "result": String(decoding: json, as: UTF8.self)
         ])
         let stream = #"{"type":"assistant","message":{"content":[{"text":"생성 중"}]}}"# + "\n" + String(decoding: event, as: UTF8.self)
-        let final = try CursorAgent.streamResult(.init(output: stream, error: "", status: 0))
+        let final = try ReviewAgent.streamResult(.init(output: stream, error: "", status: 0))
         let proposal = try UnitTestProposal.parse(final.text)
         #expect(proposal.files.first?.content == content)
     }
@@ -110,7 +110,7 @@ struct UnitTestVerifierTests {
     @Test("프롬프트에 규칙·소스·이전 오류를 담는다")
     func buildsPrompt() {
         let target = UnitTestVerifier.Target(sourcePath: "Assets/Price.cs", source: "class Price {}", diff: "", suggestedTestPath: "Tests/PriceTests.cs", stylePath: nil, styleSample: nil)
-        let prompt = CursorAgent.unitTestPrompt(for: .init(target: target, previousError: "error CS1002"))
+        let prompt = ReviewAgent.unitTestPrompt(for: .init(target: target, previousError: "error CS1002"))
         #expect(prompt.contains("NUnit 3"))
         #expect(prompt.contains("class Price {}"))
         #expect(prompt.contains("error CS1002"))
@@ -119,12 +119,12 @@ struct UnitTestVerifierTests {
         #expect(!prompt.contains("Unity 프로젝트다"))
         var unityTarget = target
         unityTarget.isUnityProject = true
-        #expect(CursorAgent.unitTestPrompt(for: .init(target: unityTarget, previousError: nil)).contains("Unity 프로젝트다"))
+        #expect(ReviewAgent.unitTestPrompt(for: .init(target: unityTarget, previousError: nil)).contains("Unity 프로젝트다"))
     }
 
     @Test("선별 프롬프트에 파일별 이 브랜치 커밋과 결정 로직 기준을 담는다")
     func buildsSelectionPrompt() {
-        let prompt = CursorAgent.unitTestSelectionPrompt(comparisonBase: "refs/remotes/origin/sprint/s29/main", changes: [
+        let prompt = ReviewAgent.unitTestSelectionPrompt(comparisonBase: "refs/remotes/origin/sprint/s29/main", changes: [
             .init(sourcePath: "Assets/Shop/Price.cs", diff: "+ return p * 2;", commits: ["가격 2배 이벤트"])
         ])
         #expect(prompt.contains("이 브랜치 커밋: 가격 2배 이벤트"))
@@ -732,17 +732,17 @@ extension UnitTestVerifierTests {
     @Test("spec 모드 선별·생성 프롬프트에 지정 spec과 규칙을 담고 diff는 넣지 않는다")
     func buildsSpecPrompts() {
         let spec = UnitTestVerifier.SpecDocument(path: ".specs/spec_shop/spec.md", text: "VIP는 10% 할인", truncated: false)
-        let selection = CursorAgent.specUnitTestSelectionPrompt(spec: spec, referencedSources: ["Assets/Shop.cs"])
+        let selection = ReviewAgent.specUnitTestSelectionPrompt(spec: spec, referencedSources: ["Assets/Shop.cs"])
         #expect(selection.contains(".specs/spec_shop/spec.md") && selection.contains("`Assets/Shop.cs`") && selection.contains("VIP는 10% 할인"))
 
         var target = UnitTestVerifier.Target(sourcePath: "Assets/Shop.cs", source: "class Shop {}", diff: "", suggestedTestPath: "Tests/ShopTests.cs", stylePath: nil, styleSample: nil, behavior: "Shop.Price: VIP → 900")
         target.spec = spec
-        let prompt = CursorAgent.unitTestPrompt(for: .init(target: target, previousError: nil))
+        let prompt = ReviewAgent.unitTestPrompt(for: .init(target: target, previousError: nil))
         #expect(prompt.contains("선별된 spec 규칙: Shop.Price: VIP → 900"))
         #expect(prompt.contains("VIP는 10% 할인") && prompt.contains("specMismatch") && prompt.contains("기대값의 1순위 근거"))
         #expect(!prompt.contains("이번 브랜치의 변경 diff"))
         target.spec = nil
-        let branchPrompt = CursorAgent.unitTestPrompt(for: .init(target: target, previousError: nil))
+        let branchPrompt = ReviewAgent.unitTestPrompt(for: .init(target: target, previousError: nil))
         #expect(branchPrompt.contains("이번 브랜치의 변경 diff") && !branchPrompt.contains("specMismatch"))
     }
 

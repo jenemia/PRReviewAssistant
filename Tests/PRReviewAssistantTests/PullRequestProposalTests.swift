@@ -12,7 +12,7 @@ struct PullRequestProposalTests {
         ```
         """
 
-        let proposal = try CursorAgent.parsePullRequestProposal(output)
+        let proposal = try ReviewAgent.parsePullRequestProposal(output)
 
         #expect(proposal.skillName == "xp-pr-create")
         #expect(proposal.base == "sprint/s26/main")
@@ -26,7 +26,7 @@ struct PullRequestProposalTests {
     @Test("JSON이 없는 Agent 응답은 거부한다")
     func rejectsNonJSONProposal() {
         #expect(throws: (any Error).self) {
-            try CursorAgent.parsePullRequestProposal("base는 sprint/s26/main입니다.")
+            try ReviewAgent.parsePullRequestProposal("base는 sprint/s26/main입니다.")
         }
     }
 
@@ -38,7 +38,7 @@ struct PullRequestProposalTests {
             updatedAt: nil, isCurrent: false, isRemote: true
         )
 
-        let prompt = CursorAgent.pullRequestProposalPrompt(
+        let prompt = ReviewAgent.pullRequestProposalPrompt(
             repositoryPath: "/tmp/repo", branch: branch, defaultBranch: "main",
             comparisonBase: "refs/remotes/origin/sprint/s26/main", gitContext: "abc1234 Mask 수정"
         )

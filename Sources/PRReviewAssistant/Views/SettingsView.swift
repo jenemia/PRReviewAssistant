@@ -273,7 +273,7 @@ private struct AgentSettingsView: View {
 private struct ExternalAgentSettings: View {
     @Bindable var store: ReviewStore
     let provider: AgentProvider
-    @State private var connection = CursorConnection(state: .unknown, detail: "CLI 연결 확인 중")
+    @State private var connection = AgentConnection(state: .unknown, detail: "CLI 연결 확인 중")
     @State private var checking = false
 
     var body: some View {
@@ -358,7 +358,7 @@ private struct TeamRulesSettingsView: View {
                     Button("기본 폴더로") { store.reviewRolesDirectory = "" }
                         .disabled(store.reviewRolesDirectory.isEmpty)
                 }
-                ForEach(CursorReviewWorkflow.defaultRoleGuidance.keys.sorted(), id: \.self) { role in
+                ForEach(ReviewWorkflow.defaultRoleGuidance.keys.sorted(), id: \.self) { role in
                     let file = store.reviewRolesDirectoryURL.appendingPathComponent("\(role).md")
                     let hasFile = !((try? String(contentsOf: file, encoding: .utf8)) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     LabeledContent(role) {

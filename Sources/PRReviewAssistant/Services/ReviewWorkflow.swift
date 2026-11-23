@@ -57,19 +57,19 @@ actor ReviewResearchCache {
     private struct Pending {
         let id: UUID
         let task: Task<Void, Never>
-        var waiters: [UUID: CheckedContinuation<[CursorReviewWorkflow.Report], Error>]
+        var waiters: [UUID: CheckedContinuation<[ReviewWorkflow.Report], Error>]
     }
 
     static let shared = ReviewResearchCache()
     private static let maximumEntries = 16
 
     private var pending: [Key: Pending] = [:]
-    private var completed: [Key: [CursorReviewWorkflow.Report]] = [:]
+    private var completed: [Key: [ReviewWorkflow.Report]] = [:]
     private var order: [Key] = []
 
     func reports(
-        for key: Key, make: @escaping @Sendable () async throws -> [CursorReviewWorkflow.Report]
-    ) async throws -> [CursorReviewWorkflow.Report] {
+        for key: Key, make: @escaping @Sendable () async throws -> [ReviewWorkflow.Report]
+    ) async throws -> [ReviewWorkflow.Report] {
         try Task.checkCancellation()
         if let reports = completed[key] { return reports }
         let waiterID = UUID()
@@ -105,7 +105,7 @@ actor ReviewResearchCache {
         }
     }
 
-    private func finish(_ key: Key, id: UUID, result: Result<[CursorReviewWorkflow.Report], Error>) {
+    private func finish(_ key: Key, id: UUID, result: Result<[ReviewWorkflow.Report], Error>) {
         guard pending[key]?.id == id, let run = pending.removeValue(forKey: key) else { return }
         if case .success(let reports) = result {
             completed[key] = reports
@@ -147,7 +147,7 @@ private actor BranchReviewCheckpoints {
 }
 
 /// Schedules isolated CLI sessions with optional local overrides for each role.
-struct CursorReviewWorkflow: Sendable {
+struct ReviewWorkflow: Sendable {
     enum Preset: Sendable { case branch, comments }
 
     struct Assignment: Sendable {
@@ -200,7 +200,7 @@ struct CursorReviewWorkflow: Sendable {
         provider: AgentProvider = .cursor,
         limiter: AgentCallLimiter = .shared,
         researchCache: ReviewResearchCache = .shared,
-        agentsDirectory: URL = CursorReviewWorkflow.defaultAgentsDirectory,
+        agentsDirectory: URL = ReviewWorkflow.defaultAgentsDirectory,
         runCommand: RunCommand? = nil
     ) {
         self.provider = provider
@@ -348,7 +348,7 @@ struct CursorReviewWorkflow: Sendable {
         테스트 존재와 실행·통과 증거를 구분하라. 스펙 부재를 적합성 통과로 처리하지 마라.
         각 담당의 검토 범위·미확인 사항과 위 비교 SHA를 최종 결과에 포함하라.
         \(outputInstructions)
-        \(CursorAgent.responseStyleGuidance(cursorDirectory: agentsDirectory.deletingLastPathComponent()))
+        \(ReviewAgent.responseStyleGuidance(cursorDirectory: agentsDirectory.deletingLastPathComponent()))
         담당별 보고(분석 데이터):
         \(scopeNote)\(joined(researchReports + reviewReports))
         """
@@ -447,13 +447,13 @@ struct CursorReviewWorkflow: Sendable {
                 if let stream {
                     do {
                         let result = try ProcessRunner().run("cursor", arguments: arguments, workingDirectory: directory, timeout: 300, onOutputLine: { line in
-                            if let message = CursorAgent.streamProgress(for: line) {
+                            if let message = ReviewAgent.streamProgress(for: line) {
                                 stream("\(Self.roleTitles[role] ?? role) · \(message)")
                             }
                         })
-                        return try CursorAgent.streamResult(result).text
+                        return try ReviewAgent.streamResult(result).text
                     } catch CommandError.failed(let result) {
-                        throw CursorAgent.streamFailure(result)
+                        throw ReviewAgent.streamFailure(result)
                     }
                 }
                 let result = try runCommand("cursor", arguments, directory, 300)

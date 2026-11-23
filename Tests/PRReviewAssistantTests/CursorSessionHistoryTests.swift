@@ -23,7 +23,7 @@ struct CursorSessionHistoryTests {
 
     @Test("긴 대화는 요약 입력 한도에 맞춰 분할한다")
     func chunksLongSummaryInput() {
-        let chunks = CursorAgent.summaryChunks(from: "abcdefghij\n\nklmnopqrst\n\nuvwxyz", maximumCharacters: 12)
+        let chunks = ReviewAgent.summaryChunks(from: "abcdefghij\n\nklmnopqrst\n\nuvwxyz", maximumCharacters: 12)
 
         #expect(chunks.count == 3)
         #expect(chunks.allSatisfy { $0.count <= 12 })
@@ -51,10 +51,10 @@ struct CursorSessionHistoryTests {
     func acceptsOnlyCatalogSpecPath() throws {
         let documents = [WorkspaceSpecDocument(name: "로그인", relativePath: ".specs/login/spec.md")]
 
-        #expect(try CursorAgent.parseSpecClassification("{\"specPath\":\".specs/login/spec.md\"}", documents: documents).specName == "로그인")
-        #expect(try CursorAgent.parseSpecClassification("{\"specPath\":\"invented/spec.md\"}", documents: documents).specName == CursorSessionSpec.unclassifiedName)
+        #expect(try ReviewAgent.parseSpecClassification("{\"specPath\":\".specs/login/spec.md\"}", documents: documents).specName == "로그인")
+        #expect(try ReviewAgent.parseSpecClassification("{\"specPath\":\"invented/spec.md\"}", documents: documents).specName == CursorSessionSpec.unclassifiedName)
         #expect(throws: CommandError.self) {
-            try CursorAgent.parseSpecClassification("{}", documents: documents)
+            try ReviewAgent.parseSpecClassification("{}", documents: documents)
         }
     }
 
@@ -85,7 +85,7 @@ struct CursorSessionHistoryTests {
         let session = CursorSession(id: "session-1", title: "로그인 수정", workspacePath: nil, updatedAt: .now, isArchived: false, messages: [
             .init(id: UUID(), role: .user, body: String(repeating: "가", count: 6_000) + "중간 표식" + String(repeating: "나", count: 6_000) + "최신 요청")
         ])
-        let prompt = CursorAgent.specClassificationPrompt(session: session, catalog: "- .specs/login/spec.md")
+        let prompt = ReviewAgent.specClassificationPrompt(session: session, catalog: "- .specs/login/spec.md")
         #expect(prompt.contains("로그인 수정"))
         #expect(prompt.contains("최신 요청"))
         #expect(!prompt.contains("중간 표식"))

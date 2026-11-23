@@ -94,7 +94,7 @@ final class ReviewStore {
     var worktreePaths: [String: String] = [:]
     var diffStats: [String: String] = [:]
     var committedHeads: [String: String] = [:]
-    var cursorConnection = CursorConnection(state: .unknown, detail: "연결 상태를 확인하세요.")
+    var cursorConnection = AgentConnection(state: .unknown, detail: "연결 상태를 확인하세요.")
     var isCheckingCursorConnection = false
     var agentReviewCards: [AgentReviewCard] = []
     private var hiddenReviewCommentIDsByPullRequest: [String: Set<String>] = [:]
@@ -183,14 +183,14 @@ final class ReviewStore {
     private let github = GitHubClient()
     private let workspaces = WorkspaceManager()
     private let localPractice = LocalPracticeRepository()
-    private var selectedAgent: CursorAgent {
-        CursorAgent(provider: agentProvider, reviewWorkflow: CursorReviewWorkflow(provider: agentProvider, agentsDirectory: reviewRolesDirectoryURL))
+    private var selectedAgent: ReviewAgent {
+        ReviewAgent(provider: agentProvider, reviewWorkflow: ReviewWorkflow(provider: agentProvider, agentsDirectory: reviewRolesDirectoryURL))
     }
     var agentProvider: AgentProvider = .cursor { didSet { persist() } }
     /// Folder with `<role>.md` review role files. Empty means `~/.cursor/agents`.
     var reviewRolesDirectory = "" { didSet { persist() } }
     var reviewRolesDirectoryURL: URL {
-        reviewRolesDirectory.isEmpty ? CursorReviewWorkflow.defaultAgentsDirectory : URL(fileURLWithPath: reviewRolesDirectory)
+        reviewRolesDirectory.isEmpty ? ReviewWorkflow.defaultAgentsDirectory : URL(fileURLWithPath: reviewRolesDirectory)
     }
     var reviewSkillPaths: [String: String] = [:] { didSet { persist() } }
     func reviewSkillPath(for provider: AgentProvider) -> String? {
@@ -596,7 +596,7 @@ final class ReviewStore {
         }
     }
 
-    private func updateBranchCursorSession(_ session: CursorReviewSession?, cardID: UUID, branchID: String) {
+    private func updateBranchCursorSession(_ session: AgentSession?, cardID: UUID, branchID: String) {
         guard let index = branchReviewCards[branchID]?.firstIndex(where: { $0.id == cardID }) else { return }
         branchReviewCards[branchID]?[index].cursorSession = session
     }
@@ -1339,7 +1339,7 @@ final class ReviewStore {
     func checkCursorConnection() async {
         guard !isCheckingCursorConnection else { return }
         isCheckingCursorConnection = true
-        let agent = CursorAgent()
+        let agent = ReviewAgent()
         cursorConnection = await Task.detached(priority: .userInitiated) { agent.connection() }.value
         isCheckingCursorConnection = false
     }
@@ -1354,10 +1354,10 @@ final class ReviewStore {
 
     func startCursorLogin() {
         do {
-            try CursorAgent().startLogin()
-            cursorConnection = CursorConnection(state: .needsLogin, detail: "Terminal과 브라우저에서 Cursor 인증을 완료한 뒤 ‘다시 연결하기’를 선택하세요.")
+            try ReviewAgent().startLogin()
+            cursorConnection = AgentConnection(state: .needsLogin, detail: "Terminal과 브라우저에서 Cursor 인증을 완료한 뒤 ‘다시 연결하기’를 선택하세요.")
         } catch {
-            cursorConnection = CursorConnection(state: .unavailable, detail: error.localizedDescription)
+            cursorConnection = AgentConnection(state: .unavailable, detail: error.localizedDescription)
         }
     }
 
@@ -2146,9 +2146,9 @@ final class ReviewStore {
                     _ = try? await background { workspace.abortMerge(at: path) }
                     throw error
                 }
-                if report.hasPrefix(CursorAgent.conflictQuestionMarker) {
+                if report.hasPrefix(ReviewAgent.conflictQuestionMarker) {
                     _ = try? await background { workspace.abortMerge(at: path) }
-                    conflictQuestions[key] = String(report.dropFirst(CursorAgent.conflictQuestionMarker.count))
+                    conflictQuestions[key] = String(report.dropFirst(ReviewAgent.conflictQuestionMarker.count))
                         .trimmingCharacters(in: .whitespacesAndNewlines)
                     statusMessage = "방향이 다른 코드가 있어 머지를 취소했습니다. 질문에 답하면 다시 시도합니다."
                     return
@@ -3027,7 +3027,7 @@ final class ReviewStore {
         }
     }
 
-    private func updateAgentCursorSession(_ session: CursorReviewSession?, cardID: UUID) {
+    private func updateAgentCursorSession(_ session: AgentSession?, cardID: UUID) {
         guard let index = agentReviewCards.firstIndex(where: { $0.id == cardID }) else { return }
         agentReviewCards[index].cursorSession = session
     }

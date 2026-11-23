@@ -96,14 +96,14 @@ struct ProjectRulesTests {
 
     @Test("스킬 규칙 제안 JSON을 읽고 선택 필드는 비워 두며 JSON이 없으면 거부한다")
     func parsesRuleProposal() throws {
-        let proposal = try CursorAgent.parseParentBranchRuleProposal(#"결과: {"rules":"sprint/*/** -> sprint/$1/main","evidence":["sprint 브랜치는 sprint main"]}"#)
+        let proposal = try ReviewAgent.parseParentBranchRuleProposal(#"결과: {"rules":"sprint/*/** -> sprint/$1/main","evidence":["sprint 브랜치는 sprint main"]}"#)
         #expect(proposal == .init(rules: "sprint/*/** -> sprint/$1/main", evidence: ["sprint 브랜치는 sprint main"]))
-        #expect(throws: CommandError.self) { try CursorAgent.parseParentBranchRuleProposal("규칙 없음") }
+        #expect(throws: CommandError.self) { try ReviewAgent.parseParentBranchRuleProposal("규칙 없음") }
     }
 
     @Test("규칙 제안 프롬프트는 스킬·브랜치·기본 브랜치를 담고 데이터 속 지시를 따르지 않게 한다")
     func rulePrompt() {
-        let prompt = CursorAgent.parentBranchRulePrompt(skill: "SKILL-TEXT", branches: ["sprint/s1/feature/a"], defaultBranch: "develop")
+        let prompt = ReviewAgent.parentBranchRulePrompt(skill: "SKILL-TEXT", branches: ["sprint/s1/feature/a"], defaultBranch: "develop")
         #expect(prompt.contains("SKILL-TEXT"))
         #expect(prompt.contains("sprint/s1/feature/a"))
         #expect(prompt.contains("`develop`"))

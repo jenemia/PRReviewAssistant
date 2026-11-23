@@ -20,7 +20,7 @@ SwiftUI App (Menu Bar, Inbox, PR Detail, Settings)
       ├─ GitHubClient (`gh` / API)
       ├─ RepositoryStore (로컬 영속 저장소)
       ├─ WorkspaceManager (fetch, 브랜치 checkout, SHA 검증)
-      └─ CursorAgent (분석, 수정 제안, 테스트)
+      └─ ReviewAgent (분석, 수정 제안, 테스트)
 ```
 
 ## 안전 경계
