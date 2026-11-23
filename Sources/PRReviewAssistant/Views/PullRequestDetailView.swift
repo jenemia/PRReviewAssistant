@@ -1741,9 +1741,14 @@ private struct AgentReviewCardRow: View {
                     .font(.subheadline.weight(.medium))
                     .lineLimit(2)
                 if let workStatus, workStatus != .ready {
-                    Label(workStatus.rawValue, systemImage: workStatus.symbol)
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(workStatus == .failed ? .orange : (workStatus == .completed ? .green : BrandColor.prPurple))
+                    HStack(spacing: 5) {
+                        if workStatus == .inProgress { ProgressView().controlSize(.small) }
+                        Label(workStatus.rawValue, systemImage: workStatus.symbol)
+                            .font(.subheadline.weight(.semibold))
+                    }
+                    .foregroundStyle(accent ?? .secondary)
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background((accent ?? .secondary).opacity(0.18), in: Capsule())
                 }
                 HStack(spacing: 6) {
                     Text(card.status.rawValue)
@@ -1767,6 +1772,23 @@ private struct AgentReviewCardRow: View {
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+        .background((accent ?? .clear).opacity(0.14), in: RoundedRectangle(cornerRadius: 8))
+        .overlay { if let accent { RoundedRectangle(cornerRadius: 8).stroke(accent.opacity(0.6), lineWidth: 1.5) } }
+    }
+
+    /// Card tint by state: work status first, then review status. Nil keeps the plain card.
+    private var accent: Color? {
+        switch workStatus {
+        case .inProgress: return BrandColor.prPurple
+        case .completed: return .green
+        case .failed: return .orange
+        case .ready, nil: break
+        }
+        switch card.status {
+        case .reviewing: return BrandColor.prPurple
+        case .failed, .workspaceTrustRequired, .permissionRequired: return .orange
+        case .ready, .queued, .complete: return nil
+        }
     }
 }
 
