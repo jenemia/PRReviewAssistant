@@ -435,18 +435,17 @@ struct ReviewWorkflow: Sendable {
         try Task.checkCancellation()
         return try await runCancellable {
             let stream = usesProductionRunner ? progress : nil
-            var arguments = ["agent", "--print", "--output-format", stream == nil ? "json" : "stream-json", "--mode", "ask", "--workspace", directory]
-            if trustWorkspace { arguments.append("--trust") }
-            if !model.isEmpty { arguments += ["--model", model] }
-            arguments.append(prompt)
+            let request = AgentRequest(
+                prompt: prompt, model: model, directory: directory, trustWorkspace: trustWorkspace,
+                allowSubagents: allowSubagents, cursorOutput: stream == nil ? .json : .streamJSON
+            )
             do {
                 if provider != .cursor {
-                    return try provider.run(prompt: prompt, model: model, directory: directory, writable: false, timeout: 300, allowSubagents: allowSubagents)
-                        .output.trimmingCharacters(in: .whitespacesAndNewlines)
+                    return try provider.run(request).output.trimmingCharacters(in: .whitespacesAndNewlines)
                 }
                 if let stream {
                     do {
-                        let result = try ProcessRunner().run("cursor", arguments: arguments, workingDirectory: directory, timeout: 300, onOutputLine: { line in
+                        let result = try provider.run(request, onOutputLine: { line in
                             if let message = ReviewAgent.streamProgress(for: line) {
                                 stream("\(Self.roleTitles[role] ?? role) · \(message)")
                             }
@@ -456,7 +455,7 @@ struct ReviewWorkflow: Sendable {
                         throw ReviewAgent.streamFailure(result)
                     }
                 }
-                let result = try runCommand("cursor", arguments, directory, 300)
+                let result = try runCommand("cursor", AgentProvider.cursorArguments(for: request), directory, request.timeout)
                 let output = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
                 // Cursor can exit successfully while reporting workspace trust
                 // requirements only on stderr. Preserve that diagnostic so the

@@ -18,6 +18,18 @@ struct ReviewAgentTests {
         }
     }
 
+    @Test("Cursor 인자는 요청의 읽기·쓰기 권한, 신뢰, 모델, 세션 이어가기를 그대로 반영한다")
+    func buildsCursorArgumentsFromRequest() {
+        #expect(AgentProvider.cursorArguments(for: .init(prompt: "구현", model: "m", access: .writable, directory: "/w", timeout: 600)) ==
+            ["agent", "--print", "--output-format", "text", "--trust", "--workspace", "/w", "--model", "m", "--", "구현"])
+        #expect(AgentProvider.cursorArguments(for: .init(prompt: "요약", model: "")) ==
+            ["agent", "--print", "--output-format", "text", "--mode", "ask", "--", "요약"])
+        #expect(AgentProvider.cursorArguments(for: .init(prompt: "질문", model: "m", directory: "/r", trustWorkspace: true, cursorOutput: .streamJSON, resumeSessionID: "chat-1")) ==
+            ["agent", "--print", "--output-format", "stream-json", "--mode", "ask", "--workspace", "/r", "--trust", "--model", "m", "--resume=chat-1", "--", "질문"])
+        // A read-only run never gets --trust unless the user approved the workspace.
+        #expect(!AgentProvider.cursorArguments(for: .init(prompt: "-로 시작", model: "", directory: "/r", cursorOutput: .json)).contains("--trust"))
+    }
+
     @Test("퀴즈 응답에서 코드 펜스를 허용하고 JSON 문자열 안의 펜스는 유지한다")
     func parsesFencedQuizResponse() throws {
         let output = "```json\n{\"needsQuiz\":false,\"reason\":\"코드 예제 ```swift\",\"questions\":[]}\n```"

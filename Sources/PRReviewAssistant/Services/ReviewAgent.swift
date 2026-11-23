@@ -17,14 +17,15 @@ struct ReviewAgent: Sendable {
         self.reviewWorkflow = reviewWorkflow ?? ReviewWorkflow(provider: provider)
     }
 
-    private func runPrompt(
-        _ arguments: [String], model: String, directory: String? = nil, writable: Bool = false, timeout: TimeInterval
-    ) throws -> CommandResult {
-        if provider == .cursor {
-            return try Self.validatedTextResult(runner.run("cursor", arguments: arguments, workingDirectory: directory, timeout: timeout))
-        }
-        guard let prompt = arguments.last else { preconditionFailure("Missing prompt") }
-        return try provider.run(prompt: prompt, model: model, directory: directory, writable: writable, timeout: timeout)
+    /// Runs a request and returns the agent's final answer. Cursor's output
+    /// format is read here, so callers never deal with one CLI's details.
+    private func respond(
+        to request: AgentRequest, onOutputLine: (@Sendable (Data) -> Void)? = nil
+    ) throws -> (text: String, sessionID: String?) {
+        let result = try provider.run(request, onOutputLine: onOutputLine)
+        guard provider == .cursor else { return (result.output.trimmingCharacters(in: .whitespacesAndNewlines), nil) }
+        if request.cursorOutput == .streamJSON { return try Self.streamResult(result) }
+        return (try Self.validatedTextResult(result).output.trimmingCharacters(in: .whitespacesAndNewlines), nil)
     }
 
     /// Cursor can exit successfully while reporting a problem such as workspace
@@ -120,30 +121,23 @@ struct ReviewAgent: Sendable {
         session: AgentSession?, progress: (@Sendable (String) -> Void)?,
         onSession: (@Sendable (AgentSession?) async -> Void)?
     ) async throws -> String {
-        guard provider == .cursor else {
-            await onSession?(nil)
-            return try await runCancellable {
-                try provider.run(prompt: prompt, model: model, directory: directory, writable: false, timeout: 300)
-                    .output.trimmingCharacters(in: .whitespacesAndNewlines)
-            }
-        }
-        let resumeID = session.flatMap { $0.matches(directory: directory, sha: sha, model: model, trusted: trustWorkspace) ? $0.id : nil }
+        // Only Cursor can continue an earlier session; other CLIs always start fresh.
+        let resumeID = provider == .cursor
+            ? session.flatMap { $0.matches(directory: directory, sha: sha, model: model, trusted: trustWorkspace) ? $0.id : nil }
+            : nil
         await onSession?(nil)
+        let request = AgentRequest(
+            prompt: resumeID == nil ? prompt : resumedPrompt, model: model, directory: directory,
+            trustWorkspace: trustWorkspace, cursorOutput: .streamJSON, resumeSessionID: resumeID
+        )
         let result = try await runCancellable {
-            var arguments = ["agent", "--print", "--output-format", "stream-json", "--mode", "ask", "--workspace", directory]
-            if trustWorkspace { arguments.append("--trust") }
-            if !model.isEmpty { arguments += ["--model", model] }
-            if let resumeID { arguments.append("--resume=\(resumeID)") }
-            arguments += ["--", resumeID == nil ? prompt : resumedPrompt]
-            let command: CommandResult
             do {
-                command = try runner.run("cursor", arguments: arguments, workingDirectory: directory, timeout: 300, onOutputLine: { line in
+                return try respond(to: request, onOutputLine: { line in
                     if let progress, let message = Self.streamProgress(for: line) { progress(message) }
                 })
             } catch CommandError.failed(let result) {
                 throw Self.streamFailure(result)
             }
-            return try Self.streamResult(command)
         }
         if let id = result.sessionID {
             await onSession?(.init(id: id, directory: directory, sha: sha, model: model, trusted: trustWorkspace))
@@ -199,10 +193,7 @@ struct ReviewAgent: Sendable {
         최종 작업 요청:
         \(request)
         """
-        var arguments = ["agent", "--print", "--output-format", "text", "--trust", "--workspace", workspacePath]
-        if !model.isEmpty { arguments += ["--model", model] }
-        arguments.append(prompt)
-        return try runPrompt(arguments, model: model, directory: workspacePath, writable: true, timeout: 600).output.trimmingCharacters(in: .whitespacesAndNewlines)
+        return try respond(to: .init(prompt: prompt, model: model, access: .writable, directory: workspacePath, timeout: 600)).text
     }
 
     /// Applies the repository's PR-creation skill as a read-only dry run. The
@@ -274,10 +265,7 @@ struct ReviewAgent: Sendable {
     /// Reads only the supplied skill text and branch names; the app checks and the user approves the result.
     func proposeParentBranchRules(skill: String, branches: [String], defaultBranch: String, model: String) throws -> ParentBranchRuleProposal {
         let prompt = Self.parentBranchRulePrompt(skill: skill, branches: branches, defaultBranch: defaultBranch)
-        var arguments = ["agent", "--print", "--output-format", "text", "--mode", "ask"]
-        if !model.isEmpty { arguments += ["--model", model] }
-        arguments.append(prompt)
-        return try Self.parseParentBranchRuleProposal(runPrompt(arguments, model: model, timeout: 300).output)
+        return try Self.parseParentBranchRuleProposal(respond(to: .init(prompt: prompt, model: model)).text)
     }
 
     static func parentBranchRulePrompt(skill: String, branches: [String], defaultBranch: String) -> String {
@@ -460,12 +448,7 @@ struct ReviewAgent: Sendable {
     }
 
     private func readOnlyAgentOutput(prompt: String, repositoryPath: String, trustWorkspace: Bool, model: String) throws -> String {
-        var arguments = ["agent", "--print", "--output-format", "stream-json", "--mode", "ask", "--workspace", repositoryPath]
-        if trustWorkspace { arguments.append("--trust") }
-        if !model.isEmpty { arguments += ["--model", model] }
-        arguments += ["--", prompt]
-        let result = try runPrompt(arguments, model: model, directory: repositoryPath, timeout: 300)
-        return provider == .cursor ? try Self.streamResult(result).text : result.output
+        try respond(to: .init(prompt: prompt, model: model, directory: repositoryPath, trustWorkspace: trustWorkspace, cursorOutput: .streamJSON)).text
     }
 
     static func unitTestPrompt(for request: UnitTestVerifier.GenerationRequest) -> String {
@@ -670,11 +653,7 @@ struct ReviewAgent: Sendable {
     /// source branch and verified its current SHA.
     func implement(worktreePath: String, pullRequest: PullRequest, plan: ImplementationPlan, model: String) throws -> String {
         let prompt = Self.implementationPrompt(pullRequest: pullRequest, plan: plan)
-        var arguments = ["agent", "--print", "--output-format", "text", "--trust", "--workspace", worktreePath]
-        if !model.isEmpty { arguments += ["--model", model] }
-        arguments.append(prompt)
-        return try runPrompt(arguments, model: model, directory: worktreePath, writable: true, timeout: 600)
-            .output.trimmingCharacters(in: .whitespacesAndNewlines)
+        return try respond(to: .init(prompt: prompt, model: model, access: .writable, directory: worktreePath, timeout: 600)).text
     }
 
     static func implementationPrompt(pullRequest: PullRequest, plan: ImplementationPlan) -> String {
@@ -700,11 +679,7 @@ struct ReviewAgent: Sendable {
     /// already started in `worktreePath`. The app commits and pushes afterward.
     func resolveMergeConflicts(worktreePath: String, pullRequest: PullRequest, conflictedFiles: [String], userAnswer: String?, model: String) throws -> String {
         let prompt = Self.conflictResolutionPrompt(pullRequest: pullRequest, conflictedFiles: conflictedFiles, userAnswer: userAnswer)
-        var arguments = ["agent", "--print", "--output-format", "text", "--trust", "--workspace", worktreePath]
-        if !model.isEmpty { arguments += ["--model", model] }
-        arguments.append(prompt)
-        return try runPrompt(arguments, model: model, directory: worktreePath, writable: true, timeout: 900)
-            .output.trimmingCharacters(in: .whitespacesAndNewlines)
+        return try respond(to: .init(prompt: prompt, model: model, access: .writable, directory: worktreePath, timeout: 900)).text
     }
 
     static func conflictResolutionPrompt(pullRequest: PullRequest, conflictedFiles: [String], userAnswer: String?) -> String {
@@ -843,11 +818,7 @@ struct ReviewAgent: Sendable {
         model: String
     ) throws -> String {
         let prompt = Self.reReviewMessagePrompt(pullRequest: pullRequest, workSummary: workSummary)
-        var arguments = ["agent", "--print", "--output-format", "text", "--mode", "ask", "--workspace", repositoryPath]
-        if !model.isEmpty { arguments += ["--model", model] }
-        arguments.append(prompt)
-        let result = try runPrompt(arguments, model: model, directory: repositoryPath, timeout: 300)
-        return result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+        return try respond(to: .init(prompt: prompt, model: model, directory: repositoryPath)).text
     }
 
     static func reReviewMessagePrompt(pullRequest: PullRequest, workSummary: String) -> String {
@@ -899,11 +870,7 @@ struct ReviewAgent: Sendable {
         - 제공된 사실에 없는 코드 변경·테스트 성공·합의는 추측하지 않는다.
         - 제목, 인사말, 코드 펜스, 작성 과정은 출력하지 않는다.
         """
-        var arguments = ["agent", "--print", "--output-format", "text", "--mode", "ask", "--workspace", repositoryPath]
-        if !model.isEmpty { arguments += ["--model", model] }
-        arguments.append(prompt)
-        let result = try runPrompt(arguments, model: model, directory: repositoryPath, timeout: 300)
-        return result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+        return try respond(to: .init(prompt: prompt, model: model, directory: repositoryPath)).text
     }
 
     /// Produces a read-only Korean summary of a locally stored Cursor session.
@@ -944,14 +911,8 @@ struct ReviewAgent: Sendable {
             return .init(specName: CursorSessionSpec.unclassifiedName, specPath: nil)
         }
         let prompt = Self.specClassificationPrompt(session: session, catalog: catalog)
-        var arguments = ["agent", "--print", "--output-format", "text", "--mode", "ask"]
-        if let workspacePath = session.workspacePath, FileManager.default.fileExists(atPath: workspacePath) {
-            arguments += ["--workspace", workspacePath]
-        }
-        if !model.isEmpty { arguments += ["--model", model] }
-        arguments.append(prompt)
-        let output = try runPrompt(arguments, model: model, timeout: 300)
-            .output.trimmingCharacters(in: .whitespacesAndNewlines)
+        let workspacePath = session.workspacePath.flatMap { FileManager.default.fileExists(atPath: $0) ? $0 : nil }
+        let output = try respond(to: .init(prompt: prompt, model: model, directory: workspacePath)).text
         return try Self.parseSpecClassification(output, documents: candidates)
     }
 
@@ -989,11 +950,7 @@ struct ReviewAgent: Sendable {
         \(label):
         \(text)
         """
-        var arguments = ["agent", "--print", "--output-format", "text", "--mode", "ask"]
-        if !model.isEmpty { arguments += ["--model", model] }
-        arguments.append(prompt)
-        return try runPrompt(arguments, model: model, timeout: 300)
-            .output.trimmingCharacters(in: .whitespacesAndNewlines)
+        return try respond(to: .init(prompt: prompt, model: model)).text
     }
 
     static func summaryChunks(from text: String, maximumCharacters: Int) -> [String] {

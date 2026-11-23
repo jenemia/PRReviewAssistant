@@ -5,6 +5,26 @@ struct ExternalAgentError: LocalizedError {
     var errorDescription: String? { detail }
 }
 
+/// One agent CLI call, described by what it needs rather than by any one CLI's flags.
+struct AgentRequest: Sendable {
+    enum Access: Sendable { case readOnly, writable }
+    /// Cursor's output format. Other CLIs always return plain text.
+    enum CursorOutput: String, Sendable { case text, json, streamJSON = "stream-json" }
+
+    var prompt: String
+    var model: String
+    var access: Access = .readOnly
+    /// The repository the agent works in. It is also the process's working directory.
+    var directory: String?
+    /// Read-only Cursor runs pass `--trust` only after the user approved it.
+    var trustWorkspace = false
+    var timeout: TimeInterval = 300
+    var allowSubagents = false
+    var cursorOutput: CursorOutput = .text
+    /// A Cursor session to continue. Other CLIs always start fresh.
+    var resumeSessionID: String?
+}
+
 enum AgentProvider: String, CaseIterable, Codable, Sendable {
     case cursor, codex, claude
 
@@ -50,10 +70,33 @@ enum AgentProvider: String, CaseIterable, Codable, Sendable {
         }
     }
 
-    func run(
-        prompt: String, model: String, directory: String?, writable: Bool, timeout: TimeInterval, allowSubagents: Bool = false
-    ) throws -> CommandResult {
+    /// Cursor CLI arguments for a request. Cursor takes the prompt as the last argument.
+    static func cursorArguments(for request: AgentRequest) -> [String] {
+        var arguments = ["agent", "--print", "--output-format", request.cursorOutput.rawValue]
+        switch request.access {
+        case .readOnly: arguments += ["--mode", "ask"]
+        case .writable: arguments.append("--trust")
+        }
+        if let directory = request.directory { arguments += ["--workspace", directory] }
+        if request.access == .readOnly && request.trustWorkspace { arguments.append("--trust") }
+        if !request.model.isEmpty { arguments += ["--model", request.model] }
+        if let resumeSessionID = request.resumeSessionID { arguments.append("--resume=\(resumeSessionID)") }
+        arguments += ["--", request.prompt]
+        return arguments
+    }
+
+    /// Runs one request with this provider's CLI. Cursor's raw output is returned
+    /// as is, since its callers read it in the format they asked for.
+    func run(_ request: AgentRequest, onOutputLine: (@Sendable (Data) -> Void)? = nil) throws -> CommandResult {
         let runner = ProcessRunner()
+        if self == .cursor {
+            return try runner.run(
+                "cursor", arguments: Self.cursorArguments(for: request), workingDirectory: request.directory,
+                timeout: request.timeout, onOutputLine: onOutputLine
+            )
+        }
+        let writable = request.access == .writable
+        let model = request.model
         var arguments: [String]
         var outputFile: URL?
         defer {
@@ -62,7 +105,7 @@ enum AgentProvider: String, CaseIterable, Codable, Sendable {
 
         switch self {
         case .cursor:
-            preconditionFailure("Cursor uses its existing CLI workflow")
+            preconditionFailure("Handled above")
         case .codex:
             let temporaryDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
             try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
@@ -76,13 +119,13 @@ enum AgentProvider: String, CaseIterable, Codable, Sendable {
                          "--strict-mcp-config",
                          "--setting-sources", "user",
                          "--permission-mode", writable ? "acceptEdits" : "plan",
-                         "--tools", writable ? "Read,Glob,Grep,Edit,Write,Bash" : (allowSubagents ? "Read,Glob,Grep,Bash,Agent" : "Read,Glob,Grep,Bash"),
+                         "--tools", writable ? "Read,Glob,Grep,Edit,Write,Bash" : (request.allowSubagents ? "Read,Glob,Grep,Bash,Agent" : "Read,Glob,Grep,Bash"),
                          "--disable-slash-commands"]
         }
         if !model.isEmpty { arguments += ["--model", model] }
         if self == .codex { arguments.append("-") }
         do {
-            let result = try runner.run(rawValue, arguments: arguments, workingDirectory: directory, input: prompt, timeout: timeout)
+            let result = try runner.run(rawValue, arguments: arguments, workingDirectory: request.directory, input: request.prompt, timeout: request.timeout)
             let output = try outputFile.map { try String(contentsOf: $0, encoding: .utf8) } ?? result.output
             guard !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 throw ExternalAgentError(detail: "최종 응답이 비어 있습니다.")
