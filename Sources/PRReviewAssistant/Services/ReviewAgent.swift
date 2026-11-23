@@ -1,7 +1,7 @@
 import Foundation
 
 struct AgentConnection: Sendable {
-    enum State: Sendable { case unknown, connected, needsLogin, unavailable, failed }
+    enum State: Sendable { case unknown, connected, needsLogin, needsWorkspaceTrust, unavailable, failed }
     let state: State
     let detail: String
 }
@@ -635,18 +635,77 @@ struct ReviewAgent: Sendable {
         }
     }
 
-    /// Sends a minimal prompt with one model in an empty folder to confirm the CLI can use it.
-    func checkModel(_ model: String) -> AgentConnection {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: directory) }
+    /// Folder reused for Cursor model checks so Terminal trust only has to happen once.
+    static var modelCheckWorkspaceURL: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        return base.appendingPathComponent("PR Review Assistant/ModelCheckWorkspace", isDirectory: true)
+    }
+
+    @discardableResult
+    static func ensureModelCheckWorkspace() throws -> String {
+        let url = modelCheckWorkspaceURL
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url.path
+    }
+
+    /// Sends a minimal prompt with one model in a folder to confirm the CLI can use it.
+    /// Cursor checks use `ensureModelCheckWorkspace()` so trust can be granted from Terminal.
+    func checkModel(_ model: String, workspaceDirectory: String? = nil, trustWorkspace: Bool = false) -> AgentConnection {
+        let directory: String
+        let shouldRemove: Bool
+        if let workspaceDirectory {
+            directory = workspaceDirectory
+            shouldRemove = false
+            try? FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        } else {
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            directory = url.path
+            shouldRemove = true
+            do { try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false) }
+            catch { return .init(state: .failed, detail: error.localizedDescription) }
+        }
+        defer { if shouldRemove { try? FileManager.default.removeItem(atPath: directory) } }
         do {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
-            let text = try respond(to: .init(prompt: "Reply with exactly: OK", model: model, directory: directory.path, trustWorkspace: true, timeout: 120)).text
+            let text = try respond(to: .init(prompt: "Reply with exactly: OK", model: model, directory: directory, trustWorkspace: trustWorkspace, timeout: 120)).text
             return text.isEmpty ? .init(state: .failed, detail: "빈 응답") : .init(state: .connected, detail: "연결됨")
         } catch {
-            let detail = error.localizedDescription
-            return .init(state: Self.requiresLogin(detail) ? .needsLogin : .failed, detail: Self.concise(detail))
+            return Self.connection(forFailure: error)
         }
+    }
+
+    static func connection(forFailure error: Error) -> AgentConnection {
+        let detail = concise(error.localizedDescription)
+        if requiresLogin(detail) {
+            return .init(state: .needsLogin, detail: detail)
+        }
+        if requiresWorkspaceTrust(detail) {
+            return .init(
+                state: .needsWorkspaceTrust,
+                detail: "Cursor가 이 앱 전용 확인 폴더에 접근할 수 없습니다. Terminal에서 작업 공간을 신뢰한 뒤 다시 확인하세요.\n\n\(detail)"
+            )
+        }
+        return .init(state: .failed, detail: detail)
+    }
+
+    /// Opens Terminal in the model-check workspace so the user can approve Cursor trust.
+    func startModelCheckWorkspaceTrust(model: String) throws {
+        let directory = try Self.ensureModelCheckWorkspace()
+        let modelFlag = model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "" : " --model \(model.shellSingleQuoted)"
+        let command = """
+        \(ProcessRunner.terminalPathExport); cd \(directory.shellSingleQuoted); \
+        echo "Cursor가 작업 공간 접근을 요청하면 신뢰(Trust)를 승인하세요."; \
+        cursor agent --print --mode ask --workspace \(directory.shellSingleQuoted)\(modelFlag) -- "Reply with exactly: OK"; \
+        echo; echo "신뢰를 마친 뒤 PR Review Assistant 설정에서 모델 확인을 다시 누르세요."; \
+        exec $SHELL -l
+        """
+        try runner.launchInTerminal(command: command)
+    }
+
+    static func requiresWorkspaceTrust(_ text: String) -> Bool {
+        let normalized = text.lowercased()
+        return normalized.contains("workspace trust")
+            || normalized.contains("trust this workspace")
+            || (normalized.contains("workspace") && normalized.contains("trust") && normalized.contains("required"))
     }
 
     static func requiresLogin(_ text: String) -> Bool {
@@ -1044,4 +1103,8 @@ struct ReviewAgent: Sendable {
     private func parse(_ output: String) -> AgentAnalysis {
         AgentAnalysis(judgment: output.contains("수정 필요") ? "수정 필요" : "사용자 확인 필요", confidence: "에이전트 분석 결과 참조", affectedFiles: [], impact: "분석 결과를 확인하세요.", recommendation: "변경 전 diff와 테스트 계획을 검토하세요.", suggestedTests: [], rawOutput: output)
     }
+}
+
+private extension String {
+    var shellSingleQuoted: String { "'\(replacingOccurrences(of: "'", with: "'\\''"))'" }
 }

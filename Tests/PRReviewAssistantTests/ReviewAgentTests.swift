@@ -4,6 +4,13 @@ import Testing
 
 @Suite("Cursor agent connection")
 struct ReviewAgentTests {
+    @Test("작업 공간 신뢰 오류는 연결 상태로 구분한다")
+    func classifiesWorkspaceTrustFailures() {
+        let connection = ReviewAgent.connection(forFailure: CommandError.failed(.init(output: "", error: "workspace trust required", status: 1)))
+        #expect(connection.state == .needsWorkspaceTrust)
+        #expect(ReviewAgent.requiresWorkspaceTrust("Please trust this workspace before continuing"))
+    }
+
     @Test("Cursor 스트림은 진행 이벤트와 최종 답변을 구분한다")
     func readsStreamProgressAndFinalResult() throws {
         let progress = #"{"type":"tool_call","subtype":"started"}"#

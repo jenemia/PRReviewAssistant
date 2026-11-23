@@ -40,6 +40,15 @@ enum AgentProvider: String, CaseIterable, Codable, CodingKeyRepresentable, Senda
         }
     }
 
+    /// Short label for per-feature agent selection in settings.
+    var featurePickerTitle: String {
+        switch self {
+        case .cursor: "Cursor"
+        case .codex: "Codex"
+        case .claude: "Claude"
+        }
+    }
+
     /// Model IDs offered in the settings pickers, in display order.
     var modelPresets: [(id: String, title: String)] {
         switch self {
