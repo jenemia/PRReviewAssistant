@@ -301,5 +301,13 @@ struct ReviewCommentSectionTests {
             commits: [(sha: "fix-sha", message: "문서 갱신")], cards: [recreatedCard], plans: [linkedPlan]
         )
         #expect(recreated.contains("### 연결된 실제 커밋\nfix-sha"))
+
+        var continuedPlan = plan
+        continuedPlan.previousCommittedSHAs = ["fix-sha"]
+        continuedPlan.committedSHA = "more-sha"
+        let continued = ReviewStore.reReviewCommitSummary(
+            commits: [(sha: "fix-sha", message: "1차"), (sha: "more-sha", message: "추가 구현")], cards: [card], plans: [continuedPlan]
+        )
+        #expect(continued.contains("### 연결된 실제 커밋\nfix-sha\nmore-sha"))
     }
 }

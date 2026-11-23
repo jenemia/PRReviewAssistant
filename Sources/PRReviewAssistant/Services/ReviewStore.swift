@@ -2461,6 +2461,7 @@ final class ReviewStore {
     static func implementationPlanContent(for card: AgentReviewCard, pullRequestNumber: Int) -> String {
         let requests = card.messages.filter { $0.role == .user }.map(\.body).joined(separator: "\n\n")
         let conclusion = card.latestAgentJudgment ?? "판단 없음"
+        let followUps = card.followUpAnswers.joined(separator: "\n\n---\n\n")
         return """
         # PR #\(pullRequestNumber) 작업 계획
 
@@ -2474,6 +2475,9 @@ final class ReviewStore {
 
         ## 최신 판단 및 대응 계획
         \(conclusion)
+
+        ## 판단 이후 후속 답변 (시간순, 나중 답변 우선)
+        \(followUps.isEmpty ? "없음" : followUps)
 
         ## 원문 리뷰 (참고 자료)
         \(card.sectionTitle ?? card.title)
@@ -2565,6 +2569,34 @@ final class ReviewStore {
             updateImplementationResult(for: card, pullRequest: pullRequest, status: .failed, result: message)
             statusMessage = message
         }
+    }
+
+    /// Runs another implementation round on a card from its work side view.
+    /// The earlier request and result carry over so the agent continues them.
+    func continueImplementation(for card: AgentReviewCard, pullRequest: PullRequest, request: String) async {
+        let trimmedRequest = request.trimmingCharacters(in: .whitespacesAndNewlines)
+        let key = implementationPlanKey(for: card, pullRequest: pullRequest)
+        guard !trimmedRequest.isEmpty, var plan = implementationPlans[key], plan.status != .inProgress else { return }
+        // Check before resetting the commit below, so a refused start cannot
+        // leave an already committed change looking uncommitted.
+        guard reserveActiveWorkspace(for: pullRequest) else { return }
+        let previousResult = plan.result?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let prompt = """
+        \(plan.implementationRequest ?? plan.content)
+
+        ## 이전 작업 결과
+        \(previousResult.isEmpty ? "없음" : previousResult)
+
+        ## 추가 구현 요청 (최우선)
+        이전 작업 결과에 이어서 아래 요청만 추가로 수행하라. 이미 반영된 변경은 되돌리지 마라.
+        \(trimmedRequest)
+        """
+        if let committedSHA = plan.committedSHA {
+            plan.previousCommittedSHAs = (plan.previousCommittedSHAs ?? []) + [committedSHA]
+            plan.committedSHA = nil
+        }
+        implementationPlans[key] = plan
+        await startImplementation(for: card, pullRequest: pullRequest, prompt: prompt)
     }
 
     private func removeCardWorktree(_ checkout: (path: String, worktree: String)?) async {
@@ -2958,12 +2990,17 @@ final class ReviewStore {
             let analysisPullRequest = pullRequestWithCurrentWorkspaceSHA(pullRequest, sha: workspaceSHA)
             // Initial reviews and explicit retries use the role workflow. Cursor follow-ups resume their own card session.
             let researchContext = hidesUserMessage ? Self.sharedResearchContext(for: agentCards(for: pullRequest)) : nil
-            let answer = try await agent.ask(repositoryPath: path, pullRequest: analysisPullRequest, card: card, question: question, trustWorkspace: isTrusted, model: model, reviewsComment: hidesUserMessage, researchContext: researchContext, progress: progress, onSession: { session in
+            // A question on a card that already has a judgment gets a free-form
+            // answer, which must not replace that judgment.
+            let isFollowUp = !hidesUserMessage && card.latestAgentJudgment != nil
+            let workResult = implementationPlan(for: card, pullRequest: pullRequest)
+                .flatMap { $0.status == .completed || $0.status == .failed ? $0.result : nil }
+            let answer = try await agent.ask(repositoryPath: path, pullRequest: analysisPullRequest, card: card, question: question, trustWorkspace: isTrusted, model: model, reviewsComment: hidesUserMessage, researchContext: researchContext, workResult: workResult, progress: progress, onSession: { session in
                 await self.updateAgentCursorSession(session, cardID: id)
             })
             try Task.checkCancellation()
             guard let updatedIndex = agentReviewCards.firstIndex(where: { $0.id == id }) else { return }
-            agentReviewCards[updatedIndex].messages.append(.init(role: .agent, body: answer))
+            agentReviewCards[updatedIndex].messages.append(.init(role: .agent, body: answer, isFollowUp: isFollowUp ? true : nil))
             agentReviewCards[updatedIndex].status = .complete
             agentReviewCards[updatedIndex].updatedAt = .now
             persist()
@@ -3069,8 +3106,9 @@ final class ReviewStore {
                 let matchesCard = plan.sourceCardIDs.contains(card.id) ||
                     card.reviewID.map { plan.sourceReviewIDs?.contains($0) == true } == true
                 return matchesCard && plan.repository == card.repository &&
-                    plan.pullRequestNumber == card.pullRequestNumber && plan.committedSHA.map(commitSHAs.contains) == true
-            }.compactMap(\.committedSHA)
+                    plan.pullRequestNumber == card.pullRequestNumber
+            }.flatMap { ($0.previousCommittedSHAs ?? []) + [$0.committedSHA].compactMap { $0 } }
+                .filter(commitSHAs.contains)
             return """
             ## \(card.sectionTitle ?? card.title)
             코멘트 ID: \(card.commentID)

@@ -71,8 +71,38 @@ struct CursorAgentTests {
         #expect(prompt.contains("전역 리스너 도입은 비허용. 기존 구조 유지"))
         #expect(!prompt.contains("오래된 판단: 코드 구현"))
         #expect(!prompt.contains(card.commentBody))
-        #expect(prompt.contains("## 현재 동작과 이유"))
+        #expect(!prompt.contains("## 현재 동작과 이유"))
+        #expect(prompt.contains("정해진 항목 형식을 따르지 말고"))
         #expect(prompt.contains("코드 원문과 코드 블록은 기본적으로 표시하지 마라"))
+    }
+
+    @Test("판단 전 첫 질문은 판단 형식을 유지한다")
+    func firstQuestionKeepsJudgmentFormat() {
+        let prompt = CursorAgent.followUpPrompt(card: reviewCard(), question: "봐줘")
+        #expect(prompt.contains("## 현재 동작과 이유"))
+        #expect(CursorAgent.resumedFollowUpPrompt(card: reviewCard(), question: "봐줘", sha: "abc", workResult: nil).contains("전체 대응 계획"))
+    }
+
+    @Test("후속 답변은 판단을 대체하지 않고 다음 질문과 작업 결과 맥락에 포함된다")
+    func followUpAnswerDoesNotReplaceJudgment() {
+        var card = reviewCard()
+        card.messages = [.init(role: .agent, body: "판단: 문서만 수정"),
+                         .init(role: .user, body: "이 함수는 어디서 호출돼?"),
+                         .init(role: .agent, body: "후속 답변: 초기화에서 호출", isFollowUp: true)]
+        #expect(card.latestAgentJudgment == "판단: 문서만 수정")
+        #expect(card.followUpAnswers == ["후속 답변: 초기화에서 호출"])
+
+        let prompt = CursorAgent.followUpPrompt(card: card, question: "테스트는?", workResult: "작업 결과: 문서 갱신 완료")
+        #expect(prompt.contains("판단: 문서만 수정"))
+        #expect(prompt.contains("후속 답변: 초기화에서 호출"))
+        #expect(prompt.contains("작업 결과: 문서 갱신 완료"))
+        let resumed = CursorAgent.resumedFollowUpPrompt(card: card, question: "테스트는?", sha: "abc", workResult: "작업 결과: 문서 갱신 완료")
+        #expect(!resumed.contains("전체 대응 계획"))
+        #expect(resumed.contains("작업 결과: 문서 갱신 완료"))
+
+        // A new judgment (e.g. a retried analysis) starts a fresh follow-up list.
+        card.messages.append(.init(role: .agent, body: "새 판단"))
+        #expect(card.followUpAnswers.isEmpty)
     }
 
     @Test("실패 안내는 판단으로 쓰지 않고 리뷰 원문에서 다시 시작한다")
@@ -153,6 +183,7 @@ struct CursorAgentTests {
         #expect(prompt.contains("리뷰반영을 하지 않고 spec문서만 갱신"))
         #expect(prompt.contains("최신 판단: spec 문서만 갱신"))
         #expect(prompt.contains("TODO도 갱신"))
+        #expect(prompt.contains("## 판단 이후 후속 답변 (시간순, 나중 답변 우선)\n없음"))
         #expect(prompt.contains("원문 리뷰 (참고 자료)"))
         #expect(!prompt.contains("원래 제안: 리스너 구현"))
         #expect(!prompt.contains("이전 작업 계획"))

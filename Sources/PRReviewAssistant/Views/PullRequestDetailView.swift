@@ -214,6 +214,13 @@ struct PullRequestDetailView: View {
                     pendingImplementationCardID = card.id
                     showingWorkArea = true
                 },
+                reviewProgress: store.cardReviewProgress[cardID],
+                ask: { message in Task { await store.sendAgentMessage(id: cardID, pullRequest: pullRequest, message: message) } },
+                implementMore: { request in Task { await store.continueImplementation(for: card, pullRequest: pullRequest, request: request) } },
+                cancelQuestion: { store.cancelAgentMessage(cardID) },
+                openCodeLocation: { path, line, column in
+                    store.openInCursor(path: path, line: line, column: column, for: pullRequest)
+                },
                 close: { detailNavigation.closePanel() }
             )
                 .id(cardID)
@@ -1348,7 +1355,21 @@ private struct WorkReviewSidePanel: View {
     let card: AgentReviewCard
     let plan: ImplementationPlan
     let retry: () -> Void
+    let reviewProgress: String?
+    let ask: (String) -> Void
+    let implementMore: (String) -> Void
+    let cancelQuestion: () -> Void
+    let openCodeLocation: (String, Int?, Int?) -> String
     let close: () -> Void
+    @State private var draft = ""
+
+    /// Questions asked on this card since its work plan was created.
+    private var conversation: [AgentChatMessage] {
+        card.messages.filter { $0.createdAt >= plan.createdAt }
+    }
+    private var trimmedDraft: String { draft.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var canAsk: Bool { !trimmedDraft.isEmpty && card.status != .reviewing }
+    private var canImplementMore: Bool { !trimmedDraft.isEmpty && plan.status != .inProgress && card.status != .reviewing }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1407,11 +1428,88 @@ private struct WorkReviewSidePanel: View {
                     } label: {
                         CopyableSectionTitle(title: "작업 결과", text: plan.result ?? "")
                     }
+                    if !conversation.isEmpty || card.status == .reviewing {
+                        Text("추가 질문").font(.subheadline.weight(.semibold))
+                        ForEach(conversation) { message in
+                            ChatBubble(message: message, quote: { quote(message) })
+                        }
+                        if card.status == .reviewing {
+                            HStack(spacing: 8) {
+                                ProgressView().controlSize(.small)
+                                Text(reviewProgress ?? "에이전트가 답변하고 있습니다…").font(.caption).foregroundStyle(.secondary)
+                                Button("취소", action: cancelQuestion)
+                            }
+                        }
+                    }
                 }
                 .padding(16)
             }
+            Divider()
+            HStack(alignment: .bottom, spacing: 8) {
+                TextEditor(text: $draft)
+                    .font(.body)
+                    .frame(minHeight: 36, maxHeight: 88)
+                    .accessibilityLabel("추가 질문이나 추가 구현 요청을 입력하세요")
+                    .overlay(alignment: .topLeading) {
+                        if draft.isEmpty {
+                            Text("추가 질문이나 추가 구현 요청을 입력하세요")
+                                .foregroundStyle(.tertiary)
+                                .padding(.leading, 5)
+                                .padding(.top, 8)
+                                .allowsHitTesting(false)
+                        }
+                    }
+                    .onKeyPress(.return, phases: .down) { press in
+                        if press.modifiers.contains(.shift) { return .ignored }
+                        sendQuestion()
+                        return .handled
+                    }
+                VStack(spacing: 6) {
+                    Button("질문", systemImage: "bubble.left", action: sendQuestion)
+                        .buttonStyle(.bordered)
+                        .disabled(!canAsk)
+                        .help("코드를 수정하지 않고 이 작업에 대해 질문합니다 (Return)")
+                    Button("추가 구현", systemImage: "hammer", action: sendImplementation)
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!canImplementMore)
+                        .help("이전 구현 요청과 작업 결과에 이어 입력한 내용을 추가로 구현합니다")
+                }
+                .controlSize(.small)
+            }
+            .padding(12)
         }
         .background(.bar)
+        .environment(\.openURL, OpenURLAction { url in
+            guard url.scheme == "prreview", url.host == "open" else { return .systemAction }
+            let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
+            let path = items?.first(where: { $0.name == "path" })?.value ?? ""
+            let line = items?.first(where: { $0.name == "line" })?.value.flatMap(Int.init)
+            let column = items?.first(where: { $0.name == "column" })?.value.flatMap(Int.init)
+            _ = openCodeLocation(path, line, column)
+            return .handled
+        })
+    }
+
+    private func quote(_ message: AgentChatMessage) {
+        let quoted = message.body
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { "> \($0)" }
+            .joined(separator: "\n")
+        draft = trimmedDraft.isEmpty ? "\(quoted)\n\n" : "\(draft)\n\n\(quoted)\n\n"
+    }
+
+    private func sendQuestion() {
+        guard canAsk else { return }
+        let message = trimmedDraft
+        draft = ""
+        ask(message)
+    }
+
+    private func sendImplementation() {
+        guard canImplementMore else { return }
+        let request = trimmedDraft
+        draft = ""
+        implementMore(request)
     }
 }
 

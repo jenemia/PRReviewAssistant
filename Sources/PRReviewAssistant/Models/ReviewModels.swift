@@ -558,6 +558,9 @@ struct AgentChatMessage: Identifiable, Codable, Hashable {
     /// Set on app-written status text shown in the agent's bubble, such as a
     /// failed request. These are never a judgment to build on.
     var isFailure: Bool?
+    /// A free-form answer to a question asked after the card already had a
+    /// judgment. It does not replace that judgment.
+    var isFollowUp: Bool?
 }
 
 enum WorkspaceDestination: String, CaseIterable, Codable, Identifiable {
@@ -613,6 +616,9 @@ struct ImplementationPlan: Codable, Hashable {
     var usesCardWorktree: Bool?
     /// The card's worktree while it runs, kept so an interrupted run can be cleaned up.
     var worktreePath: String?
+    /// Local commits from earlier rounds of this card, kept when an additional
+    /// implementation starts a new round so re-review still links them.
+    var previousCommittedSHAs: [String]?
 }
 
 enum ImplementationWorkStatus: String, Codable {
@@ -632,9 +638,21 @@ enum ImplementationWorkStatus: String, Codable {
 }
 
 struct AgentReviewCard: Identifiable, Codable, Hashable {
-    /// The agent's latest actual answer, skipping failure notices.
+    /// The agent's latest judgment, skipping failure notices and free-form follow-up answers.
     var latestAgentJudgment: String? {
-        messages.last(where: { $0.role == .agent && $0.isFailure != true })?.body
+        messages.last(where: Self.isJudgment)?.body
+    }
+
+    /// Free-form follow-up answers given after the latest judgment, oldest first.
+    var followUpAnswers: [String] {
+        let start = messages.lastIndex(where: Self.isJudgment).map { $0 + 1 } ?? messages.startIndex
+        return messages[start...]
+            .filter { $0.role == .agent && $0.isFailure != true && $0.isFollowUp == true }
+            .map(\.body)
+    }
+
+    private static func isJudgment(_ message: AgentChatMessage) -> Bool {
+        message.role == .agent && message.isFailure != true && message.isFollowUp != true
     }
 
     var id = UUID()
