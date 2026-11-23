@@ -211,21 +211,17 @@ private struct AgentSettingsView: View {
 
             Section("모델") {
                 Picker("Cursor 모델", selection: $store.agentModel) {
-                    Text("Composer 2.5").tag("composer-2.5")
-                    Text("Auto (Cursor 기본 선택)").tag("auto")
-                    Text("GPT-5.3 Codex").tag("gpt-5.3-codex")
-                    Text("GPT-5.3 Codex High").tag("gpt-5.3-codex-high")
-                    Text("GPT-5.6 Sol High").tag("gpt-5.6-sol-high")
-                    Text("Claude Sonnet 5 High").tag("claude-sonnet-5-high")
-                    Text("Claude Opus 5 Thinking High").tag("claude-opus-5-thinking-high")
-                    Text("Claude Opus 5.5 High").tag("claude-opus-5-5-high")
-                    Text("Claude Sonnet 5.5 High").tag("claude-sonnet-5-5-high")
+                    ForEach(AgentProvider.cursor.modelPresets, id: \.id) { preset in
+                        Text(preset.title).tag(preset.id)
+                    }
                 }
                 TextField("사용자 지정 모델 ID (선택)", text: $store.customAgentModel)
                     .font(.system(.body, design: .monospaced))
                 Text(store.customAgentModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "선택한 모델이 plan 분석과 ask 대화 모두에 적용됩니다." : "사용자 지정 모델 ID가 선택값보다 우선 적용됩니다.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+
+            FeatureModelSection(store: store)
 
             Section("에이전트 권한") {
                 Label("기본 분석은 읽기 전용 plan 모드로 실행됩니다.", systemImage: "eye")
@@ -299,10 +295,10 @@ private struct ExternalAgentSettings: View {
                 if provider == .codex {
                     Picker("Codex 모델", selection: $store.codexModel) {
                         Text("CLI 기본값").tag("")
-                        Text("GPT-6.1 Terra").tag("gpt-6.1-terra")
-                        Text("GPT-6.1 Sol").tag("gpt-6.1-sol")
-                        Text("GPT-6 Sol").tag("gpt-6-sol")
-                        if !["", "gpt-6.1-terra", "gpt-6.1-sol", "gpt-6-sol"].contains(store.codexModel) {
+                        ForEach(provider.modelPresets, id: \.id) { preset in
+                            Text(preset.title).tag(preset.id)
+                        }
+                        if store.codexModel != "" && !provider.modelPresets.contains(where: { $0.id == store.codexModel }) {
                             Text(store.codexModel).tag(store.codexModel)
                         }
                     }
@@ -310,9 +306,10 @@ private struct ExternalAgentSettings: View {
                 } else {
                     Picker("Claude Code 모델", selection: $store.claudeModel) {
                         Text("CLI 기본값").tag("")
-                        Text("Claude Opus 5.5").tag("claude-opus-5-5")
-                        Text("Claude Sonnet 5.5").tag("claude-sonnet-5-5")
-                        if !["", "claude-opus-5-5", "claude-sonnet-5-5"].contains(store.claudeModel) {
+                        ForEach(provider.modelPresets, id: \.id) { preset in
+                            Text(preset.title).tag(preset.id)
+                        }
+                        if store.claudeModel != "" && !provider.modelPresets.contains(where: { $0.id == store.claudeModel }) {
                             Text(store.claudeModel).tag(store.claudeModel)
                         }
                     }
@@ -323,6 +320,7 @@ private struct ExternalAgentSettings: View {
                     }
                 }
             }
+            FeatureModelSection(store: store)
         }
         .formStyle(.grouped)
         .padding()
@@ -335,6 +333,79 @@ private struct ExternalAgentSettings: View {
         let provider = provider
         connection = await Task.detached(priority: .userInitiated) { provider.connection() }.value
         checking = false
+    }
+}
+
+/// Per-feature model overrides for the current provider. An empty override
+/// follows the provider's default model.
+private struct FeatureModelSection: View {
+    @Bindable var store: ReviewStore
+
+    var body: some View {
+        let provider = store.agentProvider
+        Section {
+            ForEach(AgentFeature.Group.allCases, id: \.self) { group in
+                Text(group.rawValue).font(.caption).foregroundStyle(.secondary)
+                ForEach(AgentFeature.allCases.filter { $0.group == group }, id: \.self) { feature in
+                    FeatureModelRow(store: store, provider: provider, feature: feature)
+                }
+            }
+            Text("바꾼 모델은 다음 실행부터 적용됩니다. 대화 중에 모델을 바꾸면 기존 대화를 잇지 않고 새 대화로 시작합니다.")
+                .font(.caption).foregroundStyle(.secondary)
+        } header: {
+            HStack {
+                Text("기능별 모델 (\(provider.title))")
+                Spacer()
+                Button("모두 기본으로") { store.agentFeatureModels[provider] = nil }
+                    .disabled(store.agentFeatureModels[provider]?.isEmpty ?? true)
+            }
+        }
+        .id(provider)
+    }
+}
+
+private struct FeatureModelRow: View {
+    @Bindable var store: ReviewStore
+    let provider: AgentProvider
+    let feature: AgentFeature
+    @State private var isCustom = false
+
+    private static let customTag = "\u{0}custom"
+
+    private var override: String { store.agentFeatureModels[provider]?[feature] ?? "" }
+    private var isPreset: Bool { provider.modelPresets.contains { $0.id == override } }
+
+    private var overrideBinding: Binding<String> {
+        Binding(
+            get: { override },
+            set: { store.agentFeatureModels[provider, default: [:]][feature] = $0.isEmpty ? nil : $0 }
+        )
+    }
+
+    private var selection: Binding<String> {
+        Binding(
+            get: { isCustom ? Self.customTag : override },
+            set: { value in
+                isCustom = value == Self.customTag
+                if !isCustom { overrideBinding.wrappedValue = value }
+            }
+        )
+    }
+
+    var body: some View {
+        let defaultModel = store.effectiveAgentModel
+        Picker(feature.title, selection: selection) {
+            Text("기본 모델 따름 (\(defaultModel.isEmpty ? "CLI 기본값" : defaultModel))").tag("")
+            ForEach(provider.modelPresets, id: \.id) { preset in
+                Text(preset.title).tag(preset.id)
+            }
+            Text("직접 입력…").tag(Self.customTag)
+        }
+        .onAppear { isCustom = !override.isEmpty && !isPreset }
+        if isCustom {
+            TextField("\(feature.title) 모델 ID", text: overrideBinding)
+                .font(.system(.body, design: .monospaced))
+        }
     }
 }
 

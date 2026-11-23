@@ -203,6 +203,7 @@ final class ReviewStore {
 
     var codexModel = "" { didSet { persist() } }
     var claudeModel = "" { didSet { persist() } }
+    var agentFeatureModels: [AgentProvider: [AgentFeature: String]] = [:] { didSet { persist() } }
     private let pullRequestProposalVerifier = PullRequestProposalVerifier()
     private let unitTestVerifier = UnitTestVerifier()
     private let cursorHistory = CursorSessionHistoryService()
@@ -262,6 +263,7 @@ final class ReviewStore {
         reviewRolesDirectory = state.reviewRolesDirectory
         codexModel = state.codexModel
         claudeModel = state.claudeModel
+        agentFeatureModels = state.agentFeatureModels
         agentModel = state.agentModel
         customAgentModel = state.customAgentModel
         reviewAuthorFilter = state.reviewAuthorFilter
@@ -520,7 +522,7 @@ final class ReviewStore {
         defer { reviewProgressTokens[progressKey] = nil }
         branchReviewMessages[branch.id] = "선택한 설정으로 브랜치를 검토합니다."
         do {
-            let model = effectiveAgentModel
+            let model = model(for: .branchReview)
             let isTrusted = trustedBranchReviewIDs.contains(branch.id)
             let baseReference = branchBaseReference(for: branch, repository: repository)
             let output = try await selectedAgent.reviewBranch(repositoryPath: repository.localPath, branch: branch, baseBranch: baseReference, skillPath: reviewSkillPath(for: agentProvider), trustWorkspace: isTrusted, model: model, progress: progress)
@@ -571,7 +573,7 @@ final class ReviewStore {
         let card = branchReviewCards[branch.id]![index]
         persist()
         do {
-            let model = effectiveAgentModel
+            let model = model(for: .branchQuestion)
             let isTrusted = trustedBranchReviewIDs.contains(branch.id)
             let response = try await selectedAgent.askAboutBranch(repositoryPath: repository.localPath, branch: branch, card: card, question: message, trustWorkspace: isTrusted, model: model, progress: progress, onSession: { session in
                 await self.updateBranchCursorSession(session, cardID: cardID, branchID: branch.id)
@@ -636,7 +638,7 @@ final class ReviewStore {
             let path = repository.localPath
             let sha = try await background { try self.workspaces.validateBranchReviewWorkspace(at: path, branch: branch, reviewedSHA: card.reviewedSHA) }
             branchImplementationResults[card.id] = "\(branch.name) 브랜치에서 에이전트가 구현 중입니다."
-            let model = effectiveAgentModel
+            let model = model(for: .branchImplementation)
             let agent = selectedAgent
             let result = try await background { try agent.implementBranch(workspacePath: path, branch: branch, reviewedSHA: sha, request: request, model: model) }
             if branchReviewCards[branch.id]?.contains(where: { $0.id == card.id }) == true {
@@ -680,7 +682,7 @@ final class ReviewStore {
         preparingPullRequestProposalBranchIDs.insert(branch.id)
         defer { preparingPullRequestProposalBranchIDs.remove(branch.id) }
         do {
-            let model = effectiveAgentModel
+            let model = model(for: .pullRequestProposal)
             let agent = selectedAgent
             let isTrusted = trustedBranchReviewIDs.contains(branch.id)
             let comparisonBase = branchBaseReference(for: branch, repository: repository)
@@ -813,7 +815,7 @@ final class ReviewStore {
         branchUnitTestMessages[branch.id] = "변경된 C# 파일에서 UnitTest 대상을 찾는 중입니다."
         defer { verifyingUnitTestBranchIDs.remove(branch.id) }
         do {
-            let model = effectiveAgentModel
+            let model = model(for: .branchUnitTest)
             let isTrusted = trustedBranchReviewIDs.contains(branch.id)
             let baseReference = branchBaseReference(for: branch, repository: repository)
             let cursor = selectedAgent, verifier = unitTestVerifier
@@ -853,7 +855,7 @@ final class ReviewStore {
         isMakingBranchQuiz = true
         defer { isMakingBranchQuiz = false }
         do {
-            let model = effectiveAgentModel
+            let model = model(for: .branchQuiz)
             let agent = selectedAgent
             let isTrusted = trustedBranchReviewIDs.contains(branch.id)
             let comparisonBase = branchBaseReference(for: branch, repository: repository)
@@ -924,7 +926,7 @@ final class ReviewStore {
             sha: "", subject: "", updatedAt: nil, isCurrent: true, isRemote: false
         )
         do {
-            let model = effectiveAgentModel
+            let model = model(for: .specUnitTest)
             let isTrusted = trustedBranchReviewIDs.contains(branch.id)
             let cursor = selectedAgent, verifier = unitTestVerifier
             let verification = try await background {
@@ -1200,7 +1202,7 @@ final class ReviewStore {
         isSummarizingCursorSessionID = session.id
         defer { isSummarizingCursorSessionID = nil }
         do {
-            let model = effectiveAgentModel
+            let model = model(for: .sessionSummary)
             let agent = selectedAgent
             let summary = try await background { try agent.summarize(session: session, model: model) }
             cursorSessionSummaries[session.id] = summary
@@ -1241,7 +1243,7 @@ final class ReviewStore {
         for session in pending {
             do {
                 let documents = try await background { self.workspaceSpecCatalog.documents(in: session.workspacePath) }
-                let model = effectiveAgentModel
+                let model = model(for: .sessionSpecClassification)
                 let agent = selectedAgent
                 let classification = try await background {
                     try agent.classifySpec(session: session, documents: documents, model: model)
@@ -1430,7 +1432,7 @@ final class ReviewStore {
     func proposeParentBranchRules(for repository: RegisteredRepository, skillPath: String) async throws -> ParentBranchRuleProposal {
         let skill = try String(contentsOfFile: skillPath, encoding: .utf8)
         let branches = await branchNames(of: repository)
-        let agent = selectedAgent, model = effectiveAgentModel, defaultBranch = repository.defaultBranch
+        let agent = selectedAgent, model = model(for: .parentBranchRules), defaultBranch = repository.defaultBranch
         return try await background {
             try agent.proposeParentBranchRules(skill: skill, branches: branches, defaultBranch: defaultBranch, model: model)
         }
@@ -1742,7 +1744,7 @@ final class ReviewStore {
             setActiveWorkspace(path, for: pullRequest)
             let prComments = comments[worktreeKey(pullRequest)] ?? []
             let agent = selectedAgent
-            let model = effectiveAgentModel
+            let model = model(for: .reviewAnalysis)
             let analysisPullRequest = pullRequestWithCurrentWorkspaceSHA(pullRequest, sha: workspaceSHA)
             let result = try await agent.analyze(worktreePath: path, pullRequest: analysisPullRequest, comments: prComments, model: model)
             analyses[worktreeKey(pullRequest)] = result
@@ -1983,7 +1985,7 @@ final class ReviewStore {
         let plans = implementationPlans(for: pullRequest)
         let workspace = workspaces
         let agent = selectedAgent
-        let model = effectiveAgentModel
+        let model = model(for: .reReviewMessage)
         do {
             let repository = try registeredRepository(for: pullRequest)
             let baseSHA: String
@@ -2118,7 +2120,7 @@ final class ReviewStore {
         defer { resolvingConflictIDs.remove(key) }
         let workspace = workspaces
         let agent = selectedAgent
-        let model = effectiveAgentModel
+        let model = model(for: .conflictResolution)
         do {
             let repository = try registeredRepository(for: pullRequest)
             statusMessage = "\(pullRequest.baseBranch) 브랜치를 가져와 머지하는 중입니다."
@@ -2544,7 +2546,7 @@ final class ReviewStore {
             implementationPlans[key] = plan
             persist()
             let agent = selectedAgent
-            let model = effectiveAgentModel
+            let model = model(for: .reviewImplementation)
             let implementationPlan = plan
             let implementationPullRequest = pullRequestWithCurrentWorkspaceSHA(pullRequest, sha: workspaceSHA)
             let result = try await background { try agent.implement(worktreePath: worktree, pullRequest: implementationPullRequest, plan: implementationPlan, model: model) }
@@ -2831,7 +2833,7 @@ final class ReviewStore {
         }
         do {
             let agent = selectedAgent
-            let model = effectiveAgentModel
+            let model = model(for: .reviewResponseDraft)
             let draft = try await background {
                 try agent.suggestReviewResponse(
                     repositoryPath: path,
@@ -2972,7 +2974,7 @@ final class ReviewStore {
         let card = agentReviewCards[index]
         persist()
         let agent = selectedAgent
-        let model = effectiveAgentModel
+        let model = model(for: .reviewQuestion)
         do {
             let key = worktreeKey(pullRequest)
             let path: String
@@ -3089,6 +3091,12 @@ final class ReviewStore {
         }
         let custom = customAgentModel.trimmingCharacters(in: .whitespacesAndNewlines)
         return custom.isEmpty ? agentModel : custom
+    }
+
+    /// The model for one feature under the current provider: its override, or the default.
+    func model(for feature: AgentFeature) -> String {
+        let override = agentFeatureModels[agentProvider]?[feature]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return override.isEmpty ? effectiveAgentModel : override
     }
 
     func worktreePath(for pr: PullRequest) -> String? { worktreePaths[worktreeKey(pr)] }
@@ -3346,6 +3354,7 @@ final class ReviewStore {
         state.reviewRolesDirectory = reviewRolesDirectory
         state.codexModel = codexModel
         state.claudeModel = claudeModel
+        state.agentFeatureModels = agentFeatureModels
         state.branchReviewCards = branchReviewCards
         state.branchCardReviewed = branchCardReviewed
         state.branchImplementationResults = branchImplementationResults

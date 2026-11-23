@@ -29,7 +29,7 @@ struct AgentRequest: Sendable {
     var resumesSession = false
 }
 
-enum AgentProvider: String, CaseIterable, Codable, Sendable {
+enum AgentProvider: String, CaseIterable, Codable, CodingKeyRepresentable, Sendable {
     case cursor, codex, claude
 
     var title: String {
@@ -37,6 +37,32 @@ enum AgentProvider: String, CaseIterable, Codable, Sendable {
         case .cursor: "Cursor"
         case .codex: "Codex"
         case .claude: "Claude Code"
+        }
+    }
+
+    /// Model IDs offered in the settings pickers, in display order.
+    var modelPresets: [(id: String, title: String)] {
+        switch self {
+        case .cursor: [
+            ("composer-2.5", "Composer 2.5"),
+            ("auto", "Auto (Cursor 기본 선택)"),
+            ("gpt-5.3-codex", "GPT-5.3 Codex"),
+            ("gpt-5.3-codex-high", "GPT-5.3 Codex High"),
+            ("gpt-5.6-sol-high", "GPT-5.6 Sol High"),
+            ("claude-sonnet-5-high", "Claude Sonnet 5 High"),
+            ("claude-opus-5-thinking-high", "Claude Opus 5 Thinking High"),
+            ("claude-opus-5-5-high", "Claude Opus 5.5 High"),
+            ("claude-sonnet-5-5-high", "Claude Sonnet 5.5 High"),
+        ]
+        case .codex: [
+            ("gpt-6.1-terra", "GPT-6.1 Terra"),
+            ("gpt-6.1-sol", "GPT-6.1 Sol"),
+            ("gpt-6-sol", "GPT-6 Sol"),
+        ]
+        case .claude: [
+            ("claude-opus-5-5", "Claude Opus 5.5"),
+            ("claude-sonnet-5-5", "Claude Sonnet 5.5"),
+        ]
         }
     }
 
@@ -155,6 +181,49 @@ enum AgentProvider: String, CaseIterable, Codable, Sendable {
             throw CancellationError()
         } catch {
             throw ExternalAgentError(detail: "\(title) CLI 실행 실패. \(error.localizedDescription)")
+        }
+    }
+}
+
+/// Each user-facing feature that runs an agent. A feature can override the
+/// provider's default model; without an override it uses the default.
+enum AgentFeature: String, CaseIterable, Codable, CodingKeyRepresentable, Sendable {
+    case branchReview, branchQuestion, branchImplementation, pullRequestProposal, branchUnitTest, branchQuiz
+    case reviewAnalysis, reviewQuestion, reviewImplementation, conflictResolution, reReviewMessage, reviewResponseDraft
+    case specUnitTest, sessionSummary, sessionSpecClassification
+    case parentBranchRules
+
+    enum Group: String, CaseIterable {
+        case branch = "브랜치", pullRequest = "PR", specSession = "Spec·세션", rules = "규칙"
+    }
+
+    var group: Group {
+        switch self {
+        case .branchReview, .branchQuestion, .branchImplementation, .pullRequestProposal, .branchUnitTest, .branchQuiz: .branch
+        case .reviewAnalysis, .reviewQuestion, .reviewImplementation, .conflictResolution, .reReviewMessage, .reviewResponseDraft: .pullRequest
+        case .specUnitTest, .sessionSummary, .sessionSpecClassification: .specSession
+        case .parentBranchRules: .rules
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .branchReview: "브랜치 리뷰"
+        case .branchQuestion: "브랜치 리뷰 추가 질문"
+        case .branchImplementation: "브랜치 추가 구현"
+        case .pullRequestProposal: "PR 제안서 작성"
+        case .branchUnitTest: "브랜치 UnitTest"
+        case .branchQuiz: "브랜치 퀴즈"
+        case .reviewAnalysis: "리뷰 코멘트 분석"
+        case .reviewQuestion: "카드 질문·대화"
+        case .reviewImplementation: "리뷰 반영 구현"
+        case .conflictResolution: "머지 충돌 해결"
+        case .reReviewMessage: "재리뷰 요청 메시지"
+        case .reviewResponseDraft: "리뷰 답변 초안"
+        case .specUnitTest: "spec 기반 UnitTest"
+        case .sessionSummary: "세션 요약"
+        case .sessionSpecClassification: "세션 spec 분류"
+        case .parentBranchRules: "부모 브랜치 규칙 제안"
         }
     }
 }
