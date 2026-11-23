@@ -59,4 +59,34 @@ struct AgentFeatureModelTests {
         let existing = try JSONDecoder().decode(PersistedState.self, from: Data("{}".utf8))
         #expect(existing.agentFeatureModels.isEmpty)
     }
+
+    @Test("끈 모델은 선택 목록에서 빠지고 다시 켜면 돌아온다")
+    @MainActor func disabledModelIsHidden() {
+        let store = store()
+        store.claudeModel = ""
+        store.setAgentModel("claude-sonnet-5-5", provider: .claude, enabled: false)
+        #expect(!store.enabledModelPresets(for: .claude).contains { $0.id == "claude-sonnet-5-5" })
+        store.setAgentModel("claude-sonnet-5-5", provider: .claude, enabled: true)
+        #expect(store.enabledModelPresets(for: .claude).contains { $0.id == "claude-sonnet-5-5" })
+    }
+
+    @Test("기본 모델이나 기능별 모델로 쓰는 모델은 끌 수 없다")
+    @MainActor func inUseModelCannotBeDisabled() {
+        let store = store()
+        store.agentModel = "composer-2.5"
+        store.agentFeatureModels[.cursor] = [.branchQuiz: "auto"]
+        store.setAgentModel("composer-2.5", provider: .cursor, enabled: false)
+        store.setAgentModel("auto", provider: .cursor, enabled: false)
+        #expect(store.disabledAgentModels[.cursor]?.isEmpty ?? true)
+    }
+
+    @Test("끈 모델 목록은 저장 후 유지되고 예전 저장 파일은 빈 값으로 읽힌다")
+    func disabledModelsPersist() throws {
+        var state = PersistedState()
+        state.disabledAgentModels = [.codex: ["gpt-6-sol"]]
+        let restored = try JSONDecoder().decode(PersistedState.self, from: JSONEncoder().encode(state))
+        #expect(restored.disabledAgentModels[.codex] == ["gpt-6-sol"])
+        let existing = try JSONDecoder().decode(PersistedState.self, from: Data("{}".utf8))
+        #expect(existing.disabledAgentModels.isEmpty)
+    }
 }

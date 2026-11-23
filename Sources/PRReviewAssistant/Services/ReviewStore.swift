@@ -204,6 +204,10 @@ final class ReviewStore {
     var codexModel = "" { didSet { persist() } }
     var claudeModel = "" { didSet { persist() } }
     var agentFeatureModels: [AgentProvider: [AgentFeature: String]] = [:] { didSet { persist() } }
+    var disabledAgentModels: [AgentProvider: Set<String>] = [:] { didSet { persist() } }
+    /// Latest per-model connection check, keyed by `modelCheckKey`. Not persisted.
+    var agentModelChecks: [String: AgentConnection] = [:]
+    var checkingAgentModels: Set<String> = []
     private let pullRequestProposalVerifier = PullRequestProposalVerifier()
     private let unitTestVerifier = UnitTestVerifier()
     private let cursorHistory = CursorSessionHistoryService()
@@ -264,6 +268,7 @@ final class ReviewStore {
         codexModel = state.codexModel
         claudeModel = state.claudeModel
         agentFeatureModels = state.agentFeatureModels
+        disabledAgentModels = state.disabledAgentModels
         agentModel = state.agentModel
         customAgentModel = state.customAgentModel
         reviewAuthorFilter = state.reviewAuthorFilter
@@ -3099,6 +3104,48 @@ final class ReviewStore {
         return override.isEmpty ? effectiveAgentModel : override
     }
 
+    /// Presets the user has not turned off, in display order.
+    func enabledModelPresets(for provider: AgentProvider) -> [(id: String, title: String)] {
+        let disabled = disabledAgentModels[provider] ?? []
+        return provider.modelPresets.filter { !disabled.contains($0.id) }
+    }
+
+    /// Whether a model is selected as the provider's default or a feature override.
+    /// Such a model cannot be turned off.
+    func isAgentModelInUse(_ model: String, provider: AgentProvider) -> Bool {
+        let selected = switch provider {
+        case .cursor: agentModel
+        case .codex: codexModel
+        case .claude: claudeModel
+        }
+        return selected == model || (agentFeatureModels[provider]?.values.contains(model) ?? false)
+    }
+
+    func setAgentModel(_ model: String, provider: AgentProvider, enabled: Bool) {
+        guard enabled || !isAgentModelInUse(model, provider: provider) else { return }
+        if enabled { disabledAgentModels[provider]?.remove(model) } else { disabledAgentModels[provider, default: []].insert(model) }
+    }
+
+    static func modelCheckKey(_ model: String, provider: AgentProvider) -> String { "\(provider.rawValue)/\(model)" }
+
+    func checkAgentModel(_ model: String, provider: AgentProvider) async {
+        let key = Self.modelCheckKey(model, provider: provider)
+        guard !checkingAgentModels.contains(key) else { return }
+        checkingAgentModels.insert(key)
+        let agent = ReviewAgent(provider: provider)
+        agentModelChecks[key] = await Task.detached(priority: .userInitiated) { agent.checkModel(model) }.value
+        checkingAgentModels.remove(key)
+    }
+
+    /// Checks every enabled preset of the provider at the same time.
+    func checkEnabledAgentModels(provider: AgentProvider) async {
+        await withTaskGroup(of: Void.self) { group in
+            for preset in enabledModelPresets(for: provider) {
+                group.addTask { await self.checkAgentModel(preset.id, provider: provider) }
+            }
+        }
+    }
+
     func worktreePath(for pr: PullRequest) -> String? { worktreePaths[worktreeKey(pr)] }
     func analysis(for pr: PullRequest) -> AgentAnalysis? { analyses[worktreeKey(pr)] }
     func comments(for pr: PullRequest) -> [ReviewComment] { comments[worktreeKey(pr)] ?? [] }
@@ -3355,6 +3402,7 @@ final class ReviewStore {
         state.codexModel = codexModel
         state.claudeModel = claudeModel
         state.agentFeatureModels = agentFeatureModels
+        state.disabledAgentModels = disabledAgentModels
         state.branchReviewCards = branchReviewCards
         state.branchCardReviewed = branchCardReviewed
         state.branchImplementationResults = branchImplementationResults

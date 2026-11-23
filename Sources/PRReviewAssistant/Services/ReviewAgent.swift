@@ -635,6 +635,20 @@ struct ReviewAgent: Sendable {
         }
     }
 
+    /// Sends a minimal prompt with one model in an empty folder to confirm the CLI can use it.
+    func checkModel(_ model: String) -> AgentConnection {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+            let text = try respond(to: .init(prompt: "Reply with exactly: OK", model: model, directory: directory.path, trustWorkspace: true, timeout: 120)).text
+            return text.isEmpty ? .init(state: .failed, detail: "빈 응답") : .init(state: .connected, detail: "연결됨")
+        } catch {
+            let detail = error.localizedDescription
+            return .init(state: Self.requiresLogin(detail) ? .needsLogin : .failed, detail: Self.concise(detail))
+        }
+    }
+
     static func requiresLogin(_ text: String) -> Bool {
         let normalized = text.lowercased()
         return ["not logged in", "login required", "authentication required", "please log in", "unauthenticated"]

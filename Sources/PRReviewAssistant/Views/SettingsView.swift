@@ -211,7 +211,7 @@ private struct AgentSettingsView: View {
 
             Section("모델") {
                 Picker("Cursor 모델", selection: $store.agentModel) {
-                    ForEach(AgentProvider.cursor.modelPresets, id: \.id) { preset in
+                    ForEach(store.enabledModelPresets(for: .cursor), id: \.id) { preset in
                         Text(preset.title).tag(preset.id)
                     }
                 }
@@ -221,6 +221,7 @@ private struct AgentSettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
 
+            ModelListSection(store: store)
             FeatureModelSection(store: store)
 
             Section("에이전트 권한") {
@@ -295,7 +296,7 @@ private struct ExternalAgentSettings: View {
                 if provider == .codex {
                     Picker("Codex 모델", selection: $store.codexModel) {
                         Text("CLI 기본값").tag("")
-                        ForEach(provider.modelPresets, id: \.id) { preset in
+                        ForEach(store.enabledModelPresets(for: provider), id: \.id) { preset in
                             Text(preset.title).tag(preset.id)
                         }
                         if store.codexModel != "" && !provider.modelPresets.contains(where: { $0.id == store.codexModel }) {
@@ -306,7 +307,7 @@ private struct ExternalAgentSettings: View {
                 } else {
                     Picker("Claude Code 모델", selection: $store.claudeModel) {
                         Text("CLI 기본값").tag("")
-                        ForEach(provider.modelPresets, id: \.id) { preset in
+                        ForEach(store.enabledModelPresets(for: provider), id: \.id) { preset in
                             Text(preset.title).tag(preset.id)
                         }
                         if store.claudeModel != "" && !provider.modelPresets.contains(where: { $0.id == store.claudeModel }) {
@@ -320,6 +321,7 @@ private struct ExternalAgentSettings: View {
                     }
                 }
             }
+            ModelListSection(store: store)
             FeatureModelSection(store: store)
         }
         .formStyle(.grouped)
@@ -333,6 +335,72 @@ private struct ExternalAgentSettings: View {
         let provider = provider
         connection = await Task.detached(priority: .userInitiated) { provider.connection() }.value
         checking = false
+    }
+}
+
+/// The provider's preset models as rows, each with a connection check and an
+/// on/off toggle. Turned-off models are hidden from the model pickers.
+private struct ModelListSection: View {
+    @Bindable var store: ReviewStore
+
+    var body: some View {
+        let provider = store.agentProvider
+        Section {
+            ForEach(provider.modelPresets, id: \.id) { preset in
+                ModelListRow(store: store, provider: provider, model: preset.id, title: preset.title)
+            }
+            Text("연결 확인은 모델마다 짧은 질문을 한 번 보냅니다. 사용 중인 모델(기본 모델이나 기능별 모델로 선택된 모델)은 끌 수 없습니다.")
+                .font(.caption).foregroundStyle(.secondary)
+        } header: {
+            HStack {
+                Text("모델 목록 (\(provider.title))")
+                Spacer()
+                Button("사용 중인 모델 모두 확인") {
+                    Task { await store.checkEnabledAgentModels(provider: provider) }
+                }
+            }
+        }
+    }
+}
+
+private struct ModelListRow: View {
+    @Bindable var store: ReviewStore
+    let provider: AgentProvider
+    let model: String
+    let title: String
+
+    var body: some View {
+        let key = ReviewStore.modelCheckKey(model, provider: provider)
+        let checking = store.checkingAgentModels.contains(key)
+        let inUse = store.isAgentModelInUse(model, provider: provider)
+        let enabled = !(store.disabledAgentModels[provider]?.contains(model) ?? false)
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                Text(model).font(.caption.monospaced()).foregroundStyle(.secondary)
+            }
+            Spacer()
+            if checking {
+                ProgressView().controlSize(.small)
+            } else if let check = store.agentModelChecks[key] {
+                Label(check.detail, systemImage: check.state == .connected ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(check.state == .connected ? .green : .red)
+                    .lineLimit(1).truncationMode(.tail)
+                    .frame(maxWidth: 180, alignment: .trailing)
+                    .help(check.detail)
+            }
+            Button("확인") { Task { await store.checkAgentModel(model, provider: provider) } }
+                .disabled(checking || !enabled)
+            Toggle("사용", isOn: Binding(
+                get: { enabled },
+                set: { store.setAgentModel(model, provider: provider, enabled: $0) }
+            ))
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .disabled(inUse)
+            .help(inUse ? "사용 중인 모델은 끌 수 없습니다." : "끄면 모델 선택 목록에서 숨깁니다.")
+        }
     }
 }
 
@@ -396,7 +464,7 @@ private struct FeatureModelRow: View {
         let defaultModel = store.effectiveAgentModel
         Picker(feature.title, selection: selection) {
             Text("기본 모델 따름 (\(defaultModel.isEmpty ? "CLI 기본값" : defaultModel))").tag("")
-            ForEach(provider.modelPresets, id: \.id) { preset in
+            ForEach(store.enabledModelPresets(for: provider), id: \.id) { preset in
                 Text(preset.title).tag(preset.id)
             }
             Text("직접 입력…").tag(Self.customTag)
