@@ -24,10 +24,51 @@ struct ReviewAgentTests {
             ["agent", "--print", "--output-format", "text", "--trust", "--workspace", "/w", "--model", "m", "--", "구현"])
         #expect(AgentProvider.cursorArguments(for: .init(prompt: "요약", model: "")) ==
             ["agent", "--print", "--output-format", "text", "--mode", "ask", "--", "요약"])
-        #expect(AgentProvider.cursorArguments(for: .init(prompt: "질문", model: "m", directory: "/r", trustWorkspace: true, cursorOutput: .streamJSON, resumeSessionID: "chat-1")) ==
+        #expect(AgentProvider.cursorArguments(for: .init(prompt: "질문", model: "m", directory: "/r", trustWorkspace: true, cursorOutput: .streamJSON, sessionID: "chat-1", resumesSession: true)) ==
             ["agent", "--print", "--output-format", "stream-json", "--mode", "ask", "--workspace", "/r", "--trust", "--model", "m", "--resume=chat-1", "--", "질문"])
         // A read-only run never gets --trust unless the user approved the workspace.
         #expect(!AgentProvider.cursorArguments(for: .init(prompt: "-로 시작", model: "", directory: "/r", cursorOutput: .json)).contains("--trust"))
+    }
+
+    @Test("Claude는 세션이 있는 요청만 세션을 남기고, 새 대화와 이어가기 인자를 구분한다")
+    func buildsClaudeSessionArguments() {
+        let oneOff = AgentProvider.claudeArguments(for: .init(prompt: "요약", model: ""))
+        #expect(oneOff.contains("--no-session-persistence"))
+        #expect(!oneOff.contains("--session-id") && !oneOff.contains("--resume"))
+        let started = AgentProvider.claudeArguments(for: .init(prompt: "질문", model: "", sessionID: "s-1"))
+        #expect(started.suffix(2) == ["--session-id", "s-1"])
+        #expect(!started.contains("--no-session-persistence"))
+        let resumed = AgentProvider.claudeArguments(for: .init(prompt: "질문", model: "", sessionID: "s-1", resumesSession: true))
+        #expect(resumed.suffix(2) == ["--resume", "s-1"])
+        #expect(resumed.contains("plan"))
+    }
+
+    @Test("추가 질문은 이어가기를 지원하는 제공자만 세션을 만들고 이어간다")
+    func followUpRequestsUseProviderSessions() {
+        func request(_ provider: AgentProvider, resumeID: String?) -> AgentRequest {
+            ReviewAgent.followUpRequest(provider: provider, prompt: "전체", resumedPrompt: "이어서", resumeID: resumeID,
+                                        directory: "/r", trustWorkspace: false, model: "m")
+        }
+        let fresh = request(.claude, resumeID: nil)
+        #expect(fresh.prompt == "전체" && fresh.sessionID != nil && !fresh.resumesSession)
+        let resumed = request(.claude, resumeID: "s-1")
+        #expect(resumed.prompt == "이어서" && resumed.sessionID == "s-1" && resumed.resumesSession)
+        let codex = request(.codex, resumeID: nil)
+        #expect(codex.sessionID == nil && !codex.resumesSession)
+        #expect(AgentProvider.cursorArguments(for: request(.cursor, resumeID: nil)).allSatisfy { !$0.hasPrefix("--resume") })
+
+        #expect(!ReviewAgent.shouldRetryFresh(after: CancellationError()))
+        #expect(!ReviewAgent.shouldRetryFresh(after: CommandError.timedOut("claude")))
+        #expect(ReviewAgent.shouldRetryFresh(after: ExternalAgentError(detail: "No conversation found with session ID")))
+    }
+
+    @Test("제공자 정보가 없는 기존 세션은 Cursor 세션으로 읽고 다른 제공자에서는 이어가지 않는다")
+    func legacySessionsBelongToCursor() throws {
+        let json = #"{"id":"chat-1","directory":"/r","sha":"abc","model":"m","trusted":false}"#
+        let session = try JSONDecoder().decode(AgentSession.self, from: Data(json.utf8))
+        #expect(session.provider == nil)
+        #expect(session.matches(provider: .cursor, directory: "/r", sha: "abc", model: "m", trusted: false))
+        #expect(!session.matches(provider: .claude, directory: "/r", sha: "abc", model: "m", trusted: false))
     }
 
     @Test("퀴즈 응답에서 코드 펜스를 허용하고 JSON 문자열 안의 펜스는 유지한다")

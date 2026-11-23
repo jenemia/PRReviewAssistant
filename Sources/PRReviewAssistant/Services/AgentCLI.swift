@@ -21,8 +21,12 @@ struct AgentRequest: Sendable {
     var timeout: TimeInterval = 300
     var allowSubagents = false
     var cursorOutput: CursorOutput = .text
-    /// A Cursor session to continue. Other CLIs always start fresh.
-    var resumeSessionID: String?
+    /// The conversation this run belongs to. Without it the CLI keeps no session.
+    /// Claude Code starts a new session under this ID; Cursor picks its own ID
+    /// for a new session and reports it in its stream output.
+    var sessionID: String?
+    /// Continue the existing conversation `sessionID` instead of starting it.
+    var resumesSession = false
 }
 
 enum AgentProvider: String, CaseIterable, Codable, Sendable {
@@ -39,6 +43,11 @@ enum AgentProvider: String, CaseIterable, Codable, Sendable {
     var skillDirectory: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".\(rawValue)/skills", isDirectory: true)
     }
+
+    /// Whether follow-up questions continue the card's earlier conversation.
+    /// Codex stays off: its `exec resume` has no `--sandbox` option, and keeping
+    /// a resumed run read-only has not been verified yet.
+    var supportsResume: Bool { self != .codex }
 
     var loginArguments: [String] {
         self == .claude ? ["auth", "login"] : ["login"]
@@ -80,8 +89,24 @@ enum AgentProvider: String, CaseIterable, Codable, Sendable {
         if let directory = request.directory { arguments += ["--workspace", directory] }
         if request.access == .readOnly && request.trustWorkspace { arguments.append("--trust") }
         if !request.model.isEmpty { arguments += ["--model", request.model] }
-        if let resumeSessionID = request.resumeSessionID { arguments.append("--resume=\(resumeSessionID)") }
+        if request.resumesSession, let sessionID = request.sessionID { arguments.append("--resume=\(sessionID)") }
         arguments += ["--", request.prompt]
+        return arguments
+    }
+
+    /// Claude Code arguments before `--model`. The prompt goes in on stdin.
+    static func claudeArguments(for request: AgentRequest) -> [String] {
+        let writable = request.access == .writable
+        var arguments = ["--print", "--output-format", "text", "--strict-mcp-config",
+                         "--setting-sources", "user",
+                         "--permission-mode", writable ? "acceptEdits" : "plan",
+                         "--tools", writable ? "Read,Glob,Grep,Edit,Write,Bash" : (request.allowSubagents ? "Read,Glob,Grep,Bash,Agent" : "Read,Glob,Grep,Bash"),
+                         "--disable-slash-commands"]
+        if let sessionID = request.sessionID {
+            arguments += [request.resumesSession ? "--resume" : "--session-id", sessionID]
+        } else {
+            arguments.append("--no-session-persistence")
+        }
         return arguments
     }
 
@@ -115,12 +140,7 @@ enum AgentProvider: String, CaseIterable, Codable, Sendable {
                          "--sandbox", writable ? "workspace-write" : "read-only",
                          "--output-last-message", file.path]
         case .claude:
-            arguments = ["--print", "--output-format", "text", "--no-session-persistence",
-                         "--strict-mcp-config",
-                         "--setting-sources", "user",
-                         "--permission-mode", writable ? "acceptEdits" : "plan",
-                         "--tools", writable ? "Read,Glob,Grep,Edit,Write,Bash" : (request.allowSubagents ? "Read,Glob,Grep,Bash,Agent" : "Read,Glob,Grep,Bash"),
-                         "--disable-slash-commands"]
+            arguments = Self.claudeArguments(for: request)
         }
         if !model.isEmpty { arguments += ["--model", model] }
         if self == .codex { arguments.append("-") }

@@ -23,7 +23,7 @@ struct ReviewAgent: Sendable {
         to request: AgentRequest, onOutputLine: (@Sendable (Data) -> Void)? = nil
     ) throws -> (text: String, sessionID: String?) {
         let result = try provider.run(request, onOutputLine: onOutputLine)
-        guard provider == .cursor else { return (result.output.trimmingCharacters(in: .whitespacesAndNewlines), nil) }
+        guard provider == .cursor else { return (result.output.trimmingCharacters(in: .whitespacesAndNewlines), request.sessionID) }
         if request.cursorOutput == .streamJSON { return try Self.streamResult(result) }
         return (try Self.validatedTextResult(result).output.trimmingCharacters(in: .whitespacesAndNewlines), nil)
     }
@@ -121,16 +121,55 @@ struct ReviewAgent: Sendable {
         session: AgentSession?, progress: (@Sendable (String) -> Void)?,
         onSession: (@Sendable (AgentSession?) async -> Void)?
     ) async throws -> String {
-        // Only Cursor can continue an earlier session; other CLIs always start fresh.
-        let resumeID = provider == .cursor
-            ? session.flatMap { $0.matches(directory: directory, sha: sha, model: model, trusted: trustWorkspace) ? $0.id : nil }
+        let resumeID = provider.supportsResume
+            ? session.flatMap { $0.matches(provider: provider, directory: directory, sha: sha, model: model, trusted: trustWorkspace) ? $0.id : nil }
             : nil
         await onSession?(nil)
-        let request = AgentRequest(
+        let result: (text: String, sessionID: String?)
+        do {
+            result = try await followUpResponse(
+                Self.followUpRequest(provider: provider, prompt: prompt, resumedPrompt: resumedPrompt, resumeID: resumeID,
+                                     directory: directory, trustWorkspace: trustWorkspace, model: model),
+                progress: progress
+            )
+        } catch where resumeID != nil && Self.shouldRetryFresh(after: error) {
+            // The saved session may be gone (deleted or expired). Start over once
+            // with the full prompt, which carries the card's context by itself.
+            result = try await followUpResponse(
+                Self.followUpRequest(provider: provider, prompt: prompt, resumedPrompt: resumedPrompt, resumeID: nil,
+                                     directory: directory, trustWorkspace: trustWorkspace, model: model),
+                progress: progress
+            )
+        }
+        if let id = result.sessionID {
+            await onSession?(.init(id: id, directory: directory, sha: sha, model: model, trusted: trustWorkspace, provider: provider))
+        }
+        return result.text
+    }
+
+    /// A follow-up run, kept as a session when the provider can continue it later.
+    static func followUpRequest(
+        provider: AgentProvider, prompt: String, resumedPrompt: String, resumeID: String?,
+        directory: String, trustWorkspace: Bool, model: String
+    ) -> AgentRequest {
+        AgentRequest(
             prompt: resumeID == nil ? prompt : resumedPrompt, model: model, directory: directory,
-            trustWorkspace: trustWorkspace, cursorOutput: .streamJSON, resumeSessionID: resumeID
+            trustWorkspace: trustWorkspace, cursorOutput: .streamJSON,
+            sessionID: provider.supportsResume ? (resumeID ?? UUID().uuidString.lowercased()) : nil,
+            resumesSession: resumeID != nil
         )
-        let result = try await runCancellable {
+    }
+
+    /// A failed resume is retried as a new conversation, except when the user
+    /// cancelled or the run timed out, where a second full run would not help.
+    static func shouldRetryFresh(after error: Error) -> Bool {
+        if error is CancellationError { return false }
+        if case CommandError.timedOut = error { return false }
+        return true
+    }
+
+    private func followUpResponse(_ request: AgentRequest, progress: (@Sendable (String) -> Void)?) async throws -> (text: String, sessionID: String?) {
+        try await runCancellable {
             do {
                 return try respond(to: request, onOutputLine: { line in
                     if let progress, let message = Self.streamProgress(for: line) { progress(message) }
@@ -139,10 +178,6 @@ struct ReviewAgent: Sendable {
                 throw Self.streamFailure(result)
             }
         }
-        if let id = result.sessionID {
-            await onSession?(.init(id: id, directory: directory, sha: sha, model: model, trusted: trustWorkspace))
-        }
-        return result.text
     }
 
     /// A read-only branch review. The branch remains selected only as Git data;

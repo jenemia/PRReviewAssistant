@@ -259,9 +259,12 @@ struct AgentSession: Codable, Hashable, Sendable {
     let sha: String
     let model: String
     let trusted: Bool
+    /// The CLI that owns the session. Sessions saved before this field are Cursor's.
+    var provider: AgentProvider?
 
-    func matches(directory: String, sha: String, model: String, trusted: Bool) -> Bool {
-        self.directory == directory && self.sha == sha && self.model == model && self.trusted == trusted
+    func matches(provider: AgentProvider, directory: String, sha: String, model: String, trusted: Bool) -> Bool {
+        (self.provider ?? .cursor) == provider &&
+            self.directory == directory && self.sha == sha && self.model == model && self.trusted == trusted
     }
 }
 
