@@ -36,8 +36,12 @@ struct PersistedState: Codable {
     var claudeModel = ""
     /// Per-feature model overrides, kept per provider because model IDs differ.
     var agentFeatureModels: [AgentProvider: [AgentFeature: String]] = [:]
+    /// Per-feature agent provider overrides. Empty means follow `agentProvider`.
+    var agentFeatureProviders: [AgentFeature: AgentProvider] = [:]
     /// Preset model IDs the user turned off. They are hidden from model pickers.
     var disabledAgentModels: [AgentProvider: Set<String>] = [:]
+    /// Agent providers the user turned off (for example after a subscription ended).
+    var disabledAgentProviders: Set<AgentProvider> = []
     /// The GitHub login (or the local Git author name as a fallback) whose PRs
     /// are shown in the review inbox.
     var reviewAuthorFilter = ""
@@ -76,7 +80,7 @@ struct PersistedState: Codable {
         case hasEstablishedNotificationBaseline, approvedPullRequestIDs, hasEstablishedApprovalBaseline
         case agentProvider, reviewSkillPaths, codexModel, claudeModel, monitoringEnabled, monitoringInterval, analyses, agentReviewCards, hiddenReviewCommentIDsByPullRequest, reviewHistoryRoundsByPullRequest, implementationPlans, committedHeads, postedReReviewCommentTokens, agentModel, customAgentModel, reviewAuthorFilter, petVisible, petSize, petReduceMotion, latestPetNotification, hasCompletedOnboarding, skippedOnboardingSteps, projectCopyFolder, updateRepository, updatesEnabled, lastNotifiedUpdateTag, requestedBranches, cursorSpecSidebarCache, automaticCursorSessionClassification, automaticReviewAnalysis
         case appPostedCommentIDs, reviewRolesDirectory
-        case agentFeatureModels, disabledAgentModels
+        case agentFeatureModels, agentFeatureProviders, disabledAgentModels, disabledAgentProviders
         case branchReviewCards, branchCardReviewed, branchImplementationResults, branchImplementationInProgress, branchUnitTestResults, specUnitTestResults
     }
     init(repositories: [RegisteredRepository] = [], processedCommentIDs: Set<String> = [], knownPullRequestIDs: Set<String> = [], unreadPullRequestIDs: Set<String> = [], unreadCommentIDs: Set<String> = [], hasEstablishedNotificationBaseline: Bool = false, approvedPullRequestIDs: Set<String> = [], hasEstablishedApprovalBaseline: Bool = false, monitoringEnabled: Bool = true, monitoringInterval: Int = 60, analyses: [String: AgentAnalysis] = [:], agentReviewCards: [AgentReviewCard] = [], hiddenReviewCommentIDsByPullRequest: [String: Set<String>] = [:], reviewHistoryRoundsByPullRequest: [String: [Set<String>]] = [:], implementationPlans: [String: ImplementationPlan] = [:], committedHeads: [String: String] = [:], postedReReviewCommentTokens: Set<String> = [], agentModel: String = "composer-2.5", customAgentModel: String = "", reviewAuthorFilter: String = "", petVisible: Bool = true, petSize: Double = 190.0, petReduceMotion: Bool = false, latestPetNotification: PetBubbleContent? = nil, hasCompletedOnboarding: Bool = false, skippedOnboardingSteps: Set<String> = [], projectCopyFolder: String = "", updateRepository: String = "", updatesEnabled: Bool = true, lastNotifiedUpdateTag: String = "", requestedBranches: [RepositoryBranch] = [], cursorSpecSidebarCache: CursorSpecSidebarCache = CursorSpecSidebarCache(), automaticCursorSessionClassification: Bool = false, automaticReviewAnalysis: Bool = true) {
@@ -142,7 +146,9 @@ struct PersistedState: Codable {
         codexModel = try container.decodeIfPresent(String.self, forKey: .codexModel) ?? ""
         claudeModel = try container.decodeIfPresent(String.self, forKey: .claudeModel) ?? ""
         agentFeatureModels = (try? container.decodeIfPresent([AgentProvider: [AgentFeature: String]].self, forKey: .agentFeatureModels)) ?? [:]
+        agentFeatureProviders = (try? container.decodeIfPresent([AgentFeature: AgentProvider].self, forKey: .agentFeatureProviders)) ?? [:]
         disabledAgentModels = (try? container.decodeIfPresent([AgentProvider: Set<String>].self, forKey: .disabledAgentModels)) ?? [:]
+        disabledAgentProviders = (try? container.decodeIfPresent(Set<AgentProvider>.self, forKey: .disabledAgentProviders)) ?? []
         customAgentModel = try container.decodeIfPresent(String.self, forKey: .customAgentModel) ?? ""
         reviewAuthorFilter = try container.decodeIfPresent(String.self, forKey: .reviewAuthorFilter) ?? ""
         petVisible = try container.decodeIfPresent(Bool.self, forKey: .petVisible) ?? true

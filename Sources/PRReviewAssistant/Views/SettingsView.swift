@@ -134,7 +134,7 @@ struct SettingsView: View {
             TeamRulesSettingsView(store: store)
                 .tabItem { Label("팀 규칙", systemImage: "list.bullet.rectangle") }
         }
-        .frame(width: 640, height: 460)
+        .frame(width: 640, height: 520)
     }
 
 }
@@ -143,190 +143,181 @@ private struct AgentSettingsView: View {
     @Bindable var store: ReviewStore
 
     var body: some View {
-        VStack(spacing: 0) {
-            Picker("에이전트", selection: $store.agentProvider) {
-                ForEach(AgentProvider.allCases, id: \.self) { provider in
-                    Text(provider.title).tag(provider)
-                }
-            }
-            .padding()
-
-            if store.agentProvider == .cursor {
-                cursorSettings
-            } else {
-                ExternalAgentSettings(store: store, provider: store.agentProvider)
-                    .id(store.agentProvider)
-            }
-        }
-    }
-
-    private var cursorSettings: some View {
-        Form {
-            Section("Cursor CLI") {
-                HStack(spacing: 10) {
-                    Image(systemName: statusSymbol)
-                        .font(.title2)
-                        .foregroundStyle(statusColor)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(statusTitle).fontWeight(.medium)
-                        Text(store.cursorConnection.detail)
-                            .font(.caption).foregroundStyle(.secondary)
-                            .lineLimit(2)
+        ScrollView {
+            Form {
+                Section("기본 에이전트") {
+                    ForEach(AgentProvider.allCases, id: \.self) { provider in
+                        DefaultProviderRow(store: store, provider: provider)
                     }
-                }
-                .padding(.vertical, 4)
-
-                LabeledContent("실행 명령") {
-                    Text("cursor agent")
-                        .font(.system(.body, design: .monospaced))
-                }
-
-                Button("Cursor 로그인 진행", systemImage: "person.badge.key") {
-                    store.startCursorLogin()
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(store.cursorConnection.state != .needsLogin)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-
-            Section("연결") {
-                Button("연결 상태 다시 확인", systemImage: "arrow.clockwise") {
-                    Task { await store.checkCursorConnection() }
-                }
-                .disabled(store.isCheckingCursorConnection)
-                if store.cursorConnection.state == .needsLogin {
-                    Text("로그인 필요 상태입니다. 버튼을 누르면 Terminal과 브라우저에서 Cursor 인증을 진행합니다. 인증을 마치고 같은 버튼을 다시 누르면 연결을 확인합니다.")
+                    Text("기능별 설정에서 '기본 따름'을 고르면 여기서 지정한 에이전트가 사용됩니다.")
                         .font(.caption).foregroundStyle(.secondary)
-                } else if store.cursorConnection.state == .connected {
-                    Text("연결된 Agent는 선택한 PR 작업 폴더의 ask 모드와 분석 모드에서 사용할 수 있습니다.")
-                        .font(.caption).foregroundStyle(.secondary)
-                } else if store.cursorConnection.state == .failed {
-                    Text("CLI는 설치되어 있습니다. 표시된 오류를 확인한 뒤 네트워크 또는 Cursor 서비스 상태를 점검하고 다시 시도하세요.")
-                        .font(.caption).foregroundStyle(.secondary)
-                } else {
-                    Text("상태를 확인한 뒤 설치 또는 로그인에 필요한 다음 단계를 안내합니다.")
-                    .font(.caption).foregroundStyle(.secondary)
                 }
-            }
 
-            Section("모델") {
-                Picker("Cursor 모델", selection: $store.agentModel) {
-                    ForEach(store.enabledModelPresets(for: .cursor), id: \.id) { preset in
-                        Text(preset.title).tag(preset.id)
+                Section {
+                    ForEach(AgentProvider.allCases, id: \.self) { provider in
+                        ProviderAgentFold(store: store, provider: provider)
                     }
+                } header: {
+                    Text("에이전트 연결 및 모델")
                 }
-                TextField("사용자 지정 모델 ID (선택)", text: $store.customAgentModel)
-                    .font(.system(.body, design: .monospaced))
-                Text(store.customAgentModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "선택한 모델이 plan 분석과 ask 대화 모두에 적용됩니다." : "사용자 지정 모델 ID가 선택값보다 우선 적용됩니다.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
 
-            ModelListSection(store: store)
-            FeatureModelSection(store: store)
+                FeatureProviderSection(store: store)
 
-            Section("에이전트 권한") {
-                Label("기본 분석은 읽기 전용 plan 모드로 실행됩니다.", systemImage: "eye")
-                Label("수정·테스트는 선택한 PR 작업 폴더에서만 수행됩니다.", systemImage: "folder.badge.gearshape")
-                Label("리뷰 코멘트는 실행 지시가 아닌 분석 데이터로만 전달됩니다.", systemImage: "checkmark.shield")
+                Section("에이전트 권한") {
+                    Label("기본 분석은 읽기 전용 plan 모드로 실행됩니다.", systemImage: "eye")
+                    Label("수정·테스트는 선택한 PR 작업 폴더에서만 수행됩니다.", systemImage: "folder.badge.gearshape")
+                    Label("리뷰 코멘트는 실행 지시가 아닌 분석 데이터로만 전달됩니다.", systemImage: "checkmark.shield")
+                }
             }
+            .formStyle(.grouped)
         }
-        .formStyle(.grouped)
         .padding()
         .task { await store.checkCursorConnection() }
-    }
-
-    private var statusTitle: String {
-        switch store.cursorConnection.state {
-        case .connected: "연결됨"
-        case .needsLogin: "로그인 필요"
-        case .unavailable: "Cursor CLI를 찾을 수 없음"
-        case .failed: "LLM 연결 실패"
-        case .unknown: "연결 확인 전"
+        .alert("Cursor 작업 공간 신뢰", isPresented: Binding(
+            get: { store.modelCheckWorkspaceTrustRequest != nil },
+            set: { if !$0 { store.modelCheckWorkspaceTrustRequest = nil } }
+        )) {
+            Button("취소", role: .cancel) { store.modelCheckWorkspaceTrustRequest = nil }
+            Button("Terminal에서 연결", systemImage: "terminal") { store.startModelCheckWorkspaceTrust() }
+            Button("신뢰 후 다시 확인") { store.retryModelCheckAfterWorkspaceTrust() }
+        } message: {
+            Text(store.modelCheckWorkspaceTrustRequest?.detail ?? "Cursor가 모델 확인용 폴더에 접근하려면 작업 공간을 신뢰해야 합니다. Terminal에서 신뢰를 승인한 뒤 다시 확인하세요.")
         }
     }
-
-    private var statusSymbol: String {
-        switch store.cursorConnection.state {
-        case .connected: "checkmark.circle.fill"
-        case .needsLogin: "person.crop.circle.badge.exclamationmark"
-        case .unavailable: "exclamationmark.triangle.fill"
-        case .failed: "wifi.exclamationmark"
-        case .unknown: "questionmark.circle"
-        }
-    }
-
-    private var statusColor: Color {
-        switch store.cursorConnection.state {
-        case .connected: .green
-        case .needsLogin: .orange
-        case .unavailable: .red
-        case .failed: .red
-        case .unknown: .secondary
-        }
-    }
-
 }
 
-private struct ExternalAgentSettings: View {
+private struct DefaultProviderRow: View {
+    @Bindable var store: ReviewStore
+    let provider: AgentProvider
+
+    var body: some View {
+        Button {
+            store.agentProvider = provider
+        } label: {
+            HStack {
+                Image(systemName: store.agentProvider == provider ? "largecircle.fill.circle" : "circle")
+                    .foregroundStyle(store.agentProvider == provider ? Color.accentColor : .secondary)
+                Text(provider.featurePickerTitle)
+                Spacer()
+                Text(provider.title)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(!store.isAgentProviderEnabled(provider))
+    }
+}
+
+/// One agent provider: connection, default model, and preset rows in a fold.
+private struct ProviderAgentFold: View {
+    @Bindable var store: ReviewStore
+    let provider: AgentProvider
+    @State private var isExpanded = false
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $isExpanded) {
+            ProviderConnectionSection(store: store, provider: provider)
+            ProviderDefaultModelSection(store: store, provider: provider)
+            ProviderModelListSection(store: store, provider: provider)
+            ProviderFeatureModelSection(store: store, provider: provider)
+        } label: {
+            HStack {
+                Toggle("", isOn: Binding(
+                    get: { store.isAgentProviderEnabled(provider) },
+                    set: { store.setAgentProvider(provider, enabled: $0) }
+                ))
+                .labelsHidden()
+                .disabled(provider == store.agentProvider)
+                .help(provider == store.agentProvider ? "기본 에이전트는 끌 수 없습니다. 다른 에이전트를 기본으로 지정한 뒤 끄세요." : "끄면 이 에이전트를 쓰던 기능은 기본 에이전트로 실행됩니다.")
+                Text(provider.featurePickerTitle)
+                    .fontWeight(.medium)
+                if provider == store.agentProvider {
+                    Text("*활성화중").font(.caption).foregroundStyle(.green)
+                }
+                Spacer()
+                Text(store.effectiveAgentModel(for: provider).isEmpty ? "CLI 기본값" : store.effectiveAgentModel(for: provider))
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .onAppear { if provider == store.agentProvider { isExpanded = true } }
+    }
+}
+
+private struct ProviderConnectionSection: View {
     @Bindable var store: ReviewStore
     let provider: AgentProvider
     @State private var connection = AgentConnection(state: .unknown, detail: "CLI 연결 확인 중")
     @State private var checking = false
 
     var body: some View {
-        Form {
-            Section("\(provider.title) CLI") {
+        Group {
+            if provider == .cursor {
+                HStack(spacing: 10) {
+                    Image(systemName: cursorStatusSymbol)
+                        .foregroundStyle(cursorStatusColor)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(cursorStatusTitle).fontWeight(.medium)
+                        Text(store.cursorConnection.detail)
+                            .font(.caption).foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                }
+                Button("Cursor 로그인 진행", systemImage: "person.badge.key") {
+                    store.startCursorLogin()
+                }
+                .disabled(store.cursorConnection.state != .needsLogin)
+                Button("연결 상태 다시 확인", systemImage: "arrow.clockwise") {
+                    Task { await store.checkCursorConnection() }
+                }
+                .disabled(store.isCheckingCursorConnection)
+            } else {
                 Text(connection.detail)
+                    .font(.caption)
                 Button("연결 상태 다시 확인", systemImage: "arrow.clockwise") {
                     Task { await refreshConnection() }
                 }
                 .disabled(checking)
                 Button("Terminal에서 로그인", systemImage: "person.badge.key") {
-                    do {
-                        let command = ProcessRunner.terminalPathExport + "; " + ([provider.rawValue] + provider.loginArguments).joined(separator: " ")
-                        try ProcessRunner().launchInTerminal(command: command)
-                        connection = .init(state: .needsLogin, detail: "로그인을 마친 뒤 연결 상태를 다시 확인하세요.")
-                    } catch {
-                        connection = .init(state: .failed, detail: error.localizedDescription)
-                    }
+                    loginInTerminal()
                 }
                 .disabled(checking || connection.state == .unavailable)
             }
-            Section("모델") {
-                if provider == .codex {
-                    Picker("Codex 모델", selection: $store.codexModel) {
-                        Text("CLI 기본값").tag("")
-                        ForEach(store.enabledModelPresets(for: provider), id: \.id) { preset in
-                            Text(preset.title).tag(preset.id)
-                        }
-                        if store.codexModel != "" && !provider.modelPresets.contains(where: { $0.id == store.codexModel }) {
-                            Text(store.codexModel).tag(store.codexModel)
-                        }
-                    }
-                    TextField("모델 ID", text: $store.codexModel)
-                } else {
-                    Picker("Claude Code 모델", selection: $store.claudeModel) {
-                        Text("CLI 기본값").tag("")
-                        ForEach(store.enabledModelPresets(for: provider), id: \.id) { preset in
-                            Text(preset.title).tag(preset.id)
-                        }
-                        if store.claudeModel != "" && !provider.modelPresets.contains(where: { $0.id == store.claudeModel }) {
-                            Text(store.claudeModel).tag(store.claudeModel)
-                        }
-                    }
-                    TextField("모델 ID", text: $store.claudeModel)
-                    if store.claudeModel == "claude-opus-5-5" {
-                        Text("Opus 5.5를 사용하려면 Claude Code 2.1.280 이상이 필요합니다.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-            }
-            ModelListSection(store: store)
-            FeatureModelSection(store: store)
         }
-        .formStyle(.grouped)
-        .padding()
-        .task { await refreshConnection() }
+        .task(id: provider) {
+            if provider != .cursor { await refreshConnection() }
+        }
+    }
+
+    private var cursorStatusTitle: String {
+        switch store.cursorConnection.state {
+        case .connected: "연결됨"
+        case .needsLogin, .needsWorkspaceTrust: "로그인 필요"
+        case .unavailable: "Cursor CLI를 찾을 수 없음"
+        case .failed: "LLM 연결 실패"
+        case .unknown: "연결 확인 전"
+        }
+    }
+
+    private var cursorStatusSymbol: String {
+        switch store.cursorConnection.state {
+        case .connected: "checkmark.circle.fill"
+        case .needsLogin, .needsWorkspaceTrust: "person.crop.circle.badge.exclamationmark"
+        case .unavailable: "exclamationmark.triangle.fill"
+        case .failed: "wifi.exclamationmark"
+        case .unknown: "questionmark.circle"
+        }
+    }
+
+    private var cursorStatusColor: Color {
+        switch store.cursorConnection.state {
+        case .connected: .green
+        case .needsLogin, .needsWorkspaceTrust: .orange
+        case .unavailable, .failed: .red
+        case .unknown: .secondary
+        }
     }
 
     private func refreshConnection() async {
@@ -336,30 +327,119 @@ private struct ExternalAgentSettings: View {
         connection = await Task.detached(priority: .userInitiated) { provider.connection() }.value
         checking = false
     }
+
+    private func loginInTerminal() {
+        do {
+            let command = ProcessRunner.terminalPathExport + "; " + ([provider.rawValue] + provider.loginArguments).joined(separator: " ")
+            try ProcessRunner().launchInTerminal(command: command)
+            connection = .init(state: .needsLogin, detail: "로그인을 마친 뒤 연결 상태를 다시 확인하세요.")
+        } catch {
+            connection = .init(state: .failed, detail: error.localizedDescription)
+        }
+    }
 }
 
-/// The provider's preset models as rows, each with a connection check and an
-/// on/off toggle. Turned-off models are hidden from the model pickers.
-private struct ModelListSection: View {
+private struct ProviderDefaultModelSection: View {
     @Bindable var store: ReviewStore
+    let provider: AgentProvider
 
     var body: some View {
-        let provider = store.agentProvider
-        Section {
-            ForEach(provider.modelPresets, id: \.id) { preset in
-                ModelListRow(store: store, provider: provider, model: preset.id, title: preset.title)
-            }
-            Text("연결 확인은 모델마다 짧은 질문을 한 번 보냅니다. 사용 중인 모델(기본 모델이나 기능별 모델로 선택된 모델)은 끌 수 없습니다.")
-                .font(.caption).foregroundStyle(.secondary)
-        } header: {
-            HStack {
-                Text("모델 목록 (\(provider.title))")
-                Spacer()
-                Button("사용 중인 모델 모두 확인") {
-                    Task { await store.checkEnabledAgentModels(provider: provider) }
-                }
+        Text("기본 모델").font(.caption).foregroundStyle(.secondary)
+        if provider != .cursor {
+            DefaultModelRow(title: "CLI 기본값", modelID: "", isSelected: selectedModelID.isEmpty) {
+                setModel("")
             }
         }
+        ForEach(store.enabledModelPresets(for: provider), id: \.id) { preset in
+            DefaultModelRow(title: preset.title, modelID: preset.id, isSelected: selectedModelID == preset.id) {
+                setModel(preset.id)
+            }
+        }
+        switch provider {
+        case .cursor:
+            TextField("사용자 지정 모델 ID (선택)", text: $store.customAgentModel)
+                .font(.system(.body, design: .monospaced))
+            Text(store.customAgentModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                 ? "목록에서 고른 모델이 이 에이전트의 기본으로 쓰입니다."
+                 : "사용자 지정 모델 ID가 목록 선택보다 우선 적용됩니다.")
+                .font(.caption).foregroundStyle(.secondary)
+        case .codex:
+            TextField("모델 ID 직접 입력", text: $store.codexModel)
+                .font(.system(.body, design: .monospaced))
+        case .claude:
+            TextField("모델 ID 직접 입력", text: $store.claudeModel)
+                .font(.system(.body, design: .monospaced))
+            if store.claudeModel == "claude-opus-5-5" {
+                Text("Opus 5.5를 사용하려면 Claude Code 2.1.280 이상이 필요합니다.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var selectedModelID: String {
+        switch provider {
+        case .cursor:
+            let custom = store.customAgentModel.trimmingCharacters(in: .whitespacesAndNewlines)
+            return custom.isEmpty ? store.agentModel : custom
+        case .codex: return store.codexModel
+        case .claude: return store.claudeModel
+        }
+    }
+
+    private func setModel(_ id: String) {
+        switch provider {
+        case .cursor:
+            store.customAgentModel = ""
+            store.agentModel = id
+        case .codex: store.codexModel = id
+        case .claude: store.claudeModel = id
+        }
+    }
+}
+
+private struct DefaultModelRow: View {
+    let title: String
+    let modelID: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(alignment: .top) {
+                Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
+                    .foregroundStyle(isSelected ? Color.accentColor : .secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                    if !modelID.isEmpty {
+                        Text(modelID).font(.caption.monospaced()).foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+            }
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// Preset models for one provider: connection check and on/off toggle per row.
+private struct ProviderModelListSection: View {
+    @Bindable var store: ReviewStore
+    let provider: AgentProvider
+
+    var body: some View {
+        HStack {
+            Text("모델 연결 확인").font(.caption).foregroundStyle(.secondary)
+            Spacer()
+            Button("켜진 모델 모두 확인") {
+                Task { await store.checkEnabledAgentModels(provider: provider) }
+            }
+            .font(.caption)
+        }
+        ForEach(provider.modelPresets, id: \.id) { preset in
+            ModelListRow(store: store, provider: provider, model: preset.id, title: preset.title)
+        }
+        Text("확인은 모델마다 짧은 질문을 한 번 보냅니다. Cursor에서 작업 공간 신뢰가 필요하면 안내 창과 Terminal 연결이 열립니다.")
+            .font(.caption).foregroundStyle(.secondary)
     }
 }
 
@@ -383,12 +463,18 @@ private struct ModelListRow: View {
             if checking {
                 ProgressView().controlSize(.small)
             } else if let check = store.agentModelChecks[key] {
-                Label(check.detail, systemImage: check.state == .connected ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                Label(checkLabel(check), systemImage: checkIcon(check))
                     .font(.caption)
-                    .foregroundStyle(check.state == .connected ? .green : .red)
+                    .foregroundStyle(checkColor(check))
                     .lineLimit(1).truncationMode(.tail)
                     .frame(maxWidth: 180, alignment: .trailing)
                     .help(check.detail)
+            }
+            if store.agentModelChecks[key]?.state == .needsWorkspaceTrust {
+                Button("신뢰 안내", systemImage: "terminal") {
+                    store.modelCheckWorkspaceTrustRequest = .init(provider: provider, model: model, detail: store.agentModelChecks[key]?.detail ?? "")
+                }
+                .font(.caption)
             }
             Button("확인") { Task { await store.checkAgentModel(model, provider: provider) } }
                 .disabled(checking || !enabled)
@@ -399,36 +485,154 @@ private struct ModelListRow: View {
             .labelsHidden()
             .toggleStyle(.switch)
             .disabled(inUse)
-            .help(inUse ? "사용 중인 모델은 끌 수 없습니다." : "끄면 모델 선택 목록에서 숨깁니다.")
+            .help(inUse ? "이 에이전트의 기본 모델은 끌 수 없습니다." : "끄면 이 에이전트의 기본 모델 목록에서 숨깁니다.")
+        }
+    }
+
+    private func checkIcon(_ check: AgentConnection) -> String {
+        switch check.state {
+        case .connected: "checkmark.circle.fill"
+        case .needsWorkspaceTrust, .needsLogin: "person.crop.circle.badge.exclamationmark"
+        default: "exclamationmark.triangle.fill"
+        }
+    }
+
+    private func checkColor(_ check: AgentConnection) -> Color {
+        switch check.state {
+        case .connected: .green
+        case .needsWorkspaceTrust, .needsLogin: .orange
+        default: .red
+        }
+    }
+
+    private func checkLabel(_ check: AgentConnection) -> String {
+        switch check.state {
+        case .needsWorkspaceTrust: "작업 공간 신뢰 필요"
+        default: check.detail
         }
     }
 }
 
-/// Per-feature model overrides for the current provider. An empty override
-/// follows the provider's default model.
-private struct FeatureModelSection: View {
+/// Per-feature agent provider. Each provider's detailed model is set in its fold above.
+private struct FeatureProviderSection: View {
     @Bindable var store: ReviewStore
 
     var body: some View {
-        let provider = store.agentProvider
         Section {
             ForEach(AgentFeature.Group.allCases, id: \.self) { group in
-                Text(group.rawValue).font(.caption).foregroundStyle(.secondary)
-                ForEach(AgentFeature.allCases.filter { $0.group == group }, id: \.self) { feature in
-                    FeatureModelRow(store: store, provider: provider, feature: feature)
-                }
+                FeatureProviderGroup(store: store, group: group)
             }
-            Text("바꾼 모델은 다음 실행부터 적용됩니다. 대화 중에 모델을 바꾸면 기존 대화를 잇지 않고 새 대화로 시작합니다.")
+            Text("기능마다 Cursor·Claude 등 에이전트만 고릅니다. 카테고리 전체에 한 번에 적용하거나, 끄고 기능별로 지정할 수 있습니다. 상세 모델은 위 에이전트 접힘 안의 '기능별 모델'에서 지정합니다. 변경은 다음 실행부터 적용됩니다.")
                 .font(.caption).foregroundStyle(.secondary)
         } header: {
             HStack {
-                Text("기능별 모델 (\(provider.title))")
+                Text("기능별 에이전트")
                 Spacer()
-                Button("모두 기본으로") { store.agentFeatureModels[provider] = nil }
-                    .disabled(store.agentFeatureModels[provider]?.isEmpty ?? true)
+                Button("모두 기본으로") { store.agentFeatureProviders = [:] }
+                    .disabled(store.agentFeatureProviders.isEmpty)
             }
         }
-        .id(provider)
+    }
+}
+
+/// One category: a single agent for every feature in it, or per-feature agents when that is turned off.
+private struct FeatureProviderGroup: View {
+    @Bindable var store: ReviewStore
+    let group: AgentFeature.Group
+    @State private var perFeature = false
+
+    private var features: [AgentFeature] { AgentFeature.allCases.filter { $0.group == group } }
+    private var overrides: Set<String> { Set(features.map { store.agentFeatureProviders[$0]?.rawValue ?? "" }) }
+
+    private var groupSelection: Binding<String> {
+        Binding(
+            get: { overrides.count == 1 ? overrides.first! : "mixed" },
+            set: { raw in
+                for feature in features {
+                    if let provider = AgentProvider(rawValue: raw) {
+                        store.agentFeatureProviders[feature] = provider
+                    } else {
+                        store.agentFeatureProviders.removeValue(forKey: feature)
+                    }
+                }
+            }
+        )
+    }
+
+    var body: some View {
+        Toggle(isOn: Binding(get: { !perFeature }, set: { perFeature = !$0 })) {
+            Text("\(group.rawValue) 전체 적용").fontWeight(.medium)
+        }
+        if perFeature {
+            ForEach(features, id: \.self) { feature in
+                FeatureProviderRow(store: store, feature: feature)
+            }
+        } else {
+            Picker("에이전트", selection: groupSelection) {
+                if overrides.count > 1 { Text("기능별로 다름").tag("mixed") }
+                Text("기본 따름 (\(store.agentProvider.featurePickerTitle))").tag("")
+                ForEach(AgentProvider.allCases.filter { store.isAgentProviderEnabled($0) }, id: \.self) { provider in
+                    Text(provider.featurePickerTitle).tag(provider.rawValue)
+                }
+            }
+        }
+    }
+}
+
+private struct FeatureProviderRow: View {
+    @Bindable var store: ReviewStore
+    let feature: AgentFeature
+
+    private var selection: Binding<String> {
+        Binding(
+            get: {
+                store.agentFeatureProviders[feature].flatMap { store.isAgentProviderEnabled($0) ? $0.rawValue : nil } ?? ""
+            },
+            set: { raw in
+                if raw.isEmpty {
+                    store.agentFeatureProviders.removeValue(forKey: feature)
+                } else if let provider = AgentProvider(rawValue: raw) {
+                    store.agentFeatureProviders[feature] = provider
+                }
+            }
+        )
+    }
+
+    var body: some View {
+        Picker(feature.title, selection: selection) {
+            Text("기본 따름 (\(store.agentProvider.featurePickerTitle))").tag("")
+            ForEach(AgentProvider.allCases.filter { store.isAgentProviderEnabled($0) }, id: \.self) { provider in
+                Text(provider.featurePickerTitle).tag(provider.rawValue)
+            }
+        }
+    }
+}
+
+/// Model overrides for the features that run on this agent. An empty override
+/// follows the agent's default model.
+private struct ProviderFeatureModelSection: View {
+    @Bindable var store: ReviewStore
+    let provider: AgentProvider
+
+    var body: some View {
+        let features = AgentFeature.allCases.filter { store.provider(for: $0) == provider }
+        HStack {
+            Text("기능별 모델").font(.caption).foregroundStyle(.secondary)
+            Spacer()
+            Button("모두 기본으로") { store.agentFeatureModels[provider] = nil }
+                .disabled(store.agentFeatureModels[provider]?.isEmpty ?? true)
+        }
+        if features.isEmpty {
+            Text("이 에이전트를 쓰는 기능이 없습니다. 위 '기능별 에이전트'에서 지정하세요.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        ForEach(AgentFeature.Group.allCases, id: \.self) { group in
+            ForEach(features.filter { $0.group == group }, id: \.self) { feature in
+                FeatureModelRow(store: store, provider: provider, feature: feature)
+            }
+        }
+        Text("바꾼 모델은 다음 실행부터 적용됩니다. 대화 중에 모델을 바꾸면 새 대화로 시작합니다.")
+            .font(.caption).foregroundStyle(.secondary)
     }
 }
 
@@ -441,7 +645,7 @@ private struct FeatureModelRow: View {
     private static let customTag = "\u{0}custom"
 
     private var override: String { store.agentFeatureModels[provider]?[feature] ?? "" }
-    private var isPreset: Bool { provider.modelPresets.contains { $0.id == override } }
+    private var isPreset: Bool { store.enabledModelPresets(for: provider).contains { $0.id == override } }
 
     private var overrideBinding: Binding<String> {
         Binding(
@@ -461,7 +665,7 @@ private struct FeatureModelRow: View {
     }
 
     var body: some View {
-        let defaultModel = store.effectiveAgentModel
+        let defaultModel = store.effectiveAgentModel(for: provider)
         Picker(feature.title, selection: selection) {
             Text("기본 모델 따름 (\(defaultModel.isEmpty ? "CLI 기본값" : defaultModel))").tag("")
             ForEach(store.enabledModelPresets(for: provider), id: \.id) { preset in

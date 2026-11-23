@@ -37,6 +37,12 @@ final class ReviewStore {
         let target: PullRequest
         let active: PullRequest?
     }
+    struct ModelCheckWorkspaceTrustRequest: Identifiable {
+        let id = UUID()
+        let provider: AgentProvider
+        let model: String
+        var detail: String
+    }
     struct BranchAgentPermissionRequest: Identifiable {
         enum Action {
             case review
@@ -183,8 +189,9 @@ final class ReviewStore {
     private let github = GitHubClient()
     private let workspaces = WorkspaceManager()
     private let localPractice = LocalPracticeRepository()
-    private var selectedAgent: ReviewAgent {
-        ReviewAgent(provider: agentProvider, reviewWorkflow: ReviewWorkflow(provider: agentProvider, agentsDirectory: reviewRolesDirectoryURL))
+    func agent(for feature: AgentFeature) -> ReviewAgent {
+        let provider = provider(for: feature)
+        return ReviewAgent(provider: provider, reviewWorkflow: ReviewWorkflow(provider: provider, agentsDirectory: reviewRolesDirectoryURL))
     }
     var agentProvider: AgentProvider = .cursor { didSet { persist() } }
     /// Folder with `<role>.md` review role files. Empty means `~/.cursor/agents`.
@@ -204,10 +211,15 @@ final class ReviewStore {
     var codexModel = "" { didSet { persist() } }
     var claudeModel = "" { didSet { persist() } }
     var agentFeatureModels: [AgentProvider: [AgentFeature: String]] = [:] { didSet { persist() } }
+    var agentFeatureProviders: [AgentFeature: AgentProvider] = [:] { didSet { persist() } }
     var disabledAgentModels: [AgentProvider: Set<String>] = [:] { didSet { persist() } }
+    var disabledAgentProviders: Set<AgentProvider> = [] { didSet { persist() } }
     /// Latest per-model connection check, keyed by `modelCheckKey`. Not persisted.
     var agentModelChecks: [String: AgentConnection] = [:]
     var checkingAgentModels: Set<String> = []
+    /// Model-check keys that failed once with workspace trust; the next check passes `--trust`.
+    private var modelCheckAwaitingTrust: Set<String> = []
+    var modelCheckWorkspaceTrustRequest: ModelCheckWorkspaceTrustRequest?
     private let pullRequestProposalVerifier = PullRequestProposalVerifier()
     private let unitTestVerifier = UnitTestVerifier()
     private let cursorHistory = CursorSessionHistoryService()
@@ -268,7 +280,9 @@ final class ReviewStore {
         codexModel = state.codexModel
         claudeModel = state.claudeModel
         agentFeatureModels = state.agentFeatureModels
+        agentFeatureProviders = state.agentFeatureProviders
         disabledAgentModels = state.disabledAgentModels
+        disabledAgentProviders = state.disabledAgentProviders
         agentModel = state.agentModel
         customAgentModel = state.customAgentModel
         reviewAuthorFilter = state.reviewAuthorFilter
@@ -527,10 +541,11 @@ final class ReviewStore {
         defer { reviewProgressTokens[progressKey] = nil }
         branchReviewMessages[branch.id] = "선택한 설정으로 브랜치를 검토합니다."
         do {
-            let model = model(for: .branchReview)
+            let feature = AgentFeature.branchReview
+            let model = model(for: feature)
             let isTrusted = trustedBranchReviewIDs.contains(branch.id)
             let baseReference = branchBaseReference(for: branch, repository: repository)
-            let output = try await selectedAgent.reviewBranch(repositoryPath: repository.localPath, branch: branch, baseBranch: baseReference, skillPath: reviewSkillPath(for: agentProvider), trustWorkspace: isTrusted, model: model, progress: progress)
+            let output = try await agent(for: feature).reviewBranch(repositoryPath: repository.localPath, branch: branch, baseBranch: baseReference, skillPath: reviewSkillPath(for: provider(for: feature)), trustWorkspace: isTrusted, model: model, progress: progress)
             try Task.checkCancellation()
             guard requestedBranches.contains(where: { $0.id == branch.id }) else { return }
             clearBranchCards(for: branch.id)
@@ -578,9 +593,10 @@ final class ReviewStore {
         let card = branchReviewCards[branch.id]![index]
         persist()
         do {
-            let model = model(for: .branchQuestion)
+            let feature = AgentFeature.branchQuestion
+            let model = model(for: feature)
             let isTrusted = trustedBranchReviewIDs.contains(branch.id)
-            let response = try await selectedAgent.askAboutBranch(repositoryPath: repository.localPath, branch: branch, card: card, question: message, trustWorkspace: isTrusted, model: model, progress: progress, onSession: { session in
+            let response = try await agent(for: feature).askAboutBranch(repositoryPath: repository.localPath, branch: branch, card: card, question: message, trustWorkspace: isTrusted, model: model, progress: progress, onSession: { session in
                 await self.updateBranchCursorSession(session, cardID: cardID, branchID: branch.id)
             })
             try Task.checkCancellation()
@@ -643,8 +659,9 @@ final class ReviewStore {
             let path = repository.localPath
             let sha = try await background { try self.workspaces.validateBranchReviewWorkspace(at: path, branch: branch, reviewedSHA: card.reviewedSHA) }
             branchImplementationResults[card.id] = "\(branch.name) 브랜치에서 에이전트가 구현 중입니다."
-            let model = model(for: .branchImplementation)
-            let agent = selectedAgent
+            let feature = AgentFeature.branchImplementation
+            let model = model(for: feature)
+            let agent = agent(for: feature)
             let result = try await background { try agent.implementBranch(workspacePath: path, branch: branch, reviewedSHA: sha, request: request, model: model) }
             if branchReviewCards[branch.id]?.contains(where: { $0.id == card.id }) == true {
                 branchImplementationResults[card.id] = result.isEmpty ? "구현 명령이 종료되었습니다. 변경 사항과 검증 결과를 확인하세요." : result
@@ -687,8 +704,9 @@ final class ReviewStore {
         preparingPullRequestProposalBranchIDs.insert(branch.id)
         defer { preparingPullRequestProposalBranchIDs.remove(branch.id) }
         do {
-            let model = model(for: .pullRequestProposal)
-            let agent = selectedAgent
+            let feature = AgentFeature.pullRequestProposal
+            let model = model(for: feature)
+            let agent = agent(for: feature)
             let isTrusted = trustedBranchReviewIDs.contains(branch.id)
             let comparisonBase = branchBaseReference(for: branch, repository: repository)
             let proposal = try await background {
@@ -820,10 +838,11 @@ final class ReviewStore {
         branchUnitTestMessages[branch.id] = "변경된 C# 파일에서 UnitTest 대상을 찾는 중입니다."
         defer { verifyingUnitTestBranchIDs.remove(branch.id) }
         do {
-            let model = model(for: .branchUnitTest)
+            let feature = AgentFeature.branchUnitTest
+            let model = model(for: feature)
             let isTrusted = trustedBranchReviewIDs.contains(branch.id)
             let baseReference = branchBaseReference(for: branch, repository: repository)
-            let cursor = selectedAgent, verifier = unitTestVerifier
+            let cursor = agent(for: feature), verifier = unitTestVerifier
             let verification = try await background {
                 try verifier.verify(
                     repository: repository, branch: branch, baseReference: baseReference,
@@ -860,8 +879,9 @@ final class ReviewStore {
         isMakingBranchQuiz = true
         defer { isMakingBranchQuiz = false }
         do {
-            let model = model(for: .branchQuiz)
-            let agent = selectedAgent
+            let feature = AgentFeature.branchQuiz
+            let model = model(for: feature)
+            let agent = agent(for: feature)
             let isTrusted = trustedBranchReviewIDs.contains(branch.id)
             let comparisonBase = branchBaseReference(for: branch, repository: repository)
             let generation = try await background { try agent.makeBranchQuiz(repositoryPath: repository.localPath, branch: branch, comparisonBase: comparisonBase, reviewCards: cards, trustWorkspace: isTrusted, model: model) }
@@ -931,9 +951,10 @@ final class ReviewStore {
             sha: "", subject: "", updatedAt: nil, isCurrent: true, isRemote: false
         )
         do {
-            let model = model(for: .specUnitTest)
+            let feature = AgentFeature.specUnitTest
+            let model = model(for: feature)
             let isTrusted = trustedBranchReviewIDs.contains(branch.id)
-            let cursor = selectedAgent, verifier = unitTestVerifier
+            let cursor = agent(for: feature), verifier = unitTestVerifier
             let verification = try await background {
                 try verifier.verifySpec(
                     repository: repository, specPath: specPath,
@@ -1207,8 +1228,9 @@ final class ReviewStore {
         isSummarizingCursorSessionID = session.id
         defer { isSummarizingCursorSessionID = nil }
         do {
-            let model = model(for: .sessionSummary)
-            let agent = selectedAgent
+            let feature = AgentFeature.sessionSummary
+            let model = model(for: feature)
+            let agent = agent(for: feature)
             let summary = try await background { try agent.summarize(session: session, model: model) }
             cursorSessionSummaries[session.id] = summary
         } catch {
@@ -1248,8 +1270,9 @@ final class ReviewStore {
         for session in pending {
             do {
                 let documents = try await background { self.workspaceSpecCatalog.documents(in: session.workspacePath) }
-                let model = model(for: .sessionSpecClassification)
-                let agent = selectedAgent
+                let feature = AgentFeature.sessionSpecClassification
+                let model = model(for: feature)
+                let agent = agent(for: feature)
                 let classification = try await background {
                     try agent.classifySpec(session: session, documents: documents, model: model)
                 }
@@ -1437,7 +1460,8 @@ final class ReviewStore {
     func proposeParentBranchRules(for repository: RegisteredRepository, skillPath: String) async throws -> ParentBranchRuleProposal {
         let skill = try String(contentsOfFile: skillPath, encoding: .utf8)
         let branches = await branchNames(of: repository)
-        let agent = selectedAgent, model = model(for: .parentBranchRules), defaultBranch = repository.defaultBranch
+        let feature = AgentFeature.parentBranchRules
+        let agent = agent(for: feature), model = model(for: feature), defaultBranch = repository.defaultBranch
         return try await background {
             try agent.proposeParentBranchRules(skill: skill, branches: branches, defaultBranch: defaultBranch, model: model)
         }
@@ -1748,8 +1772,9 @@ final class ReviewStore {
             let workspaceSHA = try await background { try self.workspaces.verifiedHead(path, expectedSHA: pullRequest.headSHA, expectedBranch: pullRequest.headBranch) }
             setActiveWorkspace(path, for: pullRequest)
             let prComments = comments[worktreeKey(pullRequest)] ?? []
-            let agent = selectedAgent
-            let model = model(for: .reviewAnalysis)
+            let feature = AgentFeature.reviewAnalysis
+            let agent = agent(for: feature)
+            let model = model(for: feature)
             let analysisPullRequest = pullRequestWithCurrentWorkspaceSHA(pullRequest, sha: workspaceSHA)
             let result = try await agent.analyze(worktreePath: path, pullRequest: analysisPullRequest, comments: prComments, model: model)
             analyses[worktreeKey(pullRequest)] = result
@@ -1989,8 +2014,9 @@ final class ReviewStore {
         let cards = agentCards(for: pullRequest)
         let plans = implementationPlans(for: pullRequest)
         let workspace = workspaces
-        let agent = selectedAgent
-        let model = model(for: .reReviewMessage)
+        let feature = AgentFeature.reReviewMessage
+        let agent = agent(for: feature)
+        let model = model(for: feature)
         do {
             let repository = try registeredRepository(for: pullRequest)
             let baseSHA: String
@@ -2124,8 +2150,9 @@ final class ReviewStore {
         conflictQuestions[key] = nil
         defer { resolvingConflictIDs.remove(key) }
         let workspace = workspaces
-        let agent = selectedAgent
-        let model = model(for: .conflictResolution)
+        let feature = AgentFeature.conflictResolution
+        let agent = agent(for: feature)
+        let model = model(for: feature)
         do {
             let repository = try registeredRepository(for: pullRequest)
             statusMessage = "\(pullRequest.baseBranch) 브랜치를 가져와 머지하는 중입니다."
@@ -2550,8 +2577,9 @@ final class ReviewStore {
             plan.worktreePath = worktree
             implementationPlans[key] = plan
             persist()
-            let agent = selectedAgent
-            let model = model(for: .reviewImplementation)
+            let feature = AgentFeature.reviewImplementation
+            let agent = agent(for: feature)
+            let model = model(for: feature)
             let implementationPlan = plan
             let implementationPullRequest = pullRequestWithCurrentWorkspaceSHA(pullRequest, sha: workspaceSHA)
             let result = try await background { try agent.implement(worktreePath: worktree, pullRequest: implementationPullRequest, plan: implementationPlan, model: model) }
@@ -2837,8 +2865,9 @@ final class ReviewStore {
             return fallback
         }
         do {
-            let agent = selectedAgent
-            let model = model(for: .reviewResponseDraft)
+            let feature = AgentFeature.reviewResponseDraft
+            let agent = agent(for: feature)
+            let model = model(for: feature)
             let draft = try await background {
                 try agent.suggestReviewResponse(
                     repositoryPath: path,
@@ -2978,8 +3007,9 @@ final class ReviewStore {
         agentReviewCards[index].updatedAt = .now
         let card = agentReviewCards[index]
         persist()
-        let agent = selectedAgent
-        let model = model(for: .reviewQuestion)
+        let feature = AgentFeature.reviewQuestion
+        let agent = agent(for: feature)
+        let model = model(for: feature)
         do {
             let key = worktreeKey(pullRequest)
             let path: String
@@ -3088,8 +3118,11 @@ final class ReviewStore {
         return nil
     }
 
-    var effectiveAgentModel: String {
-        switch agentProvider {
+    var effectiveAgentModel: String { effectiveAgentModel(for: agentProvider) }
+
+    /// Default model ID for one agent provider.
+    func effectiveAgentModel(for provider: AgentProvider) -> String {
+        switch provider {
         case .codex: return codexModel.trimmingCharacters(in: .whitespacesAndNewlines)
         case .claude: return claudeModel.trimmingCharacters(in: .whitespacesAndNewlines)
         case .cursor: break
@@ -3098,10 +3131,26 @@ final class ReviewStore {
         return custom.isEmpty ? agentModel : custom
     }
 
-    /// The model for one feature under the current provider: its override, or the default.
+    func isAgentProviderEnabled(_ provider: AgentProvider) -> Bool { !disabledAgentProviders.contains(provider) }
+
+    /// The default agent cannot be turned off; pick another default first.
+    func setAgentProvider(_ provider: AgentProvider, enabled: Bool) {
+        if enabled { disabledAgentProviders.remove(provider) }
+        else if provider != agentProvider { disabledAgentProviders.insert(provider) }
+    }
+
+    /// Agent provider for one feature: its override while that agent is on, otherwise the app default.
+    /// A turned-off override stays saved and applies again when the agent is turned back on.
+    func provider(for feature: AgentFeature) -> AgentProvider {
+        if let override = agentFeatureProviders[feature], isAgentProviderEnabled(override) { return override }
+        return agentProvider
+    }
+
+    /// The model for one feature: its model override under that feature's agent, or the agent's default model.
     func model(for feature: AgentFeature) -> String {
-        let override = agentFeatureModels[agentProvider]?[feature]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return override.isEmpty ? effectiveAgentModel : override
+        let provider = provider(for: feature)
+        let override = agentFeatureModels[provider]?[feature]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return override.isEmpty ? effectiveAgentModel(for: provider) : override
     }
 
     /// Presets the user has not turned off, in display order.
@@ -3132,9 +3181,43 @@ final class ReviewStore {
         let key = Self.modelCheckKey(model, provider: provider)
         guard !checkingAgentModels.contains(key) else { return }
         checkingAgentModels.insert(key)
+        let workspace = provider == .cursor ? try? ReviewAgent.ensureModelCheckWorkspace() : nil
+        let trustWorkspace = provider == .cursor && modelCheckAwaitingTrust.contains(key)
         let agent = ReviewAgent(provider: provider)
-        agentModelChecks[key] = await Task.detached(priority: .userInitiated) { agent.checkModel(model) }.value
+        let result = await Task.detached(priority: .userInitiated) {
+            agent.checkModel(model, workspaceDirectory: workspace, trustWorkspace: trustWorkspace)
+        }.value
+        agentModelChecks[key] = result
         checkingAgentModels.remove(key)
+        if result.state == .needsWorkspaceTrust {
+            modelCheckAwaitingTrust.insert(key)
+            modelCheckWorkspaceTrustRequest = .init(provider: provider, model: model, detail: result.detail)
+        } else if result.state == .connected {
+            modelCheckAwaitingTrust.remove(key)
+        }
+    }
+
+    func startModelCheckWorkspaceTrust() {
+        guard var request = modelCheckWorkspaceTrustRequest else { return }
+        do {
+            try ReviewAgent(provider: request.provider).startModelCheckWorkspaceTrust(model: request.model)
+            request.detail = """
+            Terminal에서 작업 공간 신뢰를 승인했으면 이 창에서 ‘신뢰 후 다시 확인’을 누르거나, 해당 모델의 확인 버튼을 다시 누르세요.
+            확인 폴더: \(ReviewAgent.modelCheckWorkspaceURL.path)
+            """
+            modelCheckWorkspaceTrustRequest = request
+        } catch {
+            request.detail = error.localizedDescription
+            modelCheckWorkspaceTrustRequest = request
+        }
+    }
+
+    func retryModelCheckAfterWorkspaceTrust() {
+        guard let request = modelCheckWorkspaceTrustRequest else { return }
+        let key = Self.modelCheckKey(request.model, provider: request.provider)
+        modelCheckAwaitingTrust.insert(key)
+        modelCheckWorkspaceTrustRequest = nil
+        Task { await checkAgentModel(request.model, provider: request.provider) }
     }
 
     /// Checks every enabled preset of the provider at the same time.
@@ -3402,7 +3485,9 @@ final class ReviewStore {
         state.codexModel = codexModel
         state.claudeModel = claudeModel
         state.agentFeatureModels = agentFeatureModels
+        state.agentFeatureProviders = agentFeatureProviders
         state.disabledAgentModels = disabledAgentModels
+        state.disabledAgentProviders = disabledAgentProviders
         state.branchReviewCards = branchReviewCards
         state.branchCardReviewed = branchCardReviewed
         state.branchImplementationResults = branchImplementationResults
