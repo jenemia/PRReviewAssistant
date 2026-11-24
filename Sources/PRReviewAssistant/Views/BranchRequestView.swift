@@ -571,12 +571,14 @@ private struct BranchAgentSidePanel: View {
             VStack(alignment: .leading, spacing: 12) {
                 Text("구현 요청 확인").font(.title2.bold())
                 Text("등록된 작업 폴더에서 \(branch.name) 브랜치와 검토한 커밋을 확인한 뒤 구현합니다. 커밋과 푸시는 하지 않습니다.").foregroundStyle(.secondary)
+                Text("비워 두면 기존 검토 결과(최신 판단과 대응 계획)를 그대로 근거로 구현합니다.").font(.caption).foregroundStyle(.secondary)
                 TextEditor(text: $implementationRequest).font(.body.monospaced()).border(.quaternary)
                 HStack { Spacer(); Button("취소") { showingImplementation = false }; Button("구현 시작") {
-                    let request = implementationRequest
+                    let typed = implementationRequest.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let request = typed.isEmpty ? ReviewStore.branchImplementationRequest(card: card) : implementationRequest
                     showingImplementation = false
                     Task { await store.implementBranchCard(card, branch: branch, request: request) }
-                }.buttonStyle(.borderedProminent).disabled(implementationRequest.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
+                }.buttonStyle(.borderedProminent) }
             }.padding(20).frame(width: 680, height: 600)
         }
     }

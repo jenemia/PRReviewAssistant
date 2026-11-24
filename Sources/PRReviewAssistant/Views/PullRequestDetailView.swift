@@ -1771,9 +1771,13 @@ private struct AgentReviewCardRow: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
         .background((accent ?? .clear).opacity(0.14), in: RoundedRectangle(cornerRadius: 8))
-        .overlay { if let accent { RoundedRectangle(cornerRadius: 8).stroke(accent.opacity(0.6), lineWidth: 1.5) } }
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(accent?.opacity(0.6) ?? Color(nsColor: .separatorColor), lineWidth: accent == nil ? 1 : 1.5)
+        }
+        .shadow(color: .black.opacity(0.08), radius: 1.5, y: 1)
     }
 
     /// Card tint by state: work status first, then review status. Nil keeps the plain card.
