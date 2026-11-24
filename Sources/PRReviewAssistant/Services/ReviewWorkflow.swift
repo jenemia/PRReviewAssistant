@@ -437,9 +437,22 @@ struct ReviewWorkflow: Sendable {
             let stream = usesProductionRunner ? progress : nil
             let request = AgentRequest(
                 prompt: prompt, model: model, directory: directory, trustWorkspace: trustWorkspace,
+                // A review skill fans out to several review agents in this one call.
+                timeout: allowSubagents ? 1800 : 300,
                 allowSubagents: allowSubagents, cursorOutput: stream == nil ? .json : .streamJSON
             )
             do {
+                if provider == .claude, let stream {
+                    var claudeRequest = request
+                    claudeRequest.claudeStreamJSON = true
+                    let tracker = ClaudeStreamProgress()
+                    let result = try provider.run(claudeRequest, onOutputLine: { line in
+                        if let message = tracker.message(for: line) {
+                            stream("\(Self.roleTitles[role] ?? role) · \(message)")
+                        }
+                    })
+                    return try ReviewAgent.streamResult(result, agent: provider.title).text
+                }
                 if provider != .cursor {
                     return try provider.run(request).output.trimmingCharacters(in: .whitespacesAndNewlines)
                 }

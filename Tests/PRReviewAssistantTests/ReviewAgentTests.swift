@@ -37,6 +37,38 @@ struct ReviewAgentTests {
         #expect(!AgentProvider.cursorArguments(for: .init(prompt: "-로 시작", model: "", directory: "/r", cursorOutput: .json)).contains("--trust"))
     }
 
+    @Test("Claude 스트림은 서브에이전트 시작·완료를 세어 진행 문구로 보여 준다")
+    func readsClaudeStreamProgress() throws {
+        let tracker = ClaudeStreamProgress()
+        func message(_ json: String) -> String? { tracker.message(for: Data(json.utf8)) }
+        #expect(message(#"{"type":"system","subtype":"init"}"#)?.contains("처리") == true)
+        #expect(message(#"{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"tool_use","name":"Bash"}]}}"#)?.contains("자료") == true)
+        #expect(message(#"{"type":"system","subtype":"task_started","task_id":"a","subagent_type":"review-unity","prompt":"비밀 프롬프트"}"#) == "review-unity 시작 · 실행 중 1개, 완료 0개")
+        #expect(message(#"{"type":"system","subtype":"task_started","task_id":"b","subagent_type":"review-spec"}"#) == "review-spec 시작 · 실행 중 2개, 완료 0개")
+        // While subagents run, main-session chatter and subagent output keep the count on screen.
+        #expect(message(#"{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"text"}]}}"#) == nil)
+        #expect(message(#"{"type":"assistant","parent_tool_use_id":"toolu_1","message":{"content":[{"type":"text"}]}}"#) == nil)
+        #expect(message(#"{"type":"system","subtype":"task_notification","task_id":"a","status":"completed","summary":"결과 본문"}"#) == "review-unity 완료 · 실행 중 1개, 완료 1개")
+        #expect(message(#"{"type":"system","subtype":"task_notification","task_id":"b","status":"failed"}"#) == "review-spec 종료 · 실행 중 0개, 완료 2개")
+        #expect(message(#"{"type":"system","subtype":"init"}"#) == nil)
+        #expect(message(#"{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"text"}]}}"#)?.contains("정리") == true)
+        #expect(message("not json") == nil)
+
+        let final = #"{"type":"result","subtype":"success","is_error":false,"result":" 최종 리뷰 ","session_id":"s"}"#
+        #expect(try ReviewAgent.streamResult(.init(output: final, error: "", status: 0), agent: "Claude Code").text == "최종 리뷰")
+        #expect(throws: CommandError.self) {
+            _ = try ReviewAgent.streamResult(.init(output: #"{"type":"system","subtype":"init"}"#, error: "", status: 0), agent: "Claude Code")
+        }
+    }
+
+    @Test("Claude 스트림 요청만 stream-json과 verbose 인자를 쓴다")
+    func buildsClaudeStreamArguments() {
+        let text = AgentProvider.claudeArguments(for: .init(prompt: "리뷰", model: ""))
+        #expect(Array(text.prefix(3)) == ["--print", "--output-format", "text"] && !text.contains("--verbose"))
+        let stream = AgentProvider.claudeArguments(for: .init(prompt: "리뷰", model: "", claudeStreamJSON: true))
+        #expect(Array(stream.prefix(4)) == ["--print", "--output-format", "stream-json", "--verbose"])
+    }
+
     @Test("Claude는 세션이 있는 요청만 세션을 남기고, 새 대화와 이어가기 인자를 구분한다")
     func buildsClaudeSessionArguments() {
         let oneOff = AgentProvider.claudeArguments(for: .init(prompt: "요약", model: ""))

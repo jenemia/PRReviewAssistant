@@ -21,6 +21,8 @@ struct AgentRequest: Sendable {
     var timeout: TimeInterval = 300
     var allowSubagents = false
     var cursorOutput: CursorOutput = .text
+    /// Claude Code streams NDJSON events, so the caller can show progress.
+    var claudeStreamJSON = false
     /// The conversation this run belongs to. Without it the CLI keeps no session.
     /// Claude Code starts a new session under this ID; Cursor picks its own ID
     /// for a new session and reports it in its stream output.
@@ -132,7 +134,9 @@ enum AgentProvider: String, CaseIterable, Codable, CodingKeyRepresentable, Senda
     /// Claude Code arguments before `--model`. The prompt goes in on stdin.
     static func claudeArguments(for request: AgentRequest) -> [String] {
         let writable = request.access == .writable
-        var arguments = ["--print", "--output-format", "text", "--strict-mcp-config",
+        var arguments = ["--print", "--output-format", request.claudeStreamJSON ? "stream-json" : "text"]
+        if request.claudeStreamJSON { arguments.append("--verbose") }
+        arguments += ["--strict-mcp-config",
                          "--setting-sources", "user",
                          "--permission-mode", writable ? "acceptEdits" : "plan",
                          "--tools", writable ? "Read,Glob,Grep,Edit,Write,Bash" : (request.allowSubagents ? "Read,Glob,Grep,Bash,Agent" : "Read,Glob,Grep,Bash"),
@@ -188,6 +192,9 @@ enum AgentProvider: String, CaseIterable, Codable, CodingKeyRepresentable, Senda
             return .init(output: output, error: result.error, status: result.status)
         } catch is CancellationError {
             throw CancellationError()
+        } catch CommandError.failed(let result) where request.claudeStreamJSON {
+            // NDJSON may contain the entire prompt. Keep only the CLI diagnostic.
+            throw ExternalAgentError(detail: "\(title) CLI 실행 실패. \(ReviewAgent.streamFailure(result, agent: title).localizedDescription)")
         } catch {
             throw ExternalAgentError(detail: "\(title) CLI 실행 실패. \(error.localizedDescription)")
         }

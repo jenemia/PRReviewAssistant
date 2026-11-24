@@ -244,6 +244,13 @@ struct BranchRequestDetailView: View {
                             Spacer()
                             if !cards.isEmpty { Text("리뷰 항목 \(cards.filter { !$0.isReference }.count)개").font(.caption).foregroundStyle(.secondary) }
                         }
+                        if store.reviewingBranchID == branch.id, let startedAt = store.branchReviewStartedAt {
+                            HStack(spacing: 6) {
+                                ProgressView().controlSize(.small)
+                                Text("경과 \(Text(startedAt, style: .timer).monospacedDigit())")
+                            }
+                            .font(.caption).foregroundStyle(.secondary)
+                        }
                         if let message = store.branchReviewMessages[branch.id] {
                             Text(message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                         }

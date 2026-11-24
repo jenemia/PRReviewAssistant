@@ -162,6 +162,7 @@ final class ReviewStore {
     var isLoadingBranches = false
     var isReviewingBranch = false
     private(set) var reviewingBranchID: String?
+    private(set) var branchReviewStartedAt: Date?
     private var branchReviewTask: Task<Void, Never>?
     private var branchMessageTasks: [UUID: Task<Void, Never>] = [:]
     private var agentMessageTasks: [UUID: Task<Void, Never>] = [:]
@@ -518,11 +519,13 @@ final class ReviewStore {
         }
         isReviewingBranch = true
         reviewingBranchID = branch.id
+        branchReviewStartedAt = .now
         let task = Task { await runBranchReview(branch, repository: repository) }
         branchReviewTask = task
         await task.value
         branchReviewTask = nil
         reviewingBranchID = nil
+        branchReviewStartedAt = nil
         isReviewingBranch = false
     }
 

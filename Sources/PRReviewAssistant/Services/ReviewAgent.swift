@@ -6,6 +6,56 @@ struct AgentConnection: Sendable {
     let detail: String
 }
 
+/// Turns Claude Code stream events into short progress lines. Subagent runs are
+/// counted, so a review that fans out to several agents shows how far it got.
+/// Like Cursor progress, it never shows prompt text, model output or paths.
+final class ClaudeStreamProgress: @unchecked Sendable {
+    private struct Event: Decodable {
+        struct Message: Decodable {
+            struct Content: Decodable { let type: String }
+            let content: [Content]?
+        }
+        let type: String
+        let subtype: String?
+        let task_id: String?
+        let subagent_type: String?
+        let status: String?
+        let parent_tool_use_id: String?
+        let message: Message?
+    }
+
+    private let lock = NSLock()
+    private var running: [String: String] = [:]
+    private var finished = 0
+
+    func message(for line: Data) -> String? {
+        guard let event = try? JSONDecoder().decode(Event.self, from: line) else { return nil }
+        lock.lock()
+        defer { lock.unlock() }
+        switch (event.type, event.subtype) {
+        case ("system", "init") where running.isEmpty && finished == 0:
+            return "Claude가 요청을 처리하고 있습니다…"
+        case ("system", "task_started"):
+            guard let id = event.task_id else { return nil }
+            let name = event.subagent_type ?? "서브에이전트"
+            running[id] = name
+            return "\(name) 시작 · \(counts)"
+        case ("system", "task_notification"):
+            guard let id = event.task_id, let name = running.removeValue(forKey: id) else { return nil }
+            finished += 1
+            return "\(name) \(event.status == "completed" ? "완료" : "종료") · \(counts)"
+        case ("assistant", _) where event.parent_tool_use_id == nil && running.isEmpty:
+            if finished > 0 { return "서브에이전트 결과를 정리하고 있습니다…" }
+            return event.message?.content?.contains { $0.type == "tool_use" } == true
+                ? "Claude가 관련 자료를 확인하고 있습니다…" : "Claude가 답변을 작성하고 있습니다…"
+        default:
+            return nil
+        }
+    }
+
+    private var counts: String { "실행 중 \(running.count)개, 완료 \(finished)개" }
+}
+
 struct ReviewAgent: Sendable {
     private let runner = ProcessRunner()
     private let reviewWorkflow: ReviewWorkflow
@@ -93,25 +143,25 @@ struct ReviewAgent: Sendable {
         }
     }
 
-    static func streamFailure(_ command: CommandResult) -> CommandError {
+    static func streamFailure(_ command: CommandResult, agent: String = "Cursor") -> CommandError {
         // NDJSON may contain the entire prompt. Keep only the CLI diagnostic.
         let error = command.error.trimmingCharacters(in: .whitespacesAndNewlines)
         let diagnostic = command.output.split(separator: "\n").filter {
             !$0.trimmingCharacters(in: .whitespaces).hasPrefix("{")
         }.joined(separator: "\n")
         return .failed(.init(output: "", error: error.isEmpty
-            ? (diagnostic.isEmpty ? "Cursor가 완료된 응답을 반환하지 않았습니다. 다시 시도하세요." : String(diagnostic.prefix(1000)))
+            ? (diagnostic.isEmpty ? "\(agent)가 완료된 응답을 반환하지 않았습니다. 다시 시도하세요." : String(diagnostic.prefix(1000)))
             : error, status: command.status == 0 ? 1 : command.status))
     }
 
-    static func streamResult(_ command: CommandResult) throws -> (text: String, sessionID: String?) {
-        if command.status != 0 { throw streamFailure(command) }
+    static func streamResult(_ command: CommandResult, agent: String = "Cursor") throws -> (text: String, sessionID: String?) {
+        if command.status != 0 { throw streamFailure(command, agent: agent) }
         let event = command.output.split(separator: "\n").reversed().lazy.compactMap {
             try? JSONDecoder().decode(StreamEvent.self, from: Data($0.utf8))
         }.first { $0.type == "result" }
         guard let event, event.is_error != true,
               let result = event.result?.trimmingCharacters(in: .whitespacesAndNewlines), !result.isEmpty else {
-            throw streamFailure(command)
+            throw streamFailure(command, agent: agent)
         }
         return (result, event.session_id.flatMap { $0.isEmpty ? nil : $0 })
     }
