@@ -11,6 +11,7 @@ struct RepositoryRulesView: View {
     @State private var rules = ""
     @State private var skillPath: String?
     @State private var specFolders = ""
+    @State private var unitTestFolder = ""
     @State private var remote = ""
     @State private var remotes: [String] = []
     @State private var branches: [String] = []
@@ -43,7 +44,12 @@ struct RepositoryRulesView: View {
                     previewSection(repository)
                     Section("spec 폴더") {
                         TextField("폴더 이름(쉼표로 구분)", text: $specFolders)
-                        Text("Spec 탭이 이 이름의 폴더 아래 spec.md를 찾습니다. 비우면 기본값 specs, .specs를 씁니다.")
+                        Text("Spec 탭이 이 이름의 폴더 아래 spec.md를 찾습니다. 브랜치 UnitTest도 이 폴더에서 브랜치가 바꾼 spec을 찾습니다. 비우면 기본값 specs, .specs를 씁니다.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Section("UnitTest 폴더") {
+                        TextField("저장소 기준 경로", text: $unitTestFolder, prompt: Text("예: unity_project/devil_hunter_idle/Assets/Supercent/TestCase/Editor"))
+                        Text("생성한 UnitTest를 이 폴더에 둡니다. 비우면 비슷한 소스 옆의 Tests 폴더를 씁니다. Unity는 Editor 폴더나 테스트 asmdef 안이어야 Test Runner가 읽습니다.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
@@ -152,6 +158,7 @@ struct RepositoryRulesView: View {
         rules = repository.effectiveParentBranchRules
         skillPath = repository.parentBranchRuleSkillPath
         specFolders = repository.effectiveSpecFolders.joined(separator: ", ")
+        unitTestFolder = repository.unitTestFolder ?? ""
         remote = repository.remoteName
         remotes = await store.remoteNames(of: repository)
         if !remotes.contains(remote) { remotes.insert(remote, at: 0) }
@@ -194,6 +201,12 @@ struct RepositoryRulesView: View {
         var updated = repository
         let folders = specFolders.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
         updated.specFolders = folders.isEmpty || folders == WorkspaceSpecCatalog.defaultFolders ? nil : folders
+        let testFolder = unitTestFolder.trimmingCharacters(in: CharacterSet.whitespaces.union(CharacterSet(charactersIn: "/")))
+        guard !testFolder.split(separator: "/").contains(where: { $0 == ".." || $0 == "." }) else {
+            errorMessage = "UnitTest 폴더는 저장소 안의 경로여야 합니다."
+            return
+        }
+        updated.unitTestFolder = testFolder.isEmpty ? nil : testFolder
         store.updateRepository(updated)
         store.saveParentBranchRules(rules, for: repositoryID, skillPath: skillPath)
         if remote != repository.remoteName {

@@ -12,31 +12,37 @@ struct EditableSkill: Identifiable, Hashable, Sendable {
 /// Lists and edits the selected review skill and installed UnitTest skills.
 struct SkillFileStore: Sendable {
     static let unitTestPrefix = "unittest-"
-    static let defaultUnitTestSkills = ["unittest-csharp-base", "unittest-unity-base", "unittest-domain-currency", "unittest-domain-time-season", "unittest-domain-probability", "unittest-target-selection", "unittest-writer"]
+    static let defaultUnitTestSkills = ["unittest-csharp-base", "unittest-unity-base", "unittest-domain-currency", "unittest-domain-time-season", "unittest-domain-probability", "unittest-target-selection", "unittest-spec-perspectives", "unittest-writer"]
 
     let reviewSkillPath: String?
+    /// The project UnitTest skill chosen in Settings; listed first in the UnitTest group.
+    let unitTestSkillPath: String?
     let skillsDirectory: URL
 
     init(
         cursorDirectory: URL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cursor"),
-        reviewSkillPath: String? = nil
+        reviewSkillPath: String? = nil,
+        unitTestSkillPath: String? = nil
     ) {
         self.reviewSkillPath = reviewSkillPath
+        self.unitTestSkillPath = unitTestSkillPath
         skillsDirectory = cursorDirectory.appendingPathComponent("skills")
     }
 
     func list() -> [EditableSkill] {
-        let review = reviewSkillPath.map { path in
+        func skill(_ path: String, _ group: EditableSkill.Group, suffix: String = "") -> EditableSkill {
             let url = URL(fileURLWithPath: path)
             let name = url.lastPathComponent == "SKILL.md" ? url.deletingLastPathComponent().lastPathComponent : url.lastPathComponent
-            return EditableSkill(name: name, url: url, group: .review)
+            return EditableSkill(name: name + suffix, url: url, group: group)
         }
+        let review = reviewSkillPath.map { skill($0, .review) }
+        let project = unitTestSkillPath.map { skill($0, .unitTest, suffix: " (프로젝트)") }
         let folders = (try? FileManager.default.contentsOfDirectory(atPath: skillsDirectory.path)) ?? []
         let unitTest = folders.filter { $0.hasPrefix(Self.unitTestPrefix) }.sorted().compactMap { folder -> EditableSkill? in
             let url = skillsDirectory.appendingPathComponent(folder).appendingPathComponent("SKILL.md")
             return FileManager.default.fileExists(atPath: url.path) ? EditableSkill(name: folder, url: url, group: .unitTest) : nil
         }
-        return (review.map { [$0] } ?? []) + unitTest
+        return (review.map { [$0] } ?? []) + (project.map { [$0] } ?? []) + unitTest.filter { $0.url != project?.url }
     }
 
     func read(_ skill: EditableSkill) throws -> String {

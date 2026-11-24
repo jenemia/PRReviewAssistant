@@ -1,6 +1,6 @@
 # 브랜치 변경의 비즈니스 로직 UnitTest 진행 상황
 
-> 스펙 [spec.md](./spec.md) · 최종 갱신 2026-11-20
+> 스펙 [spec.md](./spec.md) · 최종 갱신 2026-11-24
 
 ## 개발 Work Breakdown
 
@@ -15,8 +15,12 @@
 | Unity 고유 코드 검증 | ✅ |
 | 브랜치 자신의 변경만 비교 | ✅ |
 | 원본 직접 호출 우선, 안 되면 원본 로직 복제 | ✅ |
+| 브랜치가 바꾼 spec을 기대값 근거로 사용 | ✅ |
+| UnitTest 폴더와 프로젝트 스킬 | ✅ |
 
-개발 9/9 완료. 전체 Swift 테스트 140개 통과. 임시 Git 저장소에서 로컬 UnitTest 브랜치 전환, 커밋하지 않은 변경의 stash 보관·재적용, 분류 결과 전달, 의존 소스 전달, 통과 파일만 커밋 없이 쓰는 흐름과 Unity 대체 소스 포함, 규칙 보존을 검증했다. 실제 `dotnet test`로 대체 소스의 반올림·Clamp·CreateInstance·Vector 비교 통과와 엔진 접근을 잡은 테스트의 실패를 확인했다.
+개발 11/11 완료. 2026-11-24 기준 UnitTest 관련 Swift 테스트 69개 통과(전체 194개 중 1개 실패는 HEAD에서도 실패하는 `AgentFeatureModelTests` "에이전트 기본 모델로 쓰는 프리셋은 끌 수 없다"). 임시 Git 저장소에서 spec만 바꾼 브랜치의 spec 기반 선별·설정 폴더 생성과, 코드 브랜치에 브랜치 spec이 넘어가는 흐름을 검증했다. 실제 `weapon_rpg` `sprint/s29/fix/liveops_sg_unitest`에서 사격장·할로윈 미니게임·필드몬스터·룰렛 spec과 qa.md가 잡히고 사격장 테스트 시나리오·수용 기준이 발췌에 들어가는 것을 확인했다. 에이전트 실제 실행과 앱 화면은 확인하지 않았다.
+
+이전 기록: 개발 9/9 완료. 전체 Swift 테스트 140개 통과. 임시 Git 저장소에서 로컬 UnitTest 브랜치 전환, 커밋하지 않은 변경의 stash 보관·재적용, 분류 결과 전달, 의존 소스 전달, 통과 파일만 커밋 없이 쓰는 흐름과 Unity 대체 소스 포함, 규칙 보존을 검증했다. 실제 `dotnet test`로 대체 소스의 반올림·Clamp·CreateInstance·Vector 비교 통과와 엔진 접근을 잡은 테스트의 실패를 확인했다.
 
 ## 기획 추적 (스펙 개발 범위 밖)
 
@@ -27,11 +31,14 @@
 - ☐ christmas2026 실브랜치의 생성 후보와 실행 결과 확인
 - ☐ Unity 실브랜치에서 대체 소스로 통과한 테스트가 Unity EditMode에서도 통과하는지 확인
 - ☐ christmas2026을 `sprint/s29/main` 기준으로 다시 실행해 사격장 결정 로직 선별과 복제 테스트 생성 확인
+- ☐ `sprint/s29/fix/liveops_sg_unitest` 같은 spec·QA 전용 브랜치에서 실제 에이전트로 생성해 `TestCase/Editor`에 테스트가 생기는지 확인
+- ☐ 설정 → 스킬의 프로젝트 UnitTest 스킬 선택·해제와 프로젝트 규칙의 UnitTest 폴더 저장 화면 확인
 
 ## 변경 이력
 
 | 날짜 | 내용 |
 |---|---|
+| 2026-11-24 | 브랜치가 바꾼 spec·qa.md를 기대값 근거로 넘기고, C# 변경 없이 spec만 바꾼 브랜치는 그 spec에서 대상을 고르게 했다. 저장소별 UnitTest 폴더, 설정의 프로젝트 UnitTest 스킬 선택, `~/.claude/skills` 탐색, 기본 스킬 `unittest-spec-perspectives`를 추가했다. |
 | 2026-11-20 | 비교 기준과 UnitTest 브랜치 이름의 sprint 고정 규칙을 저장소별 부모 브랜치 규칙으로 바꿨다. 기존 저장소는 sprint 규칙을 유지한다. C# 소스가 없는 저장소는 UnitTest 버튼을 끈다. |
 | 2026-11-06 | 선택 커밋에서 UnitTest 브랜치를 체크아웃하고, diff의 비즈니스 동작을 선별해 정책에 맞는 경로에 테스트를 생성하도록 개선했다. |
 | 2026-11-06 | UnitTest 브랜치를 선택 브랜치와 같은 sprint 하위 `unittest/`로 이름 짓고, 이미 있으면 체크아웃해 이어서 테스트를 수정·추가·삭제하도록 했다. |

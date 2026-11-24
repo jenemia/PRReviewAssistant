@@ -26,6 +26,8 @@ struct UnitTestVerifier: Sendable {
         var isUnityProject = false
         /// Spec mode: the spec the user picked is the primary source of expected values.
         var spec: SpecDocument?
+        /// Branch mode: specs this branch's own commits changed; expected values come from here before the diff.
+        var branchSpec: SpecDocument?
     }
 
     /// A spec document chosen in the Spec tab, read from the registered folder.
@@ -66,8 +68,12 @@ struct UnitTestVerifier: Sendable {
     typealias Selector = @Sendable (String, String, [Change]) throws -> [Candidate]
     /// (workspace, spec, C# sources the spec names) → candidates; paths outside the tracked sources are dropped.
     typealias SpecSelector = @Sendable (String, SpecDocument, [String]) throws -> [Candidate]
-    static let maxSpecCharacters = 20_000
+    static let maxSpecCharacters = 30_000
     private static let maxReferencedSources = 40
+    /// Branch mode reads at most this many spec folders, the ones the branch changed most.
+    static let maxBranchSpecs = 4
+    /// Headings whose sections hold expected values; kept first when a spec is cut to `maxSpecCharacters`.
+    static let specSectionKeywords = ["수용", "테스트", "시나리오", "규칙", "예외", "경계", "검증", "qa", "acceptance", "test", "scenario", "rule"]
     typealias Generator = @Sendable (GenerationRequest) throws -> UnitTestProposal
     /// (temp folder, source files, test files) → outcome. Replaceable so tests need no .NET SDK.
     typealias Validator = @Sendable (String, [String], [String]) throws -> ValidationOutcome
@@ -91,7 +97,9 @@ struct UnitTestVerifier: Sendable {
     }
 
     /// Test-only patch guard (SpecGuard `PatchGuard.CheckProposal`).
-    static func violations(of files: [UnitTestProposal.File], existingPaths: Set<String>, allowsUnityEngine: Bool = false) -> [String] {
+    /// `allowedDirectories` are test folders outside a `Tests` folder: the repository's UnitTest folder
+    /// and folders that already hold `…Tests.cs` files (e.g. a Unity `TestCase/Editor`).
+    static func violations(of files: [UnitTestProposal.File], existingPaths: Set<String>, allowsUnityEngine: Bool = false, allowedDirectories: Set<String> = []) -> [String] {
         let tokens = allowsUnityEngine ? forbiddenTokens.filter { $0 != "UnityEngine" } + ["UnityShim"] : forbiddenTokens
         var result: [String] = files.isEmpty ? ["생성 파일 없음"] : []
         for file in files {
@@ -99,8 +107,8 @@ struct UnitTestVerifier: Sendable {
             let parts = path.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
             if path.hasPrefix("/") || parts.contains("..") || parts.contains(".") || path.contains("\\") {
                 result.append("\(path): 저장소 밖 경로")
-            } else if !path.hasSuffix("Tests.cs") || !parts.dropLast().contains("Tests") {
-                result.append("\(path): 허용된 테스트 경로가 아님 (…/Tests/…Tests.cs)")
+            } else if !path.hasSuffix("Tests.cs") || !(parts.dropLast().contains("Tests") || allowedDirectories.contains(parts.dropLast().joined(separator: "/"))) {
+                result.append("\(path): 허용된 테스트 경로가 아님 (…/Tests/…Tests.cs 또는 기존 테스트 폴더의 …Tests.cs)")
             } else if existingPaths.contains(path) {
                 result.append("\(path): 기존 파일 덮어쓰기 금지")
             }
@@ -111,11 +119,11 @@ struct UnitTestVerifier: Sendable {
         return result
     }
 
-    /// Existing test next to similar sources wins; otherwise `Tests/<Class>Tests.cs`.
-    static func suggestedTestPath(for sourcePath: String, testFiles: [String]) -> String {
+    /// The repository's UnitTest folder wins; then an existing test next to similar sources; otherwise `Tests/<Class>Tests.cs`.
+    static func suggestedTestPath(for sourcePath: String, testFiles: [String], folder: String? = nil) -> String {
         let name = ((sourcePath as NSString).lastPathComponent as NSString).deletingPathExtension
         let directories = testFiles.filter { $0.split(separator: "/").dropLast().contains("Tests") }
-        let directory = closestTestFile(to: sourcePath, in: directories)
+        let directory = folder ?? closestTestFile(to: sourcePath, in: directories)
             .map { ($0 as NSString).deletingLastPathComponent } ?? "Tests"
         let existing = Set(testFiles)
         let standard = "\(directory)/\(name)Tests.cs"
@@ -144,6 +152,79 @@ struct UnitTestVerifier: Sendable {
             }
         }
         return result.filter { !isTestPath($0) }
+    }
+
+    /// Cuts a Markdown document to about `limit` characters without dropping the sections that hold expected values.
+    /// The text before the first heading comes first, then sections whose heading (or parent heading) names
+    /// acceptance criteria, scenarios or rules, then the rest; kept sections stay in document order.
+    /// Omitted headings are listed so the agent can read them from the file.
+    static func specExcerpt(_ text: String, limit: Int) -> (text: String, truncated: Bool) {
+        guard text.count > limit else { return (text, false) }
+        var sections: [(heading: String, body: String, priority: Bool)] = []
+        var priorityLevel: Int?
+        var inFence = false
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            if line.hasPrefix("```") { inFence.toggle() }
+            let level = inFence ? 0 : line.prefix { $0 == "#" }.count
+            guard level > 0, line.dropFirst(level).first == " " else {
+                if sections.isEmpty { sections.append(("", "", true)) }
+                sections[sections.count - 1].body += line + "\n"
+                continue
+            }
+            if let current = priorityLevel, level <= current { priorityLevel = nil }
+            let heading = line.dropFirst(level).trimmingCharacters(in: .whitespaces)
+            if priorityLevel == nil, specSectionKeywords.contains(where: { heading.lowercased().contains($0) }) { priorityLevel = level }
+            sections.append((heading, line + "\n", priorityLevel != nil))
+        }
+        // The preamble (document map, summary) is first and counts as a priority section.
+        let order = sections.indices.filter { $0 == 0 || sections[$0].priority } + sections.indices.filter { $0 != 0 && !sections[$0].priority }
+        var remaining = limit
+        var kept: [Int: String] = [:]
+        for index in order {
+            let body = sections[index].body
+            if body.count <= remaining {
+                kept[index] = body
+                remaining -= body.count
+            } else if sections[index].priority, remaining > 500 {
+                kept[index] = String(body.prefix(remaining)) + "\n(이 섹션은 길이 제한으로 앞부분만 포함)\n"
+                remaining = 0
+            }
+        }
+        let omitted = sections.indices.filter { kept[$0] == nil }.map { sections[$0].heading }.filter { !$0.isEmpty }
+        let note = omitted.isEmpty ? "" : "\n(길이 제한으로 생략한 섹션 \(omitted.count)개: " + omitted.prefix(40).joined(separator: " / ") + (omitted.count > 40 ? " / …" : "") + " — 필요하면 파일에서 직접 읽는다)\n"
+        return (sections.indices.compactMap { kept[$0] }.joined() + note, true)
+    }
+
+    /// Each `spec.md` with the `qa.md` next to it, every file cut to its share of `limit`.
+    /// `read` returns a repository-relative file's text, or nil when it does not exist.
+    static func specDocument(specPaths: [String], limit: Int = maxSpecCharacters, read: (String) -> String?) -> (document: SpecDocument, raw: String)? {
+        let files = specPaths.flatMap { [$0, (($0 as NSString).deletingLastPathComponent as NSString).appendingPathComponent("qa.md")] }
+            .compactMap { path in read(path).map { (path: path, text: $0) } }
+        guard !files.isEmpty else { return nil }
+        let share = limit / files.count
+        let excerpts = files.map { (path: $0.path, excerpt: specExcerpt($0.text, limit: share)) }
+        let text = files.count == 1 ? excerpts[0].excerpt.text : excerpts.map { "=== 파일: \($0.path)\n\($0.excerpt.text)" }.joined(separator: "\n")
+        let document = SpecDocument(path: specPaths.joined(separator: ", "), text: text, truncated: excerpts.contains { $0.excerpt.truncated })
+        return (document, files.map(\.text).joined(separator: "\n"))
+    }
+
+    /// Spec documents for Markdown files a branch changed under the spec folders: the nearest `spec.md`
+    /// at or above each changed file (inside a spec folder), the most-changed first.
+    static func branchSpecPaths(changedDocuments: [String], trackedFiles: Set<String>, specFolders: [String]) -> [String] {
+        let folders = Set(specFolders.map { $0.lowercased() })
+        var counts: [String: Int] = [:]
+        var order: [String] = []
+        for document in changedDocuments where document.lowercased().hasSuffix(".md") {
+            let directories = document.split(separator: "/").dropLast().map(String.init)
+            guard let root = directories.firstIndex(where: { folders.contains($0.lowercased()) }) else { continue }
+            let spec = stride(from: directories.count, to: root, by: -1).lazy
+                .map { directories.prefix($0).joined(separator: "/") + "/spec.md" }
+                .first { trackedFiles.contains($0) }
+            guard let spec else { continue }
+            if counts[spec] == nil { order.append(spec) }
+            counts[spec, default: 0] += 1
+        }
+        return order.enumerated().sorted { (counts[$0.element]!, -$0.offset) > (counts[$1.element]!, -$1.offset) }.map(\.element)
     }
 
     static func closestTestFile(to sourcePath: String, in testFiles: [String]) -> String? {
@@ -244,6 +325,7 @@ struct UnitTestVerifier: Sendable {
         branch: RepositoryBranch,
         baseReference: String,
         select: Selector,
+        selectSpec: SpecSelector? = nil,
         generate: Generator,
         progress: @Sendable (String) -> Void
     ) throws -> UnitTestVerification {
@@ -292,7 +374,31 @@ struct UnitTestVerifier: Sendable {
         func noTargets(_ summary: String) -> UnitTestVerification {
             .init(outcome: .notApplicable, verifiedSHA: head, resultSHA: head, pushed: false, summary: "기준 \(baseName) · " + summary, files: [])
         }
-        guard !changed.isEmpty else { return noTargets("변경된 C# 소스가 없어 UnitTest 대상이 없습니다.") }
+
+        // Specs this branch's own commits changed are the first source of expected values. A branch that changed
+        // specs but no C# source (spec, QA and test work) gets its targets from those specs instead of the diff.
+        let headFiles = Set(try gitList(["ls-tree", "-r", "--name-only", "-z", head], at: path))
+        let ownDocuments = try git(["-c", "core.quotePath=false", "log", "--first-parent", "--no-merges", "--name-only", "--format=", "\(mergeBase)..\(head)", "--", "*.md"], at: path)
+            .split(whereSeparator: \.isNewline).map(String.init)
+        let specPaths = Array(Self.branchSpecPaths(changedDocuments: ownDocuments, trackedFiles: headFiles, specFolders: repository.effectiveSpecFolders).prefix(Self.maxBranchSpecs))
+        let branchSpec = Self.specDocument(specPaths: specPaths) { try? git(["show", "\(head):\($0)"], at: path, trim: false) }
+        func specTargets(_ reason: String) throws -> UnitTestVerification {
+            guard let branchSpec, let selectSpec else { return noTargets(reason) }
+            let sources = headFiles.filter { $0.hasSuffix(".cs") && !Self.isTestPath($0) }
+            let referenced = Array(Self.referencedSources(in: branchSpec.raw, sources: sources.sorted()).prefix(Self.maxReferencedSources))
+            var outside = 0
+            let run = try runOnUnitTestBranch(
+                repository: repository, sourceBranch: branch.name, head: head, mergeBase: nil, spec: branchSpec.document,
+                generate: generate, progress: progress
+            ) { path in
+                progress("이 브랜치가 바꾼 spec에서 테스트할 규칙과 구현 소스를 찾는 중입니다.")
+                let selected = try plannedSpecTargets(selectSpec(path, branchSpec.document, referenced), sources: sources)
+                outside = selected.outside
+                return selected.planned
+            }
+            return Self.specVerification(prefix: "기준 \(baseName) · \(reason) 브랜치 spec \(branchSpec.document.path)", spec: branchSpec.document, run: run, outside: outside, head: head)
+        }
+        guard !changed.isEmpty else { return try specTargets("변경된 C# 소스가 없어 UnitTest 대상이 없습니다.") }
 
         // Files that only arrived through merges of other branches are not this branch's work.
         let ownLog = try git(["-c", "core.quotePath=false", "log", "--first-parent", "--no-merges", "--name-only", "--format=%x01%s", "\(mergeBase)..\(head)", "--", "*.cs"], at: path, trim: false)
@@ -304,10 +410,10 @@ struct UnitTestVerifier: Sendable {
         }
         let mergedOnly = changed.filter { entry in entry.paths.allSatisfy { ownCommits[$0] == nil } }.count
         changed.removeAll { entry in entry.paths.allSatisfy { ownCommits[$0] == nil } }
-        guard !changed.isEmpty else { return noTargets("변경된 C# 소스 \(mergedOnly)개가 모두 다른 브랜치 병합으로 들어와 이 브랜치의 UnitTest 대상이 없습니다.") }
+        guard !changed.isEmpty else { return try specTargets("변경된 C# 소스 \(mergedOnly)개가 모두 다른 브랜치 병합으로 들어와 이 브랜치의 UnitTest 대상이 없습니다.") }
 
         let run = try runOnUnitTestBranch(
-            repository: repository, sourceBranch: branch.name, head: head, mergeBase: mergeBase, spec: nil,
+            repository: repository, sourceBranch: branch.name, head: head, mergeBase: mergeBase, spec: nil, branchSpec: branchSpec?.document,
             generate: generate, progress: progress
         ) { path in
             var planned: [Planned] = []
@@ -340,7 +446,8 @@ struct UnitTestVerifier: Sendable {
         let outcome: UnitTestVerification.Outcome = failed > 0 ? .failed : (passed > 0 ? .passed : .notApplicable)
         let excluded = changed.count - run.planned
         let deferred = run.planned - run.results.count
-        let summary = "기준 \(baseName) · 통과 \(passed)개 · 실패 \(failed)개 · 건너뜀 \(run.results.count - passed - failed)개 · 범위 밖 \(excluded)개 · 병합 유입 제외 \(mergedOnly)개 · 상한 초과 미처리 \(deferred)개" + run.note
+        let summary = "기준 \(baseName) · 통과 \(passed)개 · 실패 \(failed)개 · 건너뜀 \(run.results.count - passed - failed)개 · 범위 밖 \(excluded)개 · 병합 유입 제외 \(mergedOnly)개 · 상한 초과 미처리 \(deferred)개"
+            + (branchSpec.map { " · 기대값 spec \($0.document.path)" } ?? "") + run.note
         return UnitTestVerification(outcome: outcome, verifiedSHA: head, resultSHA: head, pushed: false, summary: summary, files: run.results)
     }
 
@@ -360,44 +467,54 @@ struct UnitTestVerifier: Sendable {
         let head = try git(["rev-parse", "HEAD"], at: path)
         let parts = specPath.split(separator: "/", omittingEmptySubsequences: false)
         guard !specPath.hasPrefix("/"), !parts.contains(".."), specPath.hasSuffix(".md"),
-              let raw = try? String(contentsOfFile: (path as NSString).appendingPathComponent(specPath), encoding: .utf8) else {
+              let loaded = Self.specDocument(specPaths: [specPath], read: { try? String(contentsOfFile: (path as NSString).appendingPathComponent($0), encoding: .utf8) }),
+              FileManager.default.fileExists(atPath: (path as NSString).appendingPathComponent(specPath)) else {
             throw failure("spec 문서 `\(specPath)`를 읽을 수 없습니다. 목록을 새로 고친 뒤 다시 시도하세요.")
         }
-        let spec = SpecDocument(path: specPath, text: String(raw.prefix(Self.maxSpecCharacters)), truncated: raw.count > Self.maxSpecCharacters)
-        let sources = try gitList(["ls-tree", "-r", "--name-only", "-z", head], at: path).filter { $0.hasSuffix(".cs") && !Self.isTestPath($0) }
-        let sourceSet = Set(sources)
-        let referenced = Array(Self.referencedSources(in: raw, sources: sources).prefix(Self.maxReferencedSources))
+        let spec = loaded.document
+        let sources = Set(try gitList(["ls-tree", "-r", "--name-only", "-z", head], at: path).filter { $0.hasSuffix(".cs") && !Self.isTestPath($0) })
+        let referenced = Array(Self.referencedSources(in: loaded.raw, sources: sources.sorted()).prefix(Self.maxReferencedSources))
         func noTargets(_ summary: String) -> UnitTestVerification {
             .init(outcome: .notApplicable, verifiedSHA: head, resultSHA: head, pushed: false, summary: "기준 \(current) · spec \(specPath) · " + summary, files: [])
         }
 
         // Selection reads the current branch as it is, so a spec without rules never switches the folder.
         progress("spec에서 테스트할 규칙과 구현 소스를 찾는 중입니다.")
-        var planned: [Planned] = []
-        var outside = 0
-        for candidate in try select(path, spec, referenced) {
-            guard Self.isValid(candidate) else { throw failure("UnitTest 대상 선별 응답에 잘못된 동작 또는 우선순위가 있습니다.") }
-            guard sourceSet.contains(candidate.sourcePath), !planned.contains(where: { $0.candidate.sourcePath == candidate.sourcePath }) else {
-                outside += 1
-                continue
-            }
-            planned.append(.init(candidate: candidate, paths: []))
-        }
-        guard !planned.isEmpty else {
-            return noTargets("규칙 부족: spec에서 구현 소스와 연결할 테스트 규칙을 찾지 못했습니다." + (outside > 0 ? " 저장소에 없는 경로 \(outside)개 제외." : ""))
+        let selected = try plannedSpecTargets(select(path, spec, referenced), sources: sources)
+        guard !selected.planned.isEmpty else {
+            return noTargets("규칙 부족: spec에서 구현 소스와 연결할 테스트 규칙을 찾지 못했습니다." + (selected.outside > 0 ? " 저장소에 없는 경로 \(selected.outside)개 제외." : ""))
         }
 
         let run = try runOnUnitTestBranch(
             repository: repository, sourceBranch: current, head: head, mergeBase: nil, spec: spec,
             generate: generate, progress: progress
-        ) { _ in planned }
+        ) { _ in selected.planned }
+        return Self.specVerification(prefix: "기준 \(current) · spec \(specPath)", spec: spec, run: run, outside: selected.outside, head: head)
+    }
+
+    /// Spec candidates → targets; a path outside the tracked sources (or repeated) is counted, not planned.
+    private func plannedSpecTargets(_ candidates: [Candidate], sources: Set<String>) throws -> (planned: [Planned], outside: Int) {
+        var planned: [Planned] = []
+        var outside = 0
+        for candidate in candidates {
+            guard Self.isValid(candidate) else { throw failure("UnitTest 대상 선별 응답에 잘못된 동작 또는 우선순위가 있습니다.") }
+            guard sources.contains(candidate.sourcePath), !planned.contains(where: { $0.candidate.sourcePath == candidate.sourcePath }) else {
+                outside += 1
+                continue
+            }
+            planned.append(.init(candidate: candidate, paths: []))
+        }
+        return (planned, outside)
+    }
+
+    private static func specVerification(prefix: String, spec: SpecDocument, run: BranchRun, outside: Int, head: String) -> UnitTestVerification {
         let count = { (status: UnitTestVerification.FileResult.Status) in run.results.filter { $0.status == status }.count }
         let passed = count(.passed), failed = count(.failed), mismatched = count(.specMismatch)
         let outcome: UnitTestVerification.Outcome = failed + mismatched > 0 ? .failed : (passed > 0 ? .passed : .notApplicable)
         let rules = run.results.reduce(0) { $0 + ($1.rules?.count ?? 0) }
         let covered = run.results.filter { $0.status == .passed }.reduce(0) { $0 + ($1.rules?.count ?? 0) }
-        let summary = "기준 \(current) · spec \(specPath) · 추출 규칙 \(rules)개 중 테스트 \(covered)개 · 통과 \(passed)개 · 실패 \(failed)개 · spec과 구현 불일치 \(mismatched)개 · 건너뜀 \(run.results.count - passed - failed - mismatched)개 · 저장소에 없는 경로 제외 \(outside)개 · 상한 초과 미처리 \(run.planned - run.results.count)개"
-            + (spec.truncated ? " · spec이 길어 앞부분 \(Self.maxSpecCharacters)자만 사용" : "") + run.note
+        let summary = "\(prefix) · 추출 규칙 \(rules)개 중 테스트 \(covered)개 · 통과 \(passed)개 · 실패 \(failed)개 · spec과 구현 불일치 \(mismatched)개 · 건너뜀 \(run.results.count - passed - failed - mismatched)개 · 저장소에 없는 경로 제외 \(outside)개 · 상한 초과 미처리 \(run.planned - run.results.count)개"
+            + (spec.truncated ? " · spec이 길어 수용 기준·시나리오·규칙 구간 위주로 \(maxSpecCharacters)자만 사용" : "") + run.note
         return UnitTestVerification(outcome: outcome, verifiedSHA: head, resultSHA: head, pushed: false, summary: summary, files: run.results)
     }
 
@@ -421,7 +538,7 @@ struct UnitTestVerifier: Sendable {
     /// Switches the registered folder to the local UnitTest branch of `sourceBranch` at `head`,
     /// plans targets there, then generates, validates and writes the passing tests (uncommitted).
     private func runOnUnitTestBranch(
-        repository: RegisteredRepository, sourceBranch: String, head: String, mergeBase: String?, spec: SpecDocument?,
+        repository: RegisteredRepository, sourceBranch: String, head: String, mergeBase: String?, spec: SpecDocument?, branchSpec: SpecDocument? = nil,
         generate: Generator, progress: @Sendable (String) -> Void,
         plan: (String) throws -> [Planned]
     ) throws -> BranchRun {
@@ -509,6 +626,9 @@ struct UnitTestVerifier: Sendable {
         let allFiles = Set(try gitList(["ls-tree", "-r", "--name-only", "-z", head], at: path))
         let testFiles = allFiles.filter { $0.hasSuffix(".cs") && Self.isTestPath($0) }.sorted()
         let isUnityProject = allFiles.contains { $0 == "ProjectSettings/ProjectVersion.txt" || $0.hasSuffix("/ProjectSettings/ProjectVersion.txt") }
+        let testFolder = repository.unitTestFolder
+        let testDirectories = Set(testFiles.filter { $0.hasSuffix("Tests.cs") }.map { ($0 as NSString).deletingLastPathComponent })
+            .union(testFolder.map { [$0] } ?? [])
         let prioritized = planned.sorted {
             if $0.candidate.priority != $1.candidate.priority { return $0.candidate.priority > $1.candidate.priority }
             return $0.candidate.sourcePath < $1.candidate.sourcePath
@@ -527,17 +647,18 @@ struct UnitTestVerifier: Sendable {
             let style = Self.closestTestFile(to: source, in: testFiles)
             let target = Target(
                 sourcePath: source, source: text, diff: String(diff.prefix(Self.maxSourceCharacters)),
-                suggestedTestPath: Self.suggestedTestPath(for: source, testFiles: testFiles + accepted.map(\.path)),
+                suggestedTestPath: Self.suggestedTestPath(for: source, testFiles: testFiles + accepted.map(\.path), folder: testFolder),
                 stylePath: style,
                 styleSample: try style.map { String(try git(["show", "\(head):\($0)"], at: path, trim: false).prefix(6000)) },
                 behavior: entry.candidate.behavior,
                 existingTests: ownedTests.subtracting(deleted).sorted(),
                 isUnityProject: isUnityProject,
-                spec: spec
+                spec: spec,
+                branchSpec: branchSpec
             )
             results.append(try validateTarget(
                 target, folder: work.appendingPathComponent("t\(index)").path, workspace: path,
-                repositoryPath: path, head: head, tracked: allFiles, untracked: untracked, owned: ownedTests, generate: generate,
+                repositoryPath: path, head: head, tracked: allFiles, untracked: untracked, owned: ownedTests, testDirectories: testDirectories, generate: generate,
                 accepted: &accepted, deleted: &deleted
             ))
         }
@@ -558,7 +679,7 @@ struct UnitTestVerifier: Sendable {
     /// Up to `maxAttempts` generate → guard → validate rounds; failures feed the next prompt.
     private func validateTarget(
         _ target: Target, folder: String, workspace: String,
-        repositoryPath: String, head: String, tracked: Set<String>, untracked: Set<String>, owned: Set<String>,
+        repositoryPath: String, head: String, tracked: Set<String>, untracked: Set<String>, owned: Set<String>, testDirectories: Set<String>,
         generate: Generator, accepted: inout [UnitTestProposal.File], deleted: inout [String]
     ) throws -> UnitTestVerification.FileResult {
         var rules: [String]?
@@ -595,7 +716,7 @@ struct UnitTestVerifier: Sendable {
                 return result(.passed, "기존 UnitTest 삭제: " + (proposal.reason.isEmpty ? "변경 동작에 맞지 않음" : proposal.reason), test: deletions.joined(separator: ", "))
             }
             // Tests owned by this UnitTest branch are not in the selected commit, so they may be rewritten.
-            let violations = Self.violations(of: proposal.files, existingPaths: tracked.union(untracked).union(accepted.map(\.path)).union(deleted), allowsUnityEngine: target.isUnityProject)
+            let violations = Self.violations(of: proposal.files, existingPaths: tracked.union(untracked).union(accepted.map(\.path)).union(deleted), allowsUnityEngine: target.isUnityProject, allowedDirectories: testDirectories)
             if !violations.isEmpty { return result(.failed, "정책 위반으로 폐기: " + violations.joined(separator: "; ")) }
 
             let dependencies = proposal.dependencies ?? []

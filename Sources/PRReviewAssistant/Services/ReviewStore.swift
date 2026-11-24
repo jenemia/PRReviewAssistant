@@ -200,6 +200,12 @@ final class ReviewStore {
         reviewRolesDirectory.isEmpty ? ReviewWorkflow.defaultAgentsDirectory : URL(fileURLWithPath: reviewRolesDirectory)
     }
     var reviewSkillPaths: [String: String] = [:] { didSet { persist() } }
+    /// Project UnitTest skill chosen in Settings → Skills; empty means none.
+    var unitTestSkillPath = "" { didSet { persist() } }
+    /// nil when unset or the file is no longer readable, so prompts never name a missing skill.
+    var activeUnitTestSkillPath: String? {
+        unitTestSkillPath.isEmpty || !FileManager.default.isReadableFile(atPath: unitTestSkillPath) ? nil : unitTestSkillPath
+    }
     func reviewSkillPath(for provider: AgentProvider) -> String? {
         if let path = reviewSkillPaths[provider.rawValue] {
             return path.isEmpty ? nil : path
@@ -277,6 +283,7 @@ final class ReviewStore {
         agentProvider = state.agentProvider
         reviewSkillPaths = state.reviewSkillPaths
         reviewRolesDirectory = state.reviewRolesDirectory
+        unitTestSkillPath = state.unitTestSkillPath
         codexModel = state.codexModel
         claudeModel = state.claudeModel
         agentFeatureModels = state.agentFeatureModels
@@ -842,14 +849,17 @@ final class ReviewStore {
             let model = model(for: feature)
             let isTrusted = trustedBranchReviewIDs.contains(branch.id)
             let baseReference = branchBaseReference(for: branch, repository: repository)
-            let cursor = agent(for: feature), verifier = unitTestVerifier
+            let cursor = agent(for: feature), verifier = unitTestVerifier, skillPath = activeUnitTestSkillPath
             let verification = try await background {
                 try verifier.verify(
                     repository: repository, branch: branch, baseReference: baseReference,
                     select: { workspace, comparisonBase, changes in
-                        try cursor.selectUnitTestTargets(repositoryPath: workspace, comparisonBase: comparisonBase, changes: changes, trustWorkspace: isTrusted, model: model)
+                        try cursor.selectUnitTestTargets(repositoryPath: workspace, comparisonBase: comparisonBase, changes: changes, trustWorkspace: isTrusted, model: model, skillPath: skillPath)
                     },
-                    generate: { try cursor.generateUnitTest(repositoryPath: $0.workspace, request: $0, trustWorkspace: isTrusted, model: model) },
+                    selectSpec: { workspace, spec, referenced in
+                        try cursor.selectSpecUnitTestTargets(repositoryPath: workspace, spec: spec, referencedSources: referenced, trustWorkspace: isTrusted, model: model, skillPath: skillPath)
+                    },
+                    generate: { try cursor.generateUnitTest(repositoryPath: $0.workspace, request: $0, trustWorkspace: isTrusted, model: model, skillPath: skillPath) },
                     progress: { message in Task { @MainActor in self.branchUnitTestMessages[branch.id] = message } }
                 )
             }
@@ -954,14 +964,14 @@ final class ReviewStore {
             let feature = AgentFeature.specUnitTest
             let model = model(for: feature)
             let isTrusted = trustedBranchReviewIDs.contains(branch.id)
-            let cursor = agent(for: feature), verifier = unitTestVerifier
+            let cursor = agent(for: feature), verifier = unitTestVerifier, skillPath = activeUnitTestSkillPath
             let verification = try await background {
                 try verifier.verifySpec(
                     repository: repository, specPath: specPath,
                     select: { workspace, spec, referenced in
-                        try cursor.selectSpecUnitTestTargets(repositoryPath: workspace, spec: spec, referencedSources: referenced, trustWorkspace: isTrusted, model: model)
+                        try cursor.selectSpecUnitTestTargets(repositoryPath: workspace, spec: spec, referencedSources: referenced, trustWorkspace: isTrusted, model: model, skillPath: skillPath)
                     },
-                    generate: { try cursor.generateUnitTest(repositoryPath: $0.workspace, request: $0, trustWorkspace: isTrusted, model: model) },
+                    generate: { try cursor.generateUnitTest(repositoryPath: $0.workspace, request: $0, trustWorkspace: isTrusted, model: model, skillPath: skillPath) },
                     progress: { message in Task { @MainActor in self.specUnitTestMessages[id] = message } }
                 )
             }
@@ -3477,6 +3487,7 @@ final class ReviewStore {
         state.agentProvider = agentProvider
         state.reviewSkillPaths = reviewSkillPaths
         state.reviewRolesDirectory = reviewRolesDirectory
+        state.unitTestSkillPath = unitTestSkillPath
         state.codexModel = codexModel
         state.claudeModel = claudeModel
         state.agentFeatureModels = agentFeatureModels

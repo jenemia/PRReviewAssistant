@@ -32,6 +32,8 @@ struct PersistedState: Codable {
     var agentProvider: AgentProvider = .cursor
     var reviewSkillPaths: [String: String] = [:]
     var reviewRolesDirectory = ""
+    /// Project UnitTest skill (SKILL.md) the UnitTest prompts tell agents to read. Empty means none.
+    var unitTestSkillPath = ""
     var codexModel = ""
     var claudeModel = ""
     /// Per-feature model overrides, kept per provider because model IDs differ.
@@ -79,7 +81,7 @@ struct PersistedState: Codable {
         case repositories, processedCommentIDs, knownPullRequestIDs, unreadPullRequestIDs, unreadCommentIDs
         case hasEstablishedNotificationBaseline, approvedPullRequestIDs, hasEstablishedApprovalBaseline
         case agentProvider, reviewSkillPaths, codexModel, claudeModel, monitoringEnabled, monitoringInterval, analyses, agentReviewCards, hiddenReviewCommentIDsByPullRequest, reviewHistoryRoundsByPullRequest, implementationPlans, committedHeads, postedReReviewCommentTokens, agentModel, customAgentModel, reviewAuthorFilter, petVisible, petSize, petReduceMotion, latestPetNotification, hasCompletedOnboarding, skippedOnboardingSteps, projectCopyFolder, updateRepository, updatesEnabled, lastNotifiedUpdateTag, requestedBranches, cursorSpecSidebarCache, automaticCursorSessionClassification, automaticReviewAnalysis
-        case appPostedCommentIDs, reviewRolesDirectory
+        case appPostedCommentIDs, reviewRolesDirectory, unitTestSkillPath
         case agentFeatureModels, agentFeatureProviders, disabledAgentModels, disabledAgentProviders
         case branchReviewCards, branchCardReviewed, branchImplementationResults, branchImplementationInProgress, branchUnitTestResults, specUnitTestResults
     }
@@ -143,6 +145,7 @@ struct PersistedState: Codable {
         agentProvider = (try? container.decode(AgentProvider.self, forKey: .agentProvider)) ?? .cursor
         reviewSkillPaths = try container.decodeIfPresent([String: String].self, forKey: .reviewSkillPaths) ?? [:]
         reviewRolesDirectory = try container.decodeIfPresent(String.self, forKey: .reviewRolesDirectory) ?? ""
+        unitTestSkillPath = try container.decodeIfPresent(String.self, forKey: .unitTestSkillPath) ?? ""
         codexModel = try container.decodeIfPresent(String.self, forKey: .codexModel) ?? ""
         claudeModel = try container.decodeIfPresent(String.self, forKey: .claudeModel) ?? ""
         agentFeatureModels = (try? container.decodeIfPresent([AgentProvider: [AgentFeature: String]].self, forKey: .agentFeatureModels)) ?? [:]

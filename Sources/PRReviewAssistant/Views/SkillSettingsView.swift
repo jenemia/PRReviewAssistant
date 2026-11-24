@@ -6,7 +6,7 @@ struct SkillSettingsView: View {
     @Bindable var store: ReviewStore
     @State private var provider: AgentProvider = .cursor
     private var reviewSkillPath: String? { store.reviewSkillPath(for: provider) }
-    private var files: SkillFileStore { SkillFileStore(reviewSkillPath: reviewSkillPath) }
+    private var files: SkillFileStore { SkillFileStore(reviewSkillPath: reviewSkillPath, unitTestSkillPath: store.activeUnitTestSkillPath) }
     @State private var skills: [EditableSkill] = []
     @State private var selectedID: EditableSkill.ID?
     @State private var text = ""
@@ -31,6 +31,16 @@ struct SkillSettingsView: View {
                 }
                 if reviewSkillPath == nil {
                     Text("리뷰 프롬프트만 사용").font(.caption).foregroundStyle(.secondary)
+                }
+                Text("프로젝트 UnitTest 스킬").font(.subheadline)
+                HStack {
+                    Button("스킬 선택…") { selectUnitTestSkill() }
+                    Button("해제") { store.unitTestSkillPath = "" }
+                        .disabled(store.activeUnitTestSkillPath == nil)
+                }
+                .help("UnitTest 대상 선별과 생성 에이전트가 먼저 읽을 프로젝트 스킬(예: devil-hunter-idle-unittest)입니다. 테스트 경로·검증 방식·응답 형식은 앱 규칙이 우선합니다.")
+                if store.activeUnitTestSkillPath == nil {
+                    Text("기본 unittest-* 스킬만 사용").font(.caption).foregroundStyle(.secondary)
                 }
                 List(selection: $selectedID) {
                     ForEach([EditableSkill.Group.review, .unitTest], id: \.self) { group in
@@ -80,6 +90,7 @@ struct SkillSettingsView: View {
         }
         .onChange(of: provider) { _, _ in reload(preferReview: true) }
         .onChange(of: reviewSkillPath) { _, _ in reload(preferReview: true) }
+        .onChange(of: store.unitTestSkillPath) { _, _ in reload() }
         .onChange(of: selectedID) { _, _ in loadSelected() }
         .alert("스킬을 선택할 수 없습니다", isPresented: Binding(
             get: { selectionError != nil }, set: { if !$0 { selectionError = nil } }
@@ -91,8 +102,19 @@ struct SkillSettingsView: View {
     }
 
     private func selectReviewSkill() {
+        guard let file = chooseSkillFile(title: "\(provider.title) 리뷰 스킬 선택") else { return }
+        store.reviewSkillPaths[provider.rawValue] = file.path
+    }
+
+    private func selectUnitTestSkill() {
+        guard let file = chooseSkillFile(title: "프로젝트 UnitTest 스킬 선택") else { return }
+        store.unitTestSkillPath = file.path
+        selectedID = file.path
+    }
+
+    private func chooseSkillFile(title: String) -> URL? {
         let panel = NSOpenPanel()
-        panel.title = "\(provider.title) 리뷰 스킬 선택"
+        panel.title = title
         panel.message = "스킬 파일 또는 SKILL.md가 들어 있는 폴더를 선택하세요."
         panel.canChooseFiles = true
         panel.canChooseDirectories = true
@@ -100,17 +122,17 @@ struct SkillSettingsView: View {
         panel.showsHiddenFiles = true
         let skillDirectory = provider.skillDirectory
         panel.directoryURL = FileManager.default.fileExists(atPath: skillDirectory.path) ? skillDirectory : FileManager.default.homeDirectoryForCurrentUser
-        guard panel.runModal() == .OK, let selected = panel.url else { return }
+        guard panel.runModal() == .OK, let selected = panel.url else { return nil }
         var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: selected.path, isDirectory: &isDirectory) else { return }
+        guard FileManager.default.fileExists(atPath: selected.path, isDirectory: &isDirectory) else { return nil }
         let file = isDirectory.boolValue ? selected.appendingPathComponent("SKILL.md") : selected
         var isFileDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: file.path, isDirectory: &isFileDirectory),
               !isFileDirectory.boolValue, FileManager.default.isReadableFile(atPath: file.path) else {
             selectionError = "읽을 수 있는 파일을 선택하거나 SKILL.md가 들어 있는 폴더를 선택하세요."
-            return
+            return nil
         }
-        store.reviewSkillPaths[provider.rawValue] = file.path
+        return file
     }
 
     private func reload(preferReview: Bool = false) {

@@ -15,6 +15,7 @@ description: Spec의 테스트 시나리오에서 UnitTest 케이스를 뽑아 �
 | 코드 특징 | 함께 적용 |
 |---|---|
 | 항상 | `unittest-csharp-base` |
+| spec.md·qa.md에서 케이스를 뽑을 때 | `unittest-spec-perspectives` |
 | `UnityEngine`, `MonoBehaviour`, `ScriptableObject` 참조 | `unittest-unity-base` (순수 로직이 아니면 테스트하지 않고 보고) |
 | 시각, 일차, 주기, 시즌, 기간, 만료 | `unittest-domain-time-season` |
 | 골드, 가격, 할인, 차감, 지급, 보상 | `unittest-domain-currency` |

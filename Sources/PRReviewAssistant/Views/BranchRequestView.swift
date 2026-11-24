@@ -272,7 +272,7 @@ struct BranchRequestDetailView: View {
 
                 GroupBox("UnitTest 검증") {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("변경된 C# 파일 중 테스트가 없는 순수 로직의 NUnit 테스트를 Agent가 생성하고 `dotnet test`로 검증합니다. 통과한 테스트는 로컬 UnitTest 브랜치의 작업 트리에 커밋하지 않고 둡니다.")
+                        Text("변경된 C# 파일 중 테스트가 없는 순수 로직의 NUnit 테스트를 Agent가 생성하고 `dotnet test`로 검증합니다. 이 브랜치가 바꾼 spec(같은 폴더 qa.md 포함)을 기대값 근거로 쓰고, C# 변경 없이 spec만 바꾼 브랜치는 그 spec의 규칙에서 대상을 고릅니다. 통과한 테스트는 로컬 UnitTest 브랜치의 작업 트리에 커밋하지 않고 둡니다.")
                             .font(.caption).foregroundStyle(.secondary)
                         HStack {
                             Button(isVerifyingUnitTests ? "검증 중…" : "UnitTest 생성·검증", systemImage: "checkmark.shield") {

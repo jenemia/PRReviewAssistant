@@ -204,6 +204,9 @@ struct RegisteredRepository: Identifiable, Hashable, Codable, Sendable {
     var parentBranchRuleSkillHash: String?
     /// Folder names whose `spec.md` documents the Spec tab lists. nil uses `specs` and `.specs`.
     var specFolders: [String]?
+    /// Repository-relative folder generated UnitTests go to (e.g. a Unity `Assets/…/TestCase/Editor`).
+    /// nil keeps the default: next to similar tests under a `Tests` folder.
+    var unitTestFolder: String?
 
     var effectiveParentBranchRules: String { parentBranchRules ?? ParentBranchRules.sprintDefault }
     var effectiveSpecFolders: [String] { specFolders ?? WorkspaceSpecCatalog.defaultFolders }

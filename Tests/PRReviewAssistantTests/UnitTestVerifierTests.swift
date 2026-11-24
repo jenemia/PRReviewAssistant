@@ -855,3 +855,171 @@ extension UnitTestWorkflowTests {
         #expect(fixture.file("Tests/Demo.Tests/Shop/ShopDiscountTests.cs") == nil)
     }
 }
+
+// MARK: - 브랜치 spec 연결 · spec 발췌 · 테스트 폴더 · 프로젝트 UnitTest 스킬
+
+extension UnitTestVerifierTests {
+    @Test("긴 spec은 수용 기준·시나리오 섹션과 하위 섹션을 남기고 생략한 섹션 제목을 알려 준다")
+    func excerptsSpecByPrioritySections() {
+        let filler = String(repeating: "가", count: 3000)
+        let text = """
+        # 사격장
+        문서 맵
+        ## 1. 개요
+        \(filler)
+        ## 10. 테스트 시나리오
+        ### 10.1 한 판
+        점수 3 → 재화 3
+        ```bash
+        # 주석은 제목이 아니다
+        ```
+        ## 11. 연출
+        \(filler)
+        ## 13. 수용 기준 (개발 완료)
+        상한 3회
+        """
+        let excerpt = UnitTestVerifier.specExcerpt(text, limit: 1000)
+        #expect(excerpt.truncated)
+        #expect(excerpt.text.contains("문서 맵") && excerpt.text.contains("점수 3 → 재화 3") && excerpt.text.contains("상한 3회"))
+        #expect(excerpt.text.contains("# 주석은 제목이 아니다"))
+        #expect(!excerpt.text.contains(filler))
+        #expect(excerpt.text.contains("생략한 섹션 2개: 1. 개요 / 11. 연출"))
+        #expect(excerpt.text.range(of: "점수 3")!.lowerBound < excerpt.text.range(of: "상한 3회")!.lowerBound)
+        #expect(UnitTestVerifier.specExcerpt("짧은 spec", limit: 1000) == ("짧은 spec", false))
+    }
+
+    @Test("spec.md와 같은 폴더의 qa.md를 함께 읽는다")
+    func readsSpecWithQA() throws {
+        let files = [".specs/spec_a/spec.md": "규칙 A", ".specs/spec_a/qa.md": "DT-11 거부"]
+        let loaded = try #require(UnitTestVerifier.specDocument(specPaths: [".specs/spec_a/spec.md"]) { files[$0] })
+        #expect(loaded.document.path == ".specs/spec_a/spec.md")
+        #expect(loaded.document.text.contains("=== 파일: .specs/spec_a/qa.md") && loaded.document.text.contains("DT-11 거부"))
+        #expect(loaded.raw.contains("규칙 A"))
+        #expect(UnitTestVerifier.specDocument(specPaths: [".specs/none/spec.md"]) { files[$0] } == nil)
+    }
+
+    @Test("브랜치가 바꾼 문서에서 가장 가까운 spec.md를 많이 바뀐 순으로 찾는다")
+    func findsBranchSpecPaths() {
+        let tracked: Set<String> = ["p/.specs/spec_a/spec.md", "p/.specs/spec_b/spec.md", "p/.specs/spec_b/minigame/spec.md", "docs/spec.md"]
+        let changed = ["p/.specs/spec_a/PROGRESS.md", "p/.specs/spec_b/minigame/meta.md", "p/.specs/spec_b/qa.md", "p/.specs/spec_b/meta.md", "docs/README.md", "p/.specs/spec_c/qa.md"]
+        #expect(UnitTestVerifier.branchSpecPaths(changedDocuments: changed, trackedFiles: tracked, specFolders: [".specs"]) == [
+            "p/.specs/spec_b/spec.md", "p/.specs/spec_a/spec.md", "p/.specs/spec_b/minigame/spec.md"
+        ])
+    }
+
+    @Test("설정한 UnitTest 폴더와 기존 테스트 폴더를 허용하고 그 폴더로 경로를 제안한다")
+    func allowsConfiguredTestFolder() {
+        let folder = "Assets/Supercent/TestCase/Editor"
+        let file = UnitTestProposal.File(path: "\(folder)/RouletteTests.cs", content: "class RouletteTests {}")
+        #expect(!UnitTestVerifier.violations(of: [file], existingPaths: []).isEmpty)
+        #expect(UnitTestVerifier.violations(of: [file], existingPaths: [], allowedDirectories: [folder]).isEmpty)
+        let nested = UnitTestProposal.File(path: "\(folder)/Sub/RouletteTests.cs", content: "")
+        #expect(!UnitTestVerifier.violations(of: [nested], existingPaths: [], allowedDirectories: [folder]).isEmpty)
+        #expect(UnitTestVerifier.suggestedTestPath(for: "Assets/Game/Roulette.cs", testFiles: ["\(folder)/RouletteTests.cs"], folder: folder) == "\(folder)/RouletteDiffTests.cs")
+    }
+
+    @Test("브랜치 spec 발췌와 프로젝트 UnitTest 스킬을 프롬프트에 담는다")
+    func buildsBranchSpecPrompt() {
+        var target = UnitTestVerifier.Target(sourcePath: "Assets/Shop.cs", source: "class Shop {}", diff: "+ x", suggestedTestPath: "Tests/ShopTests.cs", stylePath: nil, styleSample: nil, behavior: "Shop.Price")
+        target.branchSpec = .init(path: ".specs/spec_shop/spec.md", text: "QA DT-1 VIP 900", truncated: true)
+        let prompt = ReviewAgent.unitTestPrompt(for: .init(target: target, previousError: nil), skillPath: "/skills/project-unittest/SKILL.md")
+        #expect(prompt.contains("이 브랜치가 수정한 spec 발췌") && prompt.contains("QA DT-1 VIP 900") && prompt.contains("이번 브랜치의 변경 diff"))
+        #expect(prompt.contains("프로젝트 UnitTest 스킬 `/skills/project-unittest/SKILL.md`") && !prompt.contains("specMismatch"))
+        #expect(!ReviewAgent.unitTestPrompt(for: .init(target: target, previousError: nil)).contains("프로젝트 UnitTest 스킬"))
+        let selection = ReviewAgent.specUnitTestSelectionPrompt(spec: target.branchSpec!, referencedSources: [], skillPath: "/skills/p/SKILL.md")
+        #expect(selection.contains("QA·테스트 시나리오") && selection.contains("/skills/p/SKILL.md"))
+    }
+
+}
+
+extension UnitTestWorkflowTests {
+    @Test("C# 변경 없이 spec만 바꾼 브랜치는 그 spec(qa.md 포함)에서 대상을 골라 설정 폴더에 테스트를 둔다")
+    func specOnlyBranchUsesBranchSpecs() throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        let path = fixture.repository.localPath
+        func write(_ relative: String, _ text: String) throws {
+            let url = URL(fileURLWithPath: path).appending(path: relative)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try text.write(to: url, atomically: true, encoding: .utf8)
+        }
+        // Base already has the code; the branch only adds spec and QA documents.
+        _ = try fixture.git(["switch", "main"])
+        _ = try fixture.git(["merge", "--ff-only", "feature/x"])
+        _ = try fixture.git(["push", "origin", "main"])
+        _ = try fixture.git(["switch", "-c", "spec/x"])
+        try write(".specs/spec_shop/spec.md", "# 상점\n`ShopDiscount.cs`가 할인한다")
+        try write(".specs/spec_shop/qa.md", "DT-1 VIP 900")
+        _ = try fixture.git(["add", "."]); _ = try fixture.git(["commit", "-m", "spec"])
+        let head = try fixture.git(["rev-parse", "HEAD"])
+        var repository = fixture.repository
+        repository.unitTestFolder = "Assets/TestCase/Editor"
+        let branch = RepositoryBranch(repositoryID: repository.id, repositoryName: "local/test", name: "spec/x", reference: "refs/heads/spec/x", sha: String(head.prefix(7)), subject: "spec", updatedAt: nil, isCurrent: true, isRemote: false)
+        let seenSpec = LockedBox<(String, [String])?>(nil)
+        let seenTarget = LockedBox<UnitTestVerifier.Target?>(nil)
+        let verifier = UnitTestVerifier { _, _, _ in .init(success: true, log: "Passed!") }
+        let result = try verifier.verify(
+            repository: repository, branch: branch, baseReference: "origin/main",
+            select: { _, _, _ in Issue.record("diff 선별은 호출되지 않아야 한다"); return [] },
+            selectSpec: { _, spec, referenced in
+                seenSpec.value = (spec.text, referenced)
+                return [.init(sourcePath: "Assets/Scripts/Shop/ShopDiscount.cs", behavior: "DT-1: VIP → 900", priority: 3)]
+            },
+            generate: { request in
+                seenTarget.value = request.target
+                return UnitTestProposal(status: "generated", files: [.init(path: request.target.suggestedTestPath, content: "class ShopDiscountTests {}")])
+            },
+            progress: { _ in }
+        )
+        #expect(result.outcome == .passed)
+        #expect(result.summary.contains("브랜치 spec .specs/spec_shop/spec.md"))
+        #expect(seenSpec.value?.0.contains("DT-1 VIP 900") == true)
+        #expect(seenSpec.value?.1 == ["Assets/Scripts/Shop/ShopDiscount.cs"])
+        #expect(seenTarget.value?.spec?.path == ".specs/spec_shop/spec.md")
+        #expect(fixture.file("Assets/TestCase/Editor/ShopDiscountTests.cs") == "class ShopDiscountTests {}")
+        #expect(try fixture.git(["branch", "--show-current"]) == "unittest/x")
+    }
+
+    @Test("C# 변경이 있는 브랜치는 diff로 고르고 브랜치가 바꾼 spec을 생성 대상에 함께 넘긴다")
+    func codeBranchCarriesBranchSpec() throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        let path = fixture.repository.localPath
+        let url = URL(fileURLWithPath: path).appending(path: ".specs/spec_shop/spec.md")
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "## 수용 기준\nVIP 900".write(to: url, atomically: true, encoding: .utf8)
+        _ = try fixture.git(["add", "."]); _ = try fixture.git(["commit", "-m", "spec"]); _ = try fixture.git(["push", "origin", "feature/x"])
+        var branch = fixture.branch
+        branch.sha = String(try fixture.git(["rev-parse", "HEAD"]).prefix(7))
+        let seen = LockedBox<UnitTestVerifier.Target?>(nil)
+        let verifier = UnitTestVerifier { _, _, _ in .init(success: true, log: "Passed!") }
+        let result = try verifier.verify(
+            repository: fixture.repository, branch: branch, baseReference: "origin/main",
+            select: Self.selectShopDiscount,
+            generate: { seen.value = $0.target; return proposal }, progress: { _ in }
+        )
+        #expect(result.outcome == .passed && result.summary.contains("기대값 spec .specs/spec_shop/spec.md"))
+        #expect(seen.value?.branchSpec?.text.contains("VIP 900") == true && seen.value?.spec == nil)
+    }
+}
+
+extension SkillFileStoreTests {
+    @Test("선택한 프로젝트 UnitTest 스킬을 UnitTest 목록 맨 앞에 보여 주고 편집할 수 있다")
+    func listsProjectUnitTestSkill() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "Skills-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appending(path: "claude/skills/devil-hunter-idle-unittest/SKILL.md")
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "프로젝트 지침".write(to: file, atomically: true, encoding: .utf8)
+        let store = SkillFileStore(cursorDirectory: root, unitTestSkillPath: file.path)
+        _ = try store.installDefaultUnitTestSkills(defaultFile: { name in
+            URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+                .appendingPathComponent("Sources/PRReviewAssistant/Resources/UnitTestSkills/\(name).md")
+        })
+        let unitTest = store.list().filter { $0.group == .unitTest }
+        #expect(unitTest.first?.name == "devil-hunter-idle-unittest (프로젝트)")
+        #expect(unitTest.contains { $0.name == "unittest-spec-perspectives" })
+        try store.write("수정", to: try #require(unitTest.first))
+        #expect(try String(contentsOf: file, encoding: .utf8) == "수정")
+    }
+}

@@ -39,7 +39,7 @@
 - **Spec 상세 화면.** 선택한 문서 본문을 `MarkdownContentView`로 렌더링하고, 위쪽에 작업 기준(저장소, 현재 브랜치, 만들 UnitTest 브랜치 이름)과 "UnitTest 생성" 버튼, 진행 메시지, 직전 결과를 둔다. 결과 표시는 브랜치 UnitTest 결과 화면의 파일별 결과·추출 규칙 표시를 `UnitTestFileResultsView`(`BranchRequestView.swift`)로 분리해 함께 쓴다. 같은 저장소에서 브랜치 UnitTest, spec UnitTest, 구현 작업 중 하나가 진행 중이면 `ReviewStore.isUnitTestBlocked(in:)`로 버튼을 막고, 브랜치 UnitTest도 spec UnitTest가 진행 중이면 시작하지 않는다. 작업 공간 신뢰·로그인 요청은 브랜치 모드의 권한 요청(`BranchAgentPermissionRequest.Action.specUnitTest`)을 현재 브랜치 기준으로 재사용한다.
 - **작업 기준 브랜치.** 등록 폴더의 현재 로컬 브랜치(`git symbolic-ref --short HEAD`)와 그 HEAD SHA를 기준으로 한다. detached HEAD여서 브랜치 이름을 정할 수 없으면 실행 전에 중단하고 사유를 보여 준다. UnitTest 브랜치 이름은 저장소의 부모 브랜치 규칙을 따르는 `ParentBranchRules.unitTestBranchName(for:rules:)`로 정하며, `unittest/` 브랜치에 다시 적용해도 같은 이름을 돌려주므로, 현재 브랜치가 이미 UnitTest 브랜치면 그 브랜치에서 이어서 진행한다. 브랜치 전환, stash 보관·재적용, fast-forward·갈라짐 중단, 기존 테스트 보호 규칙은 관련 스펙 구현부를 그대로 따른다.
 - **spec 기반 대상 선정.** `UnitTestVerifier.verifySpec`이 diff 수집 대신 다음 순서로 `Candidate`를 만든다. 브랜치 전환부터 생성·검증·반영까지는 브랜치 모드와 공통인 `runOnUnitTestBranch`를 쓴다.
-  1. 앱이 등록 폴더 작업 트리의 spec 본문(앞 20,000자)과 spec이 참조한 C# 경로를 모은다. 참조 경로는 본문 백틱 안의 `.cs` 경로 또는 파일 이름을 기준 SHA의 추적 파일(`git ls-files '*.cs'`, 테스트 경로 제외)과 대조해 확정한다.
+  1. 앱이 등록 폴더 작업 트리의 spec 본문과 같은 폴더의 `qa.md`(합계 30,000자, 넘으면 서두 → 수용 기준·시나리오·규칙·예외 섹션 → 나머지 순으로 발췌하고 생략한 섹션 제목을 붙인다)와 spec이 참조한 C# 경로를 모은다. 참조 경로는 본문 백틱 안의 `.cs` 경로 또는 파일 이름을 기준 SHA의 추적 파일(`git ls-files '*.cs'`, 테스트 경로 제외)과 대조해 확정한다.
   2. 새 에이전트 호출(`CursorAgent.selectSpecUnitTestTargets`)이 spec의 `구현부`·`테스트 시나리오`에서 `진입점: 조건 → 결과` 규칙을 뽑고, 각 규칙을 구현한 소스 경로를 반환한다. 후보는 1의 참조 경로를 우선하고, 그 밖의 경로는 추적 C# 파일 목록에 있을 때만 받는다(앱 검증). 목록에 없는 경로, 테스트 경로, 범위 밖 판정은 제외하고 집계한다.
   3. 소스별로 규칙을 묶어 기존 중요도·최대 5개 상한을 적용한다. 규칙을 하나도 뽑지 못하면 "규칙 부족"으로 보고하고 생성하지 않는다.
   분류 응답이 유효하지 않으면 기존처럼 생성을 중단한다.
@@ -79,6 +79,6 @@
 
 ## 미결
 
-- 개발: 구현부 범위의 남은 작업 없음. 현재 브랜치가 `unittest/` 브랜치인 경우는 이름 규칙이 같은 이름을 돌려줘 그대로 이어서 진행한다. spec 본문 상한은 20,000자, 소스는 기존 상한(40,000자)이다.
+- 개발: 구현부 범위의 남은 작업 없음. 현재 브랜치가 `unittest/` 브랜치인 경우는 이름 규칙이 같은 이름을 돌려줘 그대로 이어서 진행한다. spec 본문 상한은 `qa.md` 포함 30,000자, 소스는 기존 상한(40,000자)이다.
 - 기획: 범위 밖 추가 작업 없음.
 - QA: 실제 Unity 저장소의 spec 하나로 규칙 추출, 대상 연결, 생성·검증 결과를 확인한다.
