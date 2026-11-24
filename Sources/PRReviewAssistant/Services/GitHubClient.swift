@@ -154,14 +154,6 @@ struct GitHubClient: Sendable {
     }
 
     /// The reviewed commit remains stable even after review fixes are pushed.
-    func latestReviewedCommit(repository: String, number: Int) throws -> String? {
-        let reviews: [GitHubReview] = try paged("repos/\(repository)/pulls/\(number)/reviews")
-        return reviews
-            .filter { ["APPROVED", "CHANGES_REQUESTED", "COMMENTED"].contains($0.state) && $0.submittedAt != nil }
-            .sorted { ($0.submittedAt ?? .distantPast) < ($1.submittedAt ?? .distantPast) }
-            .last?.commitId
-    }
-
     /// Returns the created comment's ID in `ReviewComment.id` form. The comment
     /// is already posted when the response is unreadable, so that is not an error.
     @discardableResult

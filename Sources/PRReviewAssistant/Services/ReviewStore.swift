@@ -2019,19 +2019,14 @@ final class ReviewStore {
         let model = model(for: feature)
         do {
             let repository = try registeredRepository(for: pullRequest)
-            let baseSHA: String
-            if repository.isLocalPractice == true {
-                baseSHA = pullRequest.headSHA
-            } else {
-                baseSHA = try await background {
-                    try self.github.latestReviewedCommit(repository: pullRequest.repository, number: pullRequest.number)
-                } ?? pullRequest.headSHA
-            }
+            // Read the PR's whole history (first commit → HEAD), not only commits
+            // after the last review, so the message covers every round of work.
             let commits = try await background {
-                try workspace.reviewCommits(at: path, branch: pullRequest.headBranch, baseSHA: baseSHA, committedSHA: committedSHA)
+                let baseSHA = try workspace.pullRequestStart(at: path, baseBranch: pullRequest.baseBranch, remote: repository.remoteName)
+                return try workspace.reviewCommits(at: path, branch: pullRequest.headBranch, baseSHA: baseSHA, committedSHA: committedSHA)
             }
             guard !commits.isEmpty else {
-                statusMessage = "마지막 리뷰 이후의 리뷰 반영 커밋이 없습니다."
+                statusMessage = "PR에 커밋이 없습니다."
                 return nil
             }
             let workSummary = Self.reReviewCommitSummary(commits: commits, cards: cards, plans: plans)
@@ -2046,7 +2041,7 @@ final class ReviewStore {
             let currentHead = try await background {
                 try workspace.verifiedHead(path, expectedSHA: pullRequest.headSHA, expectedBranch: pullRequest.headBranch)
             }
-            guard currentHead == committedSHA else {
+            guard currentHead == commits.last?.sha else {
                 statusMessage = "추천 메시지 생성 중 커밋이 변경되었습니다. 다시 생성하세요."
                 return nil
             }
@@ -3257,7 +3252,7 @@ final class ReviewStore {
             """
         }
         return """
-        # 실제 리뷰 반영 커밋 (시간순, 메시지 전체)
+        # PR 커밋 이력 (PR 첫 커밋부터 현재 HEAD까지, 시간순, 메시지 전체)
         \(commits.map { "커밋: \($0.sha)\n\($0.message)" }.joined(separator: "\n\n"))
 
         # 코멘트별 연결 정보 (리뷰 원문은 요청이며 처리 완료의 증거가 아님)

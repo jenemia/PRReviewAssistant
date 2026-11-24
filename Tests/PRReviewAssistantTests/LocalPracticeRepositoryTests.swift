@@ -349,6 +349,43 @@ struct LocalPracticeRepositoryTests {
         #expect(branches.allSatisfy { $0.isRemote && $0.reference.hasPrefix("origin/") })
         #expect(before == after)
     }
+    @Test("재리뷰 추천 메시지는 base 브랜치가 앞서가도 PR 첫 커밋부터 현재 HEAD까지 읽는다")
+    func readsWholePullRequestHistory() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let remote = root.appendingPathComponent("remote.git")
+        let directory = root.appendingPathComponent("work")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let runner = ProcessRunner()
+        func git(_ arguments: [String]) throws -> String {
+            try runner.run("git", arguments: arguments, workingDirectory: directory.path).output.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        _ = try runner.run("git", arguments: ["init", "--bare", "-b", "main", remote.path], workingDirectory: root.path)
+        _ = try git(["init", "-b", "main"])
+        _ = try git(["config", "user.name", "Test"])
+        _ = try git(["config", "user.email", "test@example.com"])
+        _ = try git(["remote", "add", "origin", remote.path])
+        _ = try git(["commit", "--allow-empty", "-m", "base"])
+        _ = try git(["push", "origin", "main"])
+        _ = try git(["switch", "-c", "review"])
+        _ = try git(["commit", "--allow-empty", "-m", "PR 첫 커밋"])
+        let first = try git(["rev-parse", "HEAD"])
+        _ = try git(["commit", "--allow-empty", "-m", "1차 리뷰 반영"])
+        let reviewed = try git(["rev-parse", "HEAD"])
+        _ = try git(["commit", "--allow-empty", "-m", "2차 리뷰 반영"])
+        let last = try git(["rev-parse", "HEAD"])
+        // The base branch moves ahead after the PR was opened.
+        _ = try git(["switch", "main"])
+        _ = try git(["commit", "--allow-empty", "-m", "main 진행"])
+        _ = try git(["push", "origin", "main"])
+        _ = try git(["switch", "review"])
+
+        let workspace = WorkspaceManager()
+        let start = try workspace.pullRequestStart(at: directory.path, baseBranch: "main")
+        let commits = try workspace.reviewCommits(at: directory.path, branch: "review", baseSHA: start, committedSHA: reviewed)
+        #expect(commits.map(\.sha) == [first, reviewed, last])
+    }
+
     @Test("재리뷰 커밋 조회는 PR 기준 이후 본문을 시간순으로 읽고 다른 브랜치와 미커밋 작업을 제외한다")
     func readsReviewCommitMessages() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -379,11 +416,14 @@ struct LocalPracticeRepositoryTests {
         #expect(!commits.map(\.message).joined().contains("무관한 커밋"))
         #expect(try git(["rev-parse", "HEAD"]) == last)
         #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent("draft.txt").path))
-        #expect(throws: (any Error).self) {
-            try workspace.reviewCommits(at: directory.path, branch: "review", baseSHA: base, committedSHA: first)
-        }
+        // Commits added after the app's review commit (e.g. by hand, then pushed) are included.
+        #expect(try workspace.reviewCommits(at: directory.path, branch: "review", baseSHA: base, committedSHA: first).map(\.sha) == [first, last])
         #expect(throws: (any Error).self) {
             try workspace.reviewCommits(at: directory.path, branch: "review", baseSHA: unrelated, committedSHA: last)
+        }
+        // A HEAD that no longer contains the recorded commit is still rejected.
+        #expect(throws: (any Error).self) {
+            try workspace.reviewCommits(at: directory.path, branch: "review", baseSHA: base, committedSHA: unrelated)
         }
         #expect(try workspace.reviewCommits(at: directory.path, branch: "review", baseSHA: last, committedSHA: last).isEmpty)
     }

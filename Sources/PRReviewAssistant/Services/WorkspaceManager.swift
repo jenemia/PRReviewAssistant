@@ -195,15 +195,23 @@ struct WorkspaceManager: Sendable {
         return try body(index, ["GIT_INDEX_FILE": index.path])
     }
 
+    /// The point where the PR branch left its base branch, so a re-review message
+    /// can read the PR's whole history from its first commit.
+    func pullRequestStart(at path: String, baseBranch: String, remote: String = "origin") throws -> String {
+        _ = try runner.run("git", arguments: ["fetch", remote, "refs/heads/\(baseBranch):refs/remotes/\(remote)/\(baseBranch)"], workingDirectory: path)
+        return try runner.run("git", arguments: ["merge-base", "\(remote)/\(baseBranch)", "HEAD"], workingDirectory: path)
+            .output.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     /// Reads only committed review work after the PR snapshot, never drafts or
     /// commits from unrelated branches. Full bodies retain multi-line summaries.
     func reviewCommits(at path: String, branch: String, baseSHA: String, committedSHA: String) throws -> [(sha: String, message: String)] {
         let head = try verifiedHead(path, expectedSHA: baseSHA, expectedBranch: branch)
         let base = try runner.run("git", arguments: ["rev-parse", "--verify", "--end-of-options", "\(baseSHA)^{commit}"], workingDirectory: path).output.trimmingCharacters(in: .whitespacesAndNewlines)
-        let end = try runner.run("git", arguments: ["rev-parse", "--verify", "--end-of-options", "\(committedSHA)^{commit}"], workingDirectory: path).output.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard head == end else {
-            throw CommandError.failed(.init(output: "", error: "작업 폴더 HEAD가 마지막 리뷰 반영 커밋과 다릅니다. 커밋 상태를 확인하세요.", status: 1))
-        }
+        // Commits the developer added (and maybe pushed) after the app's review
+        // commit belong to the same review work, so read up to the current HEAD.
+        let end = head
+        try requireAncestor(committedSHA, of: end, at: path)
         _ = try runner.run("git", arguments: ["merge-base", "--is-ancestor", base, end], workingDirectory: path)
         let log = try runner.run("git", arguments: ["log", "--reverse", "--format=%H%x00%B%x00", "\(base)..\(end)", "--"], workingDirectory: path).output
         let fields = log.components(separatedBy: "\0")
@@ -408,9 +416,7 @@ struct WorkspaceManager: Sendable {
         _ = expectedRemoteSHA
         let localSHA = try runner.run("git", arguments: ["rev-parse", "HEAD"], workingDirectory: path)
             .output.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard localSHA == committedSHA else {
-            throw CommandError.failed(.init(output: "", error: "로컬 HEAD가 승인된 커밋과 다릅니다. 다시 테스트하고 커밋하세요.", status: 1))
-        }
+        try requireAncestor(committedSHA, of: localSHA, at: path)
         let currentBranch = try runner.run("git", arguments: ["symbolic-ref", "--quiet", "--short", "HEAD"], workingDirectory: path)
             .output.trimmingCharacters(in: .whitespacesAndNewlines)
         guard currentBranch == branch else {
@@ -422,14 +428,22 @@ struct WorkspaceManager: Sendable {
         }
         let fetchedSHA = try runner.run("git", arguments: ["rev-parse", "\(remote)/\(branch)"], workingDirectory: path)
             .output.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard remoteSHA == committedSHA || remoteSHA == fetchedSHA else {
+        guard remoteSHA == localSHA || remoteSHA == fetchedSHA else {
             throw CommandError.failed(.init(output: "", error: "작업 폴더 준비 이후 원격 PR 브랜치가 변경되었습니다. 다시 시도하세요.", status: 1))
         }
         _ = try runner.run("git", arguments: ["push", remote, "HEAD:\(branch)"], workingDirectory: path)
         let confirmed = try runner.run("git", arguments: ["ls-remote", remote, "refs/heads/\(branch)"], workingDirectory: path)
         let confirmedSHA = confirmed.output.split(whereSeparator: { $0 == "\t" || $0 == " " }).first.map(String.init)
-        guard confirmedSHA == committedSHA else {
+        guard confirmedSHA == localSHA else {
             throw CommandError.failed(.init(output: "", error: "푸시 후 원격 PR 브랜치 SHA를 확인하지 못했습니다.", status: 1))
+        }
+    }
+
+    /// The app's recorded review commit must still be in HEAD's history; later
+    /// commits are allowed, but a reset or rewrite that dropped it is not.
+    private func requireAncestor(_ committedSHA: String, of head: String, at path: String) throws {
+        guard (try? runner.run("git", arguments: ["merge-base", "--is-ancestor", committedSHA, head], workingDirectory: path)) != nil else {
+            throw CommandError.failed(.init(output: "", error: "작업 폴더 HEAD에 마지막 리뷰 반영 커밋이 없습니다. 브랜치를 되돌렸거나 커밋을 다시 썼는지 확인하세요.", status: 1))
         }
     }
 }
